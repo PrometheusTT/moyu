@@ -130,3 +130,29 @@ test('README 给的 GitHub 安装命令必须真能装成这个包', () => {
   assert.ok(readme.includes(`github:${slug}`), `README 里没有 npm i -g github:${slug}`);
   assert.match(readme, /Node ≥ 20|Node >= 20/, '装的人第一件要知道的事是 Node 版本');
 });
+
+/**
+ * 真实踩到过的那条（就在把仓库推上去之前）：`npm i -g git+file://…` 报
+ * `sh: tsc: command not found`。原因是 lock 里 `@lydell/node-pty` 被记成了
+ * `{"resolved": "vendor/node-pty", "link": true}` —— 开发机离线时期靠软链装的痕迹。
+ * 别人的克隆里没有 vendor/（它 .gitignore 了），npm 照着 lock 装就散在半路上，
+ * devDependencies 一个都没落地，紧接着 prepare 跑 tsc 就找不到人。
+ *
+ * 第二条是同一类：lock 里的 resolved 主机名如果是某个镜像，换 registry 的人就得
+ * 穿墙去拿那个镜像。锁在 registry.npmjs.org 上才是可移植的 —— npm 的
+ * `replaceRegistryHost` 默认值恰好是 `npmjs`，所以用镜像的人会被自动改写回自己的镜像。
+ */
+test('package-lock 必须能在别人机器上复现（不许有本地软链，不许锁在镜像上）', () => {
+  const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8')) as {
+    packages: Record<string, { resolved?: string; link?: boolean }>;
+  };
+  for (const [key, entry] of Object.entries(lock.packages)) {
+    if (key === '') continue;
+    assert.notEqual(entry.link, true, `${key} 在 lock 里是个本地软链 —— 别人的克隆里没有那个目录`);
+    assert.ok(!key.startsWith('vendor'), `lock 里不该出现 ${key}：vendor/ 不进版本库`);
+    if (entry.resolved !== undefined) {
+      assert.match(entry.resolved, /^https:\/\/registry\.npmjs\.org\//,
+        `${key} 锁在了 ${entry.resolved} —— 换个 registry 的人装不到`);
+    }
+  }
+});
