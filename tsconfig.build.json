@@ -1,0 +1,20 @@
+{
+  "//": [
+    "发布用的编译（npm run build → dist/）。日常开发和测试仍然走 Node 的原生类型剥离，",
+    "所以 tsconfig.json 那份保持 noEmit —— 两份的区别只有「要不要产出 JS」。",
+    "rewriteRelativeImportExtensions 是这套做法能成立的关键：源码里写的是 './x.ts'（Node 剥离模式要求）,",
+    "它在 emit 时改写成 './x.js'。少了这一条，dist 里的 import 会指向不存在的 .ts。",
+    "为什么要 dist：不然装的人必须有 Node >= 22.6 才能用 --experimental-strip-types，",
+    "而且每次启动都要付一遍剥离的开销。发 JS 就把 Node 门槛降到 20，也不用带实验性 flag。"
+  ],
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rewriteRelativeImportExtensions": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": false,
+    "sourceMap": true
+  },
+  "include": ["src/**/*.ts"]
+}

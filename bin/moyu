@@ -1,0 +1,94 @@
+#!/bin/sh
+# moyu —— 终端里的摸鱼游戏。
+#
+# 这一层 sh 包装存在的**唯一**理由：node 被 SIGKILL 时它还活着，可以补一次终端还原。
+# node 自己挂了 exit / SIGINT / SIGTERM / SIGHUP / uncaughtException 的钩子（见
+# src/shell/teardown.ts），SIGKILL 是它唯一抓不到的。而一个把用户 shell 搞坏的终端游戏
+# 是不可接受的，所以这个兜底不是可选项。
+#
+# 所以：**刻意不用 exec**。exec 会把这个 shell 替换成 node，trap 跟着一起消失，
+# 整个脚本就白写了。多一个进程换一个还原保证，划得来。
+
+set -u
+
+# ── 定位包根（bin/moyu → ..）──────────────────────────────────────────
+#
+# `npm i -g` / `npx` 装出来的 $0 是 <prefix>/bin/moyu 这个**软链**，不是包里的真文件。
+# 不顺着链走一遍的话 root 会算成 npm 的 prefix（/usr/local 之类），dist/ 当然找不到 ——
+# 这条在本地开发时永远不会暴露，只在别人安装之后才炸，所以 test/bridge/packaging.test.ts
+# 专门跑一遍软链调用。macOS 的 readlink 没有 -f（GNU 才有），所以手写这个循环。
+self=$0
+links=0
+while [ -L "$self" ] && [ "$links" -lt 40 ]; do
+  target=$(readlink "$self") || break
+  case $target in
+    /*) self=$target ;;                    # 绝对目标：直接换
+    *)  self=${self%/*}/$target ;;         # 相对目标：相对**软链所在目录**解析
+  esac
+  links=$((links + 1))
+done
+
+case $self in
+  */*) selfdir=${self%/*} ;;
+  *)   selfdir=. ;;
+esac
+root=$(cd "$selfdir/.." && pwd) || exit 1
+
+# 发布包里只有 dist/（编译好的 JS，Node >= 20 就能用，不带实验性 flag）；
+# 仓库里 src/ 一定在，dist/ 可能是上一次 npm pack 留下的**旧货**。
+#
+# 所以顺序是 **src 优先**：src/ 存在 ⟹ 你在仓库里 ⟹ 你要跑的是你刚改的那份。
+# 反过来（dist 优先）真的踩到过：改完 src 之后跑 bin/moyu 跑的是几分钟前编的 dist，
+# 测试红了但改的地方明明是对的。想强制跑 dist：MOYU_DIST=1 moyu ...
+if [ -f "$root/src/app/main.ts" ] && [ "${MOYU_DIST:-}" != 1 ]; then
+  main="$root/src/app/main.ts"
+  # Node 22.6–23.5 需要 --experimental-strip-types；23.6+ 默认开启，传了只多一条
+  # 实验性警告，用 --disable-warning 压掉。一条命令行覆盖所有支持的版本。
+  node_flags='--experimental-strip-types --disable-warning=ExperimentalWarning'
+elif [ -f "$root/dist/app/main.js" ]; then
+  main="$root/dist/app/main.js"
+  node_flags=''
+else
+  printf 'moyu: 找不到 %s\n' "$root/dist/app/main.js" >&2
+  # 从 GitHub 装的人，dist/ 是 `prepare` 钩子在安装时编出来的 —— 所以 `--ignore-scripts`
+  # 装出来的包一定缺它。这是这条路唯一的新失败模式，值得在报错里直接点出来。
+  printf 'moyu: 从 GitHub 装的话 dist/ 由 prepare 钩子编出来，--ignore-scripts 会跳过它。重装：npm i -g github:PrometheusTT/moyu\n' >&2
+  exit 1
+fi
+
+# ── 接管标记 ──────────────────────────────────────────────────────────
+#
+# node 在真正接管终端之后创建这个文件，还原成功之后删掉它。于是 trap 里的判断就是
+# "屏幕是不是还欠一次还原"，而不是去猜退出码：
+#
+#   moyu bench / doctor / 用法错误  → 从没创建 → 不还原（它们没碰终端）
+#   正常退出、Ctrl+C、崩溃          → 创建后又删掉 → 不还原（node 已经还原过了）
+#   SIGKILL                        → 创建了没删掉 → **还原**
+#
+# 用退出码判断就做不到这么准：内层 CLI 自己退出码 130 是很正常的事，不代表屏幕坏了。
+# 而重复还原有真实代价 —— `?1049l` 自带一次光标恢复，会把用户 shell 的光标搬到别处去。
+MOYU_TAKEOVER_FLAG="${TMPDIR:-/tmp}/moyu-takeover.$$"
+export MOYU_TAKEOVER_FLAG
+
+restore_terminal() {
+  # 首选让 node 发那一段字节 —— 和正常退出路径**同一份代码**，不会漂移。
+  # node 起不来（OOM 之类）才退到下面这个手写的最小子集：删掉像素档那张图、撤备用屏、
+  # 撤滚动区、恢复自动换行/原点模式、亮出光标、复位 SGR。够把 shell 救回来。
+  #
+  # 删图那条 APC 发两遍，夹着撤备用屏的三条 —— kitty 图的存储是每个缓冲区各自一份的，
+  # 理由和取舍见 src/shell/teardown.ts 的 restoreSeq()。`i=19801` 必须和
+  # src/render/graphics.ts 的 IMAGE_ID 一致，test/shell/teardown.test.ts 盯着这一行。
+  # 这里发不出 tier 判断（sh 不知道跑的是哪档），代价是不认 APC 的终端可能打出几个字符；
+  # 而这条路只在 node 连 doctor 都跑不起来时才走，那时留一张图在屏幕上是更坏的结果。
+  img='\033_Ga=d,d=I,i=19801,q=2\033\\'
+  node $node_flags "$main" doctor --reset 2>/dev/null ||
+    printf '\033[?2026l%b\033[?1049l\033[?1047l\033[?47l%b\033[r\033[?7h\033[?6l\033[0m\033[?25h' "$img" "$img"
+}
+
+trap 'st=$?; if [ -f "$MOYU_TAKEOVER_FLAG" ]; then rm -f "$MOYU_TAKEOVER_FLAG"; restore_terminal; fi; exit $st' EXIT
+
+# 刻意不 trap INT/TERM/HUP：node 和它在同一个进程组里，信号直达 node，由 node 自己
+# 的钩子还原。在这里拦一道只会让 shell 比 node 先退，把 node 变成孤儿进程。
+# $node_flags 刻意不加引号 —— 它要么是空串（被 sh 吞掉），要么是要拆成两个词的两个 flag。
+# shellcheck disable=SC2086
+node $node_flags "$main" "$@"

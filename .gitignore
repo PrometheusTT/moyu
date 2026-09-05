@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.tgz
+*.moyu-bak-*
+.DS_Store
+
+# 开发机的离线兜底（@lydell/node-pty 的 darwin-arm64 预编译产物）。
+# 是别人包里的二进制，不该躺在这个仓库里；npm i 会从 registry 拿真货。
+vendor/
+
+# 这台机器的权限允许列表，不是项目配置。
+.claude/settings.local.json

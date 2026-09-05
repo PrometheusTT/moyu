@@ -1,0 +1,62 @@
+{
+  "name": "moyu-game",
+  "version": "0.1.0",
+  "description": "终端里的像素风火柴人格斗 —— 装进 Claude Code / Codex，等任务跑完的时候在输入框上方那两行里砍一顿",
+  "keywords": ["cli", "game", "terminal", "tui", "claude-code", "codex", "kitty-graphics", "pty", "hooks", "ascii"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PrometheusTT/moyu.git"
+  },
+  "homepage": "https://github.com/PrometheusTT/moyu#readme",
+  "bugs": {
+    "url": "https://github.com/PrometheusTT/moyu/issues"
+  },
+  "type": "module",
+  "bin": {
+    "moyu": "./bin/moyu"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "os": ["darwin", "linux"],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
+    "prepare": "npm run build",
+    "prepack": "npm run typecheck",
+    "dev": "node --experimental-strip-types src/app/main.ts",
+    "bench": "node --experimental-strip-types src/app/main.ts bench",
+    "dev:link-vendor": "node scripts/link-vendor.mjs"
+  },
+  "comment:scripts": [
+    "prepare 是**从 GitHub 装的人**唯一的构建时机：`npm i -g github:PrometheusTT/moyu` 会克隆仓库、",
+    "装上 devDependencies、跑 prepare、然后按 files 白名单打包。而 dist/ 是 .gitignore 掉的（编译产物",
+    "不进版本库），所以 prepare 不跑 = 装出来是个只有 bin/ 的空壳，`moyu` 每条命令都报找不到 dist。",
+    "别把它并回 prepack —— prepack 只在 npm pack / npm publish 时跑，git 安装根本不走那条路。",
+    "反过来 prepack 留着 typecheck：发布前拦一道类型错误，而 git 安装的人不需要为此付 tsc --noEmit 的时间。"
+  ],
+  "dependencies": {
+    "@lydell/node-pty": "1.1.0"
+  },
+  "comment:deps": [
+    "@lydell/node-pty 是 `moyu -- <cmd>` 的硬依赖（要一个真 PTY 才能包住内层 CLI），",
+    "但**不是** `moyu demo` 的依赖 —— 装不上也还能单机玩，所以 pty.ts 是动态 import + try。",
+    "选 1.1.0 是因为它给 6 个平台都带了预编译产物（darwin/linux/win32 × x64/arm64，各自是它的",
+    "optionalDependencies），所以装的人不需要有编译器 —— 这条是「任何人都能装」的前提。",
+    "vendor/ 里那份 darwin-arm64 的预编译产物是开发机的离线兜底（当初 registry 不可达），",
+    "**不进版本库也不进发布包**，用 npm run dev:link-vendor 手动补软链（没有 vendor/ 时它只是打印一行跳过）。",
+    "也不挂 postinstall —— postinstall 会在**别人**的机器上跑，那里既没有 vendor/ 也不需要它。"
+  ],
+  "devDependencies": {
+    "@types/node": "24.7.0",
+    "typescript": "5.9.3"
+  }
+}
