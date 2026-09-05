@@ -41,7 +41,7 @@ import { ScreenArbiter } from "../shell/altscreen.js";
 import { InputRouter, hotkeyHint, pendingRows } from "../shell/focus.js";
 import { Canvas } from "../render/canvas.js";
 import { GraphicsTarget } from "../render/graphics.js";
-import { probeCaps, DEFAULT_CELL } from "../render/caps.js";
+import { probeCaps, knownGraphicsTerm, DEFAULT_CELL } from "../render/caps.js";
 import { stripPainter } from "../render/painter.js";
 import { paintWorld } from "../render/scene.js";
 import { fitRow } from "../render/text.js";
@@ -410,6 +410,14 @@ async function cmdCaps() {
         process.stdin.setRawMode(false);
         process.stdin.pause();
     }
+    const envOr = (k) => {
+        const v = process.env[k];
+        return v === undefined || v === '' ? '（没设）' : v;
+    };
+    const known = knownGraphicsTerm(process.env);
+    const ssh = process.env.SSH_CONNECTION !== undefined && process.env.SSH_CONNECTION !== '';
+    const mux = process.env.TMUX !== undefined && process.env.TMUX !== '' ? 'tmux'
+        : process.env.STY !== undefined && process.env.STY !== '' ? 'screen' : null;
     // 按探到的档位算一遍**出货那个条**的几何，顺带把身高折算成设备像素 ——
     // "认不认得出是人"最终就是这个数字说话（3 像素的时候是不可能的，40 像素才有戏）。
     const l = computeLayout({ cols: t.cols, rows: t.rows });
@@ -425,6 +433,16 @@ async function cmdCaps() {
         `终端       ${t.cols}×${t.rows} 字符格${tty ? '' : '（不是 TTY —— 下面的探测结果没有意义）'}`,
         `档位       ${caps.tier}`,
         `理由       ${caps.why}`,
+        // 终端身份是"为什么没探到"最常见的答案，尤其在 SSH 上：ssh 默认只把 TERM 带过去，
+        // TERM_PROGRAM / GHOSTTY_RESOURCES_DIR / KITTY_WINDOW_ID 这些**本地**变量一个都不过来，
+        // 于是 env 兜底在远端天然失效。不打出来的话这件事从输出里完全看不见。
+        //
+        // 只打 TERM / TERM_PROGRAM 的**值**：SSH_CONNECTION 带客户端 IP、TMUX 带 socket 路径
+        // （里面有用户名），而这一页是会被贴到 issue 里的，所以那两个只报有没有。
+        `终端身份   TERM=${envOr('TERM')}，TERM_PROGRAM=${envOr('TERM_PROGRAM')}`
+            + `${known === null ? '（env 认不出是哪个终端）' : ` → 认得出是 ${known}`}`,
+        `连接       ${ssh ? 'SSH（所以 15fps；本地的 TERM_PROGRAM 之类传不过来）' : '本地'}`
+            + `${mux === null ? '' : `，在 ${mux} 里`}`,
         `格像素     ${caps.cellW}×${caps.cellH}`
             + `${caps.cellW === DEFAULT_CELL.w && caps.cellH === DEFAULT_CELL.h ? '（= 默认值）' : ''}`,
         `帧率       ${caps.fps}fps`,
@@ -432,6 +450,18 @@ async function cmdCaps() {
         `世界坐标   ${painter.vw}×${painter.vh} 虚拟像素，k = ${painter.k.toFixed(2)}`,
         `火柴人     ${w.fh} 虚拟像素 → 屏幕上约 ${Math.round(w.fh * painter.k)} 像素高`,
         caps.leftover.length > 0 ? `抢跑的输入 ${caps.leftover.length} 字节（已丢弃 —— 这个命令不转发给谁）` : '',
+        '',
+        // 三种 half 的下一步完全不同，所以分开说。最要紧的是 silent 那条：那时候"不支持"
+        // 是我们没问出来，不是终端说的 —— 你知道本地终端支持就直接强制，比等我们猜对快。
+        caps.tier === 'half' && caps.probe === 'silent'
+            ? '没探到 ≠ 不支持。本地终端是 Ghostty / kitty / WezTerm 的话直接强制：\n'
+                + '  MOYU_TIER=graphics moyu -- claude\n'
+                + '强制之后要是屏幕上刷出一堆 base64 乱码，那就是真的不支持 —— 摘掉这个变量即可。'
+            : caps.tier === 'half' && caps.probe === 'no-graphics'
+                ? '终端自己答了"不支持"，强制也没用（会刷出 base64 乱码）。等 R2 八分块档。'
+                : caps.tier === 'half' && mux !== null
+                    ? `${mux} 不透传 APC。要么在 ${mux} 外面跑，要么等 R2 八分块档。`
+                    : '',
         '',
         '覆盖用的环境变量：MOYU_TIER=half|graphics 强制档位，MOYU_CELL=16x34 强制格像素。',
     ].filter((x) => x !== '').join('\n') + '\n');

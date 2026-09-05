@@ -119,14 +119,19 @@ moyu doctor --reset    # 终端被搞坏了（花屏、光标没了、残留图�
 
 - **tmux / screen 里退到半块字符档。** 它们默认不透传 kitty graphics 的 APC 序列，赌不划算。
   在 Ghostty / kitty / WezTerm 里**没进 tmux** 却还是半块档的话，跑 `moyu doctor --caps` 看它到底探到了什么。
-- **SSH 下自动降到 15fps。** 像素档 30fps 约 59 KB/s，SSH 上减半更稳。
+- **SSH 下自动降到 15fps**（像素档 30fps 约 59 KB/s，减半更稳），**而且档位容易被判成半块**：
+  ssh 默认只把 `TERM` 带过去，`TERM_PROGRAM` / `GHOSTTY_RESOURCES_DIR` 这些**本地**变量一个都不过来，
+  所以"认得出是 Ghostty"这条兜底在远端失效，只能靠探测。探测的回复要跑一个来回，
+  所以 SSH 下预算放宽到 1200ms。要是 `moyu doctor --caps` 说「终端一个字都没回」，
+  而你本地终端确实支持，直接强制：`MOYU_TIER=graphics moyu -- claude`。
+  它要是说「终端答了 DA 但没答 kitty graphics」，那是终端自己说的不支持，强制没用。
 - **游戏区看不见了？** 屏幕最底下那一行会写着 `^G h 展开` —— 按它。终端太窄/太矮时它会整条让位，放大就回来。
 - **退出后屏幕上还有残影？** `moyu doctor --reset`。被 `kill -9` 掉时 `bin/moyu` 那层 sh 会自己补一次还原。
 
 ## 开发
 
 ```sh
-npm test          # 287 个测试，不需要终端（PTY-in-PTY + 像素回读）
+npm test          # 289 个测试，不需要终端（PTY-in-PTY + 像素回读）
 npm run typecheck # tsc --noEmit
 npm run compile   # 产出 dist/（**不叫 build** —— 那个名字会让 npm 的 git 安装走进一条坏路，
                   #   理由写在 package.json 的 comment:scripts 里。dist/ 是进版本库的，改完 src 要重编）

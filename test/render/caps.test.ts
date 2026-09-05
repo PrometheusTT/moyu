@@ -80,8 +80,11 @@ test('16t 问不到时用 14t 除格数兜底，问到了就不许被覆盖', ()
   }
 });
 
-/** 假终端：`write` 进来之后按 `reply` 回一段字节，像真终端那样异步到达。 */
-function fakeIO(reply: string | null, env: NodeJS.ProcessEnv = {}) {
+/**
+ * 假终端：`write` 进来之后按 `reply` 回一段字节，像真终端那样异步到达。
+ * `delayMs` 模拟链路延迟（SSH 上一个来回是真会花掉几百毫秒的）。
+ */
+function fakeIO(reply: string | null, env: NodeJS.ProcessEnv = {}, delayMs = 0) {
   const listeners: Array<(b: Buffer) => void> = [];
   const wrote: string[] = [];
   const io = {
@@ -97,7 +100,8 @@ function fakeIO(reply: string | null, env: NodeJS.ProcessEnv = {}) {
       if (reply === null) return;
       // 分两个 chunk 送：真终端的回复本来就会被 read 切开。
       const cut = Math.max(1, Math.floor(reply.length / 2));
-      setImmediate(() => {
+      const soon = (f: () => void): unknown => (delayMs > 0 ? setTimeout(f, delayMs) : setImmediate(f));
+      soon(() => {
         for (const part of [reply.slice(0, cut), reply.slice(cut)]) {
           for (const f of [...listeners]) f(Buffer.from(part, 'latin1'));
         }
@@ -232,4 +236,52 @@ test('离谱的格像素当没问到 —— 宁可糊一档，也不要算出一
   assert.equal(c.cellW, DEFAULT_CELL.w);
   assert.equal(c.cellH, DEFAULT_CELL.h);
   assert.match(c.why, /默认值/);
+});
+
+/* ── 探测的结局：`tier` 是结论，`probe` 是"为什么"，两者不能混 ─────────────── */
+
+test('哨兵回来了但没有 OK = 真的不支持；一个字都没回 = 没问出来', async () => {
+  // 用户报"装完还是垃圾像素版"，`doctor --caps` 打的是"终端没回 kitty graphics 的 OK" ——
+  // 这句话把两件事说成了一件，而它们的下一步完全相反：一个是"别折腾了"，另一个是
+  // "你知道本地终端支持就直接 MOYU_TIER=graphics"。所以结局要分开报。
+  const da = await probeCaps({ ...fakeIO(DA).io, graceMs: 5 });
+  assert.equal(da.probe, 'no-graphics');
+  assert.match(da.why, /真的不支持/);
+
+  const silent = await probeCaps(fakeIO(null).io);
+  assert.equal(silent.probe, 'silent');
+  assert.match(silent.why, /没问出来/);
+  assert.match(silent.why, /40ms/, '把等了多久打出来 —— 判定是不是超时太短要靠这个数');
+
+  const ok = await probeCaps(fakeIO(OK + CELL + DA).io);
+  assert.equal(ok.probe, 'ok');
+
+  // 压根没问的那几条（强制档位 / 不是 TTY / mux）都是 skipped —— 它们的 half 不是探测的结论。
+  for (const io2 of [
+    { ...fakeIO(null, { MOYU_TIER: 'half' }).io },
+    { ...fakeIO(null).io, tty: false },
+    { ...fakeIO(null, { TMUX: '/tmp/x,1,0' }).io },
+  ]) assert.equal((await probeCaps(io2)).probe, 'skipped');
+});
+
+test('SSH 下预算放宽：晚 500ms 的回复接得住，本地那档 400ms 接不住', async () => {
+  // 预算基本免费（哨兵一到就收工，等满只发生在终端一个字都不回时），而 SSH 上一个来回
+  // 就可能吃掉本地那 400ms 的一大半 —— 400 判出来的"不支持"可能只是链路慢。
+  // `timeoutMs: undefined` 是这条的关键：要走真实默认值，不是 fakeIO 的 40ms。
+  const late = (env: NodeJS.ProcessEnv): Parameters<typeof probeCaps>[0] => {
+    // 把键**删掉**而不是设成 undefined：exactOptionalPropertyTypes 下后者不合法，
+    // 而且语义也不一样 —— 我们要的是"没给这个参数"。
+    const { timeoutMs, ...rest } = fakeIO(OK + CELL + DA, env, 500).io;
+    void timeoutMs;
+    return rest;
+  };
+
+  const ssh = await probeCaps(late({ SSH_CONNECTION: '10.0.0.1 5 10.0.0.2 22' }));
+  assert.equal(ssh.tier, 'graphics', 'SSH 下 500ms 的回复被超时切掉了');
+  assert.equal(ssh.fps, 15);
+  assert.match(ssh.why, /格像素 16×34/, '接住了就该用终端报的值');
+
+  const local = await probeCaps(late({}));
+  assert.equal(local.tier, 'half', '本地预算该是 400ms —— 放宽到 1200 会让每次启动多黑半秒');
+  assert.match(local.why, /400ms/);
 });

@@ -65,8 +65,25 @@ const PROBE_ID = 31;
  */
 export const DEFAULT_CELL = { w: 16, h: 34 } as const;
 
+/**
+ * 探测的**结局**，不是结论。选档只看 `tier`；这个字段是为了让"没探到"这件事可诊断。
+ *
+ * 分开 `silent` 和 `no-graphics` 的理由是它们指向完全相反的下一步，而以前两者都打
+ * "终端没回 kitty graphics 的 OK"，用户拿这句话什么也做不了：
+ *
+ *   `no-graphics` —— 哨兵（DA）回来了，graphics 的 OK 没回来。终端**真的不支持**，
+ *                    别再折腾了，等 R2 八分块档。
+ *   `silent`      —— 一个字都没回。终端支不支持我们根本没问出来：可能是链路慢
+ *                    （SSH 的 RTT 吃掉了预算）、可能是中间有东西不透传 APC（mosh、
+ *                    某些 web 终端）、也可能回复被别的什么吃掉了。这时候如果你知道
+ *                    本地终端支持，`MOYU_TIER=graphics` 是对的答案。
+ */
+export type ProbeOutcome = 'ok' | 'no-graphics' | 'silent' | 'skipped';
+
 export type Caps = {
   tier: Tier;
+  /** 探测的结局。`why` 已经把它写成人话了，这个字段给 `doctor --caps` 分支用。 */
+  probe: ProbeOutcome;
   /** 一个字符格的设备像素。 */
   cellW: number;
   cellH: number;
@@ -225,30 +242,34 @@ export type ProbeIO = {
  */
 export async function probeCaps(io: ProbeIO): Promise<Caps> {
   const env = io.env;
-  const fps = env.SSH_CONNECTION !== undefined && env.SSH_CONNECTION !== '' ? 15 : 30;
+  const ssh = env.SSH_CONNECTION !== undefined && env.SSH_CONNECTION !== '';
+  const fps = ssh ? 15 : 30;
   const forced = env.MOYU_TIER === 'half' || env.MOYU_TIER === 'graphics' ? env.MOYU_TIER : undefined;
   const envCell = parseCellEnv(env.MOYU_CELL);
   const cell = envCell ?? DEFAULT_CELL;
 
-  if (forced === 'half') return { tier: 'half', cellW: cell.w, cellH: cell.h, fps, why: 'MOYU_TIER=half', leftover: EMPTY };
+  if (forced === 'half') return { tier: 'half', probe: 'skipped', cellW: cell.w, cellH: cell.h, fps, why: 'MOYU_TIER=half', leftover: EMPTY };
   if (forced === 'graphics') {
     return {
-      tier: 'graphics', cellW: cell.w, cellH: cell.h, fps,
+      tier: 'graphics', probe: 'skipped', cellW: cell.w, cellH: cell.h, fps,
       why: `MOYU_TIER=graphics，格像素 ${cell.w}×${cell.h}${envCell === null ? '（默认值）' : ''}`,
       leftover: EMPTY,
     };
   }
-  if (!io.tty) return { tier: 'half', cellW: cell.w, cellH: cell.h, fps, why: '不是 TTY', leftover: EMPTY };
+  if (!io.tty) return { tier: 'half', probe: 'skipped', cellW: cell.w, cellH: cell.h, fps, why: '不是 TTY', leftover: EMPTY };
   const mux = env.TMUX !== undefined && env.TMUX !== '' ? 'tmux'
     : env.STY !== undefined && env.STY !== '' ? 'screen' : null;
   if (mux !== null) {
-    return { tier: 'half', cellW: cell.w, cellH: cell.h, fps, why: `${mux} 不透传 APC`, leftover: EMPTY };
+    return { tier: 'half', probe: 'skipped', cellW: cell.w, cellH: cell.h, fps, why: `${mux} 不透传 APC`, leftover: EMPTY };
   }
 
   // 400 而不是 150：会回话的终端根本走不到超时（哨兵一到就收工，本地是亚毫秒级），
   // 所以这个数字只在"终端一个字都不回"时才被真的等满 —— 那时宁可多等一会儿，也不要
   // 因为差几十毫秒把一个支持像素档的终端判成半块档（那是 3 像素高的火柴人，见文件头）。
-  const budget = io.timeoutMs ?? 400;
+  // SSH 下放到 1200：预算基本上是**免费**的，因为哨兵（DA）任何终端都答，一答就收工 ——
+  // 真的等满只发生在"终端一个字都不回"那一次。而 SSH 上一个来回就可能吃掉 400ms 里的
+  // 一大半（查询要过去、回复要回来），400 判出来的"不支持"可能只是链路慢。
+  const budget = io.timeoutMs ?? (ssh ? 1200 : 400);
   // 哨兵到了、graphics 的 OK 却没到：不立刻定论，再等一小会儿。
   // 我们是**一次 write 里发四条查询**，回复的顺序理论上跟着查询走，但那是终端的实现细节
   // （图形命令在有些终端里走的不是 CSI 那条同步路径）。押在顺序上的代价太不对称：
@@ -292,19 +313,25 @@ export async function probeCaps(io: ProbeIO): Promise<Caps> {
   const use = envCell ?? got ?? DEFAULT_CELL;
   const leftover = r.leftover === '' ? EMPTY : Uint8Array.from(Buffer.from(r.leftover, 'latin1'));
   if (!r.graphics) {
+    // 哨兵回来了 = 终端在听、也肯答，只是没答 graphics ⟹ 真的不支持。
+    // 哨兵也没回来 = 我们根本没问出来（链路慢 / 中间不透传 / 回复被吃掉）。
+    const outcome: ProbeOutcome = r.done ? 'no-graphics' : 'silent';
+    const detail = r.done
+      ? '终端答了 DA 但没答 kitty graphics —— 真的不支持'
+      : `终端一个字都没回（${budget}ms 内），支不支持没问出来`;
     const known = knownGraphicsTerm(env);
     if (known === null) {
-      return { tier: 'half', cellW: use.w, cellH: use.h, fps, why: '终端没回 kitty graphics 的 OK', leftover };
+      return { tier: 'half', probe: outcome, cellW: use.w, cellH: use.h, fps, why: detail, leftover };
     }
     return {
-      tier: 'graphics', cellW: use.w, cellH: use.h, fps,
-      why: `${known} 支持 kitty graphics（探测没回话，按 env 认定），格像素 ${use.w}×${use.h}`
+      tier: 'graphics', probe: outcome, cellW: use.w, cellH: use.h, fps,
+      why: `${known} 支持 kitty graphics（${detail}，按 env 认定），格像素 ${use.w}×${use.h}`
         + `${got === null ? '（问不到，用默认值）' : ''}${fps === 15 ? '，SSH → 15fps' : ''}`,
       leftover,
     };
   }
   return {
-    tier: 'graphics', cellW: use.w, cellH: use.h, fps,
+    tier: 'graphics', probe: 'ok', cellW: use.w, cellH: use.h, fps,
     why: `kitty graphics ✓，格像素 ${use.w}×${use.h}${got === null ? '（问不到，用默认值）' : ''}`
       + (fps === 15 ? '，SSH → 15fps' : ''),
     leftover,
