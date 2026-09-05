@@ -69,6 +69,17 @@ const FRAME_MS = 1000 / FPS;
 const BACKPRESSURE = 48 * 1024;
 
 /**
+ * HUD 和收起条共用的三套配色。
+ *
+ * 提出来是因为它们必须**一模一样** —— 收起条就是 HUD 塌成一行的样子，两处各写一份
+ * 迟早会漂移成"收起之后颜色突然变了"。等待权限那档故意用刺眼的琥珀底：那是唯一一种
+ * 你不看一眼就会一直卡着的状态。
+ */
+const SGR_PENDING = '\x1b[38;2;24;26;36m\x1b[48;2;226;190;96m';
+const SGR_URGENT = '\x1b[38;2;255;238;238m\x1b[48;2;138;22;30m';
+const SGR_IDLE = '\x1b[38;2;158;166;188m\x1b[48;2;24;26;36m';
+
+/**
  * 焦点切换的最小间隔。
  *
  * 焦点变化会 resize PTY，而 resize 让内层 TUI 全量重绘 —— 连按会把它抖成一片。
@@ -442,6 +453,10 @@ class Shell {
   private focus: Focus = 'cli';
   /** 用户手动调过的游戏区行数。一旦有值就不再按焦点联动 —— 他有自己的想法。 */
   private manualGameRows: number | undefined;
+  /** `^G h` 收起了吗。收起 ≠ 让屏：塌成 1 行，那一行写着怎么回来（见 `setCollapsed`）。 */
+  private collapsed = false;
+  /** 收起那一行上一次写出去的字节。和 `lastHud` 一样，用来做"没变就不发"。 */
+  private lastBar = '';
   private layout: Layout | null = null;
 
   private readonly arbiter: ScreenArbiter;
@@ -617,19 +632,29 @@ class Shell {
    */
   private applyLayout(l: Layout, why: 'init' | 'resize' | 'resume'): void {
     assertLayout(l);
+    // 游戏区**变矮**时（收起、`^G j`）要从**旧**的顶边开始擦，不是新的 —— 让出去的那几行
+    // 上还留着上一帧的画布，而它们现在归内层了。内层是 TUI 的话 SIGWINCH 会让它重画一遍
+    // 盖掉，但内层是个普通 shell 时不会，那几行就一直挂在那儿。
+    const prevTop = this.layout?.gameTop;
+    const clearFrom = prevTop === undefined ? l.gameTop : Math.min(prevTop, l.gameTop);
     this.layout = l;
 
     this.pass.region = { top: 1, bottom: l.innerRows };
     this.pass.cols = l.cols;
     this.vt.resize(l.cols, l.innerRows);
-    // 画布占游戏区的**全部**行，只在横向让出右边的 HUD 文本区。
-    this.target.resize(l.fieldCols, l.gameRows);
-    this.target.invalidate();
-    // 画笔要跟着重建：它缓存了 `k = 设备像素高 / 虚拟高`。
-    // 世界收到的是**虚拟**尺寸，不是设备像素 —— 不然视网膜用户的世界会比别人高一倍。
-    this.painter = stripPainter(this.target);
-    this.game.resize(this.painter.vw, this.painter.vh);
+    // 收起状态下那 1 行是纯文本状态条，画布一格都不占 —— 不能把世界压到 1 行去，
+    // 否则展开时角色的坐标已经被来回缩放过两遍（而收起是"暂时不看"，不是"重开一局"）。
+    if (!this.collapsed) {
+      // 画布占游戏区的**全部**行，只在横向让出右边的 HUD 文本区。
+      this.target.resize(l.fieldCols, l.gameRows);
+      this.target.invalidate();
+      // 画笔要跟着重建：它缓存了 `k = 设备像素高 / 虚拟高`。
+      // 世界收到的是**虚拟**尺寸，不是设备像素 —— 不然视网膜用户的世界会比别人高一倍。
+      this.painter = stripPainter(this.target);
+      this.game.resize(this.painter.vw, this.painter.vh);
+    }
     this.lastHud = '';
+    this.lastBar = '';
 
     let seq = '';
     // 启动时清屏：包裹层要接管整个屏幕的几何，不清屏的话残留内容会和分屏边界错位，
@@ -637,10 +662,36 @@ class Shell {
     if (why === 'init') seq += '\x1b[H\x1b[2J';
     seq += scrollRegionSeq(l);
     // 擦掉游戏区：resize / 收屏之后那里可能留着旧内容或内层的残迹。
-    seq += `\x1b[${l.gameTop};1H\x1b[J`;
+    seq += `\x1b[${clearFrom};1H\x1b[J`;
     this.write(seq + this.vt.restoreSeq());
 
     this.pty?.resize(l.cols, l.innerRows);
+  }
+
+  /** 这一拍该分几行给游戏。收起时恒定 1 行（那一行是状态条，不是画布）。 */
+  private wantGameRows(): number | undefined {
+    return this.collapsed ? 1 : this.manualGameRows;
+  }
+
+  /**
+   * `^G h` —— 收起 / 展开。
+   *
+   * **收起不是让屏，是塌成 1 行。** 让屏（整条消失）是用户报的那条 bug 的成因：
+   * 按键路径本身是好的，再按一次确实会重新分屏、重新出帧；坏的是屏幕上再没有任何东西
+   * 告诉你怎么回去 —— 连那行 `^G h 收起` 的提示都跟着一起消失了，唯一的线索只剩记忆，
+   * 而记住的那半个 `h` 按下去只会进内层 CLI 的输入框（看起来就像"打不开了"）。
+   *
+   * 所以留 1 行给一条写着 `^G h 展开` 的状态条：40 行的终端里花 1 行换一条永远看得见的
+   * 回头路。顺带这一行还接着任务完成的横幅 —— 收起期间任务跑完了，你照样看得见。
+   */
+  private setCollapsed(v: boolean): void {
+    if (this.collapsed === v) return;
+    this.collapsed = v;
+    // 收起要**删图**：擦文字擦不掉它（图是终端另存的一层），一张挂在 CLI 上面的
+    // 图就是纯粹的垃圾。展开时终端里那张已经没了，所以必须整幅重传，不能"没动就不发"。
+    if (v) this.write(this.target.disposeSeq());
+    else this.target.invalidate();
+    this.relayout();
   }
 
   /** 让出整屏。两个原因（用户收起 / 太小）共用这一条路径。 */
@@ -662,7 +713,7 @@ class Shell {
   private onResume(): void {
     if (this.finished || this.arbiter.yielded) return;
     const t = termSize();
-    const r = computeLayout({ cols: t.cols, rows: t.rows, manualGameRows: this.manualGameRows });
+    const r = computeLayout({ cols: t.cols, rows: t.rows, manualGameRows: this.wantGameRows() });
     // too-small 本身就是让屏原因之一，所以走到这里必然是 split。真不是就保持让屏，别崩。
     if (r.kind !== 'split') { this.arbiter.set('too-small', true); return; }
     this.applyLayout(r.layout, 'resume');
@@ -697,7 +748,7 @@ class Shell {
 
   private onResize(): void {
     const t = termSize();
-    const r = computeLayout({ cols: t.cols, rows: t.rows, manualGameRows: this.manualGameRows });
+    const r = computeLayout({ cols: t.cols, rows: t.rows, manualGameRows: this.wantGameRows() });
 
     if (r.kind !== 'split') {
       this.arbiter.set('too-small', true);
@@ -725,7 +776,7 @@ class Shell {
   private relayout(): void {
     if (this.arbiter.yielded) return;
     const t = termSize();
-    const r = computeLayout({ cols: t.cols, rows: t.rows, manualGameRows: this.manualGameRows });
+    const r = computeLayout({ cols: t.cols, rows: t.rows, manualGameRows: this.wantGameRows() });
     if (r.kind === 'split') this.applyLayout(r.layout, 'resize');
     else this.arbiter.set('too-small', true);
   }
@@ -750,6 +801,7 @@ class Shell {
     if (l === null || this.finished || this.arbiter.yielded) return;
     // 内层的吞吐优先于游戏：它在刷屏时我们丢帧，而不是把它的输出排在我们的队列后面。
     if (process.stdout.writableLength > BACKPRESSURE) { this.skipped++; return; }
+    if (this.collapsed) { this.tickCollapsed(l); return; }
 
     const t0 = process.hrtime.bigint();
     this.game.advance(Date.now());
@@ -777,6 +829,29 @@ class Shell {
   }
 
   /**
+   * 收起状态下那一行。
+   *
+   * 模拟照常推进（`advance` 是 0.1ms 级的纯计算），只是不作画 —— 这样任务完成的
+   * 响铃 / 横幅在收起期间照样会来。**打断摸鱼是这个产品的第一职责**，收起不该把它关掉。
+   */
+  private tickCollapsed(l: Layout): void {
+    this.game.advance(Date.now());
+    const alert = this.game.takeAlert();
+    if (alert !== null && this.focus === 'game') this.toggleFocus();
+    const h = this.game.hud();
+    const waiting = this.router.awaitingCommand;
+    const text = waiting ? pendingRows().join(' · ')
+      : h.urgent ? `${h.short} · ^G h 展开`
+        : `摸鱼收起了 · ^G h 展开 · ^G q 退出`;
+    // 最后一列留白：写屏幕右下角会置上延迟换行标志，见 hudSeq。
+    const seq = `${waiting ? SGR_PENDING : h.urgent ? SGR_URGENT : SGR_IDLE}`
+      + `\x1b[${l.gameTop};1H${fitRow(text, '', Math.max(1, l.cols - 1))}\x1b[0m`;
+    if (seq === this.lastBar && alert === null) return;
+    this.lastBar = seq;
+    this.write(`\x1b[?25l${alert ?? ''}${seq}${this.vt.restoreSeq()}`);
+  }
+
+  /**
    * 画布右边那块文本区。**和画布同排**，不再单独占一行 —— 整条只有 1~2 行，
    * 拿一行去写字就没得玩了。
    *
@@ -797,11 +872,7 @@ class Shell {
     // 现在连按也是切焦点了，但这行反馈依然是那条 bug 的另一半解法。
     const rows = waiting ? pendingRows() : this.statusRows(h);
     // SGR 是全局状态，设一次就管到 reset —— 所以颜色只发一遍，后面只有定位和文字。
-    let out = waiting
-      ? '\x1b[38;2;24;26;36m\x1b[48;2;226;190;96m'
-      : h.urgent
-        ? '\x1b[38;2;255;238;238m\x1b[48;2;138;22;30m'
-        : '\x1b[38;2;158;166;188m\x1b[48;2;24;26;36m';
+    let out = waiting ? SGR_PENDING : h.urgent ? SGR_URGENT : SGR_IDLE;
     for (let i = 0; i < l.gameRows; i++) {
       // 每一行都写满（哪怕是空行）：不写的话上一次的文字会留在那儿，
       // 而这块区域不走画布的 diff，没人替它擦。
@@ -846,9 +917,7 @@ class Shell {
         // 所以它被翻译成"把焦点交回 CLI"。真要退整个外壳走 Ctrl+G q。
         case 'game': if (this.game.feed(a.bytes)) this.toggleFocus(); break;
         case 'toggle-focus': this.toggleFocus(); break;
-        case 'toggle-hidden':
-          this.arbiter.set('user-hidden', !this.arbiter.activeReasons.includes('user-hidden'));
-          break;
+        case 'toggle-hidden': this.setCollapsed(!this.collapsed); break;
         case 'adjust-split': this.adjustSplit(a.delta); break;
         case 'redraw': this.target.invalidate(); this.lastHud = ''; this.relayout(); break;
         case 'quit': this.finish(0); break;
@@ -871,6 +940,8 @@ class Shell {
   }
 
   private adjustSplit(delta: number): void {
+    // 收起着还按"加高"：他要的显然是展开，而不是把收起条调成 2 行。
+    if (this.collapsed) { if (delta > 0) this.setCollapsed(false); return; }
     const t = termSize();
     const cur = this.layout?.gameRows ?? DEFAULT_GAME_ROWS;
     // 一步 1 行 = 2 个像素行。整条只有 1~4 行，2 行一步会直接撞到两头。

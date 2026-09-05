@@ -53,7 +53,7 @@ moyu demo               # 不包任何东西，整屏玩（调手感用）
 | | |
 |---|---|
 | `^G g`（或 `^G Tab`） | 焦点在 CLI ↔ 游戏之间切。**焦点默认在 CLI**，所以打字永远不会被游戏吃掉 |
-| `^G h` | 收起 / 展开游戏区 |
+| `^G h` | 收起 / 展开游戏区（收起后剩一行，那行写着怎么回来）|
 | `^G k` / `^G j` | 游戏区加高 / 变矮 |
 | `^G r` | 重画（内层 TUI 花了的时候） |
 | `^G q` | 退出 |
@@ -117,15 +117,16 @@ moyu doctor --reset    # 终端被搞坏了（花屏、光标没了、残留图�
 
 几个已知情况：
 
-- **tmux 里退到半块字符档。** tmux 默认不透传 kitty graphics 的 APC 序列，赌不划算。
+- **tmux / screen 里退到半块字符档。** 它们默认不透传 kitty graphics 的 APC 序列，赌不划算。
+  在 Ghostty / kitty / WezTerm 里**没进 tmux** 却还是半块档的话，跑 `moyu doctor --caps` 看它到底探到了什么。
 - **SSH 下自动降到 15fps。** 像素档 30fps 约 59 KB/s，SSH 上减半更稳。
-- **游戏区看不见了？** `^G h` 再按一次；或者终端太窄/太矮时它会自己让位。
+- **游戏区看不见了？** 屏幕最底下那一行会写着 `^G h 展开` —— 按它。终端太窄/太矮时它会整条让位，放大就回来。
 - **退出后屏幕上还有残影？** `moyu doctor --reset`。被 `kill -9` 掉时 `bin/moyu` 那层 sh 会自己补一次还原。
 
 ## 开发
 
 ```sh
-npm test          # 266 个测试，不需要终端（PTY-in-PTY + 像素回读）
+npm test          # 287 个测试，不需要终端（PTY-in-PTY + 像素回读）
 npm run typecheck # tsc --noEmit
 npm run compile   # 产出 dist/（**不叫 build** —— 那个名字会让 npm 的 git 安装走进一条坏路，
                   #   理由写在 package.json 的 comment:scripts 里。dist/ 是进版本库的，改完 src 要重编）

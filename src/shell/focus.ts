@@ -360,7 +360,7 @@ export function hotkeyHint(focus: Focus): string {
  * 它出现的那一刻用户正悬在半个命令上，看不到完整的选项就会乱按。
  */
 export function pendingRows(): string[] {
-  return ['^G … g 切焦点 · h 收起', '+/- 高度 · r 重绘 · q 退出'];
+  return ['^G … g 切焦点 · h 收起/展开', '+/- 高度 · r 重绘 · q 退出'];
 }
 
 /** 单行版（窄条形宿主用 `pendingRows`，这里给日志和测试留一个可读的整体）。 */

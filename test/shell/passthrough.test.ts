@@ -361,7 +361,7 @@ test('带前缀/中间字节的 t 序列一概不动', () => {
 test('答案跟着区域和列数变（resize / 收起游戏区）', () => {
   const { p, replies } = mkSize({ top: 1, bottom: 30 }, 80);
   assert.equal(once('\x1b[18t', p), '');
-  // 用户按 ^G h 收起游戏区：整屏都给内层，答案必须立刻跟上
+  // 用户按 ^G h 收起游戏区（内层长回来，只剩 1 行给收起条）：答案必须立刻跟上
   p.region = { top: 1, bottom: 45 };
   p.cols = 120;
   assert.equal(once('\x1b[18t', p), '');

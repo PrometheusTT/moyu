@@ -503,16 +503,77 @@ test('内层问屏幕尺寸时外壳自己回答，答的是上半屏而不是�
   } finally { s.kill(); }
 });
 
-test('收起游戏区之后尺寸查询答的是整屏（内层真的拿到了整屏）', async () => {
+test('收起之后内层长一行，尺寸回复跟着变（收起 ≠ 让屏）', async () => {
+  // `^G h` **不让整屏**，塌成 1 行：那一行写着怎么回来。所以内层拿到的是 ROWS-1，
+  // 不是 ROWS。这条和下一条一起钉住"收起"的两半 —— 尺寸真的变了，且回头路真的在屏幕上。
   const s = await launch('node', GFX_ENV);
   try {
     await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
-    s.send('\x07h');                                 // ^G h：收起游戏区，整屏给内层
-    await s.waitFor((w) => w.includes(`WINCH ${COLS}x${ROWS}`), '内层收到整屏尺寸');
+    s.send('\x07h');
+    await s.waitFor((w) => w.includes(`WINCH ${COLS}x${ROWS - 1}`), '内层收到长了一行的尺寸');
     const mark = s.wire().length;
     s.send('t');
     const w = await s.waitFor((x) => x.slice(mark).includes('SIZEREP '), '尺寸回复');
     const reps = [...w.slice(mark).matchAll(/SIZEREP ([\d;]+)/g)].map((m) => m[1]);
-    assert.equal(reps[0], `8;${ROWS};${COLS}`, '游戏区收起了，答案必须跟着变成整屏');
+    assert.equal(reps[0], `8;${ROWS - 1};${COLS}`, '收起之后答案必须跟着变');
+  } finally { s.kill(); }
+});
+
+test('半块档收起再展开：收起期间不画画布，展开后整条重画', async () => {
+  // 像素档那条（上面「^G h 收起时删图」）盯的是图层；这条盯的是**文本层** ——
+  // 半块档的画布是差分编码的，展开时必须 invalidate 整幅重发，不然它以为屏幕上还是
+  // 收起前那一帧，于是一格都不发，游戏区从此一直空着（和让屏那个 bug 一模一样的症状）。
+  const s = await launch();                          // 不给 MOYU_TIER：探不到就是半块档
+  try {
+    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
+    await s.waitFor((w) => cupRows(w).filter((r) => r >= L.gameTop).length >= 3, '攒够几帧画布');
+    s.send('\x07h');
+    await s.waitFor((w) => w.includes('^G h 展开'), '收起条');
+    const mark = s.wire().length;
+    await new Promise((r) => setTimeout(r, 150));
+    // 收起之后只许写最后那一行（收起条），画布那几行一格都不许碰。
+    const quiet = s.wire().slice(mark);
+    assert.deepEqual(cupRows(quiet).filter((r) => r >= L.gameTop && r < ROWS), [],
+      '收起了还在画画布那几行');
+    s.send('\x07h');
+    const back = await s.waitFor((w) => cupRows(w.slice(mark)).filter((r) => r >= L.gameTop).length >= 3,
+      '展开后重新出帧');
+    // 重画必须是**整幅**的：一帧里定位到画布每一行都至少一次（差分残留会让它只发一两行）。
+    const tail = back.slice(mark);
+    for (let r = L.gameTop; r < ROWS; r++) {
+      assert.ok(cupRows(tail).includes(r), `展开后第 ${r} 行没重画（差分状态没清）`);
+    }
+  } finally { s.kill(); }
+});
+
+test('游戏区变矮时从**旧**的顶边开始擦（让出去的那几行不留残迹）', async () => {
+  // 2 行 → 1 行：第 gameTop 行现在归内层了，但上面还留着上一帧的画布。内层是 TUI 的话
+  // SIGWINCH 会让它重画一遍盖掉，普通 shell 不会 —— 那几行就一直挂在那儿。
+  const s = await launch();
+  try {
+    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
+    await s.waitFor((w) => cupRows(w).filter((r) => r >= L.gameTop).length >= 3, '攒够几帧画布');
+    const mark = s.wire().length;
+    s.send('\x07h');
+    const w = await s.waitFor((x) => x.slice(mark).includes('\x1b[J'), '收起时的擦除');
+    assert.ok(w.slice(mark).includes(`\x1b[${L.gameTop};1H\x1b[J`),
+      `擦除该从旧顶边第 ${L.gameTop} 行开始，实际字节：${JSON.stringify(w.slice(mark, mark + 120))}`);
+  } finally { s.kill(); }
+});
+
+test('收起那一行必须写着怎么回来（用户报的"打不开了"就是这一条缺失）', async () => {
+  // 原来 `^G h` 是让整屏：按键路径本身好的，再按一次真的会回来 —— 坏的是屏幕上再没有
+  // 任何东西告诉你怎么回去，而记忆里那半个 `h` 按下去只会打进内层的输入框。
+  // 所以这条断言的是**可见的回头路**，不是可用的按键；按键那半边由上面几条覆盖。
+  const s = await launch('node', GFX_ENV);
+  try {
+    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
+    const mark = s.wire().length;
+    s.send('\x07h');
+    const w = await s.waitFor((x) => x.slice(mark).includes('^G h 展开'), '收起条上的回头路');
+    // 而且它必须落在**最后一行**（就是刚让出来的那一行），不能盖在内层身上。
+    const at = w.indexOf('^G h 展开', mark);
+    const cup = [...w.slice(mark, at).matchAll(/\x1b\[(\d+);1H/g)].map((m) => Number(m[1]));
+    assert.equal(cup[cup.length - 1], ROWS, `收起条画在第 ${cup[cup.length - 1]} 行，不是最后一行`);
   } finally { s.kill(); }
 });
