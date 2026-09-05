@@ -4,9 +4,11 @@ node_modules/
 .DS_Store
 
 # dist/ **刻意进版本库** —— 别删这条注释、也别把 dist/ 加回来。
-# npm i -g <git 地址> 装的时候，npm 的准备子进程会继承 global=true，于是**不会**在克隆里
-# 装 devDependencies 就去跑 prepare，tsc 一定 command not found（npm 10.9.2 实测）。
+# npm i -g <git 地址> 装的时候，npm 派去准备克隆的子进程继承了 global=true，会把克隆当成
+# 全局装的根包处理：不装 devDependencies 就跑 prepare（tsc: command not found），或者把
+# _cacache/tmp 里的克隆软链进全局 node_modules 然后连着删掉（npm 10.9.2 实测，两种都踩过）。
 # 所以安装路径上不能有任何构建步骤：编译产物直接躺在仓库里，装的人零脚本、零 devDeps。
+# 连触发条件都要躲开 —— 构建脚本叫 compile 而不是 build，理由见 package.json 的 comment:scripts。
 # test/bridge/packaging.test.ts 有一条测试会重新编一遍和 dist/ 逐字节比，漂了就红。
 
 # 开发机的离线兜底（@lydell/node-pty 的 darwin-arm64 预编译产物）。

@@ -127,7 +127,8 @@ moyu doctor --reset    # 终端被搞坏了（花屏、光标没了、残留图�
 ```sh
 npm test          # 266 个测试，不需要终端（PTY-in-PTY + 像素回读）
 npm run typecheck # tsc --noEmit
-npm run build     # 产出 dist/
+npm run compile   # 产出 dist/（**不叫 build** —— 那个名字会让 npm 的 git 安装走进一条坏路，
+                  #   理由写在 package.json 的 comment:scripts 里。dist/ 是进版本库的，改完 src 要重编）
 npm run bench     # 无头跑渲染，报字节/帧和毫秒/帧
 ```
 

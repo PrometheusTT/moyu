@@ -28,21 +28,28 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.build.json",
+    "compile": "tsc -p tsconfig.build.json",
     "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
-    "prepublishOnly": "npm run typecheck && npm run build",
+    "prepublishOnly": "npm run typecheck && npm run compile",
     "dev": "node --experimental-strip-types src/app/main.ts",
     "bench": "node --experimental-strip-types src/app/main.ts bench",
     "dev:link-vendor": "node scripts/link-vendor.mjs"
   },
   "comment:scripts": [
-    "**安装路径上一个构建脚本都不能有**，dist/ 因此进了版本库（.gitignore 里有同一段说明）。",
-    "原因是 npm 的一个真实行为（10.9.2 实测）：`npm i -g <git 地址>` 会派一个子进程去准备克隆，",
-    "而这个子进程从环境里继承了 global=true / prefix，于是它把克隆当成**全局装的根包**处理 ——",
-    "根本不在克隆里装 devDependencies，直接跑 prepare。tsc 就 `command not found`，安装失败。",
-    "（非全局的 `npm i git+…` 反而是好的，所以这个坑只在别人用 -g 装的时候炸，本地怎么试都试不出来。）",
-    "所以：不要 prepare、不要 prepack —— 它们都在安装/打包路径上。发布前的类型检查放 prepublishOnly，",
-    "它只在 npm publish 时跑，装的人碰不到；连 --ignore-scripts 装也照样能用。"
+    "**这里的脚本名字是有讲究的，别改回 build。** 分发渠道是 `npm i -g github:…`，而 pacote",
+    "（npm 拉 git 依赖的那一层）在 lib/git.js 的 #prepareDir 里这么判断这个 git 依赖要不要先「准备」：",
+    "scripts 里只要存在 postinstall / build / preinstall / install / prepack / prepare 里的**任意一个名字**",
+    "就要准备 —— 注意 build 根本不是 npm 的生命周期钩子，它只是被写进了那张名单。",
+    "",
+    "而「准备」这一步在 -g 安装下是坏的（npm 10.9.2 实测）：它派出去的子进程从环境里继承了",
+    "global=true / prefix，于是把克隆当成**全局装的根包**处理 —— 先是不装 devDependencies 就跑 prepare",
+    "（tsc: command not found）；把 prepare 删掉之后更隐蔽：它把克隆目录当 file: 依赖**软链**进",
+    "全局 node_modules（install-links 默认 false），而那个克隆在 _cacache/tmp 里、装完就被删 ——",
+    "`npm i -g` 报「added 3 packages」，装出来是一条指向不存在目录的死软链，moyu 直接 command not found。",
+    "",
+    "所以：脚本名一个都不许落在那张名单上（packaging.test.ts 有一条测试逐个盯着），",
+    "dist/ 进版本库（安装路径上因此没有构建步骤，--ignore-scripts 也能装），",
+    "发布前的类型检查和重编放 prepublishOnly —— 它不在名单上，只有 npm publish 会跑。"
   ],
   "dependencies": {
     "@lydell/node-pty": "1.1.0"

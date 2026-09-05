@@ -53,7 +53,7 @@ else
   # dist/ 是**跟着仓库和包一起发的**（安装时不跑任何构建脚本，见 package.json 的
   # comment:scripts）。所以走到这一行只有两种情况：装到一半坏了，或者你在一个自己
   # 克隆下来、还没 `npm run build` 过的仓库里，而 src/app/main.ts 也不在。
-  printf 'moyu: dist/ 本该跟包一起发的。重装：npm i -g github:PrometheusTT/moyu（在仓库里的话：npm run build）\n' >&2
+  printf 'moyu: dist/ 本该跟包一起发的。重装：npm i -g github:PrometheusTT/moyu（在仓库里的话：npm run compile）\n' >&2
   exit 1
 fi
 

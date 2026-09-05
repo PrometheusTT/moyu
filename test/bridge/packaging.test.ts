@@ -112,14 +112,21 @@ test('bin/moyu 里的重装提示和 repository 对得上（换仓库名时最�
  * 编译产物直接进版本库。下面三条盯着这个结论的三个前提。
  */
 
-test('安装路径上不许有构建脚本（prepare/prepack 都会在别人机器上跑，而那里没有 tsc）', () => {
+test('脚本名一个都不许落在 pacote 的「要准备」名单上（这是 -g 装得成的唯一条件）', () => {
   const scripts = pkg.scripts as Record<string, string>;
-  assert.equal(scripts.prepare, undefined,
-    'prepare 会在 git 安装时跑，而那个子进程没装 devDependencies —— 加回来等于所有 -g 安装全失败');
-  assert.equal(scripts.prepack, undefined, 'prepack 在 npm pack 打包克隆时也会跑，同样没有 tsc');
-  // 发布前的那次构建挪到 prepublishOnly：只有 npm publish 会跑它，装的人碰不到。
-  assert.match(scripts.prepublishOnly ?? '', /build/, '发布前得重新编一遍，否则可能发出旧 dist');
-  assert.match(scripts.build ?? '', /tsconfig\.build\.json/, 'build 必须走会 emit 的那份 tsconfig');
+  // 名单抄自 pacote/lib/git.js 的 #prepareDir：命中任意一个，npm 拉 git 依赖时就会先派一个
+  // 子进程去「准备」那个克隆。而那个子进程继承了 global=true，会把克隆当全局装的根包处理：
+  // 先前是不装 devDependencies 就跑 prepare（tsc: command not found），删掉 prepare 之后
+  // 变成把 _cacache/tmp 里的克隆**软链**进全局 node_modules，装完克隆就被删 —— 死软链。
+  // 注意 build **不是** npm 的生命周期钩子，它只是被写进了那张名单，所以 `npm run build`
+  // 这个再普通不过的名字会静默毁掉整条安装渠道。构建脚本因此叫 compile。
+  for (const name of ['postinstall', 'build', 'preinstall', 'install', 'prepack', 'prepare']) {
+    assert.equal(scripts[name], undefined,
+      `scripts.${name} 一存在，npm i -g github:… 就装出一条死软链（pacote/lib/git.js #prepareDir）`);
+  }
+  // 发布前的那次构建挪到 prepublishOnly：它不在名单上，只有 npm publish 会跑它。
+  assert.match(scripts.prepublishOnly ?? '', /compile/, '发布前得重新编一遍，否则可能发出旧 dist');
+  assert.match(scripts.compile ?? '', /tsconfig\.build\.json/, 'compile 必须走会 emit 的那份 tsconfig');
 });
 
 test('dist/ 必须真的在版本库里（装的人拿到的就是它，没有第二次机会）', () => {
@@ -144,10 +151,10 @@ test('dist/ 必须和 src/ 同步（漂移是编译产物进版本库带来的�
     const walk = (dir: string, base = ''): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
       e.isDirectory() ? walk(path.join(dir, e.name), `${base}${e.name}/`) : e.name.endsWith('.js') ? [`${base}${e.name}`] : []);
     const fresh = walk(out).sort();
-    assert.deepEqual(walk(path.join(root, 'dist')).sort(), fresh, 'dist/ 的文件清单和现在编出来的不一样 —— 跑 npm run build');
+    assert.deepEqual(walk(path.join(root, 'dist')).sort(), fresh, 'dist/ 的文件清单和现在编出来的不一样 —— 跑 npm run compile');
     for (const rel of fresh) {
       assert.equal(fs.readFileSync(path.join(root, 'dist', rel), 'utf8'), fs.readFileSync(path.join(out, rel), 'utf8'),
-        `dist/${rel} 和 src/ 不同步 —— 跑 npm run build 再提交`);
+        `dist/${rel} 和 src/ 不同步 —— 跑 npm run compile 再提交`);
     }
   } finally { fs.rmSync(out, { recursive: true, force: true }); }
 });
