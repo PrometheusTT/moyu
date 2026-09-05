@@ -112,6 +112,7 @@ hook 本身就是一行 shell（`mkdir -p … && printf … >> …`），声明�
 ```sh
 moyu doctor            # 体检：node 版本、PTY、事件文件、两个 CLI 装没装（只读，不改任何东西）
 moyu doctor --caps     # 这个终端支持哪一档渲染（必须在真终端里跑）
+moyu doctor --gfx      # 同上，再**绕开探测**直接送一张图：看到火柴人就说明这条链路能过图
 moyu doctor --reset    # 终端被搞坏了（花屏、光标没了、残留图）—— 无条件还原
 ```
 
@@ -125,13 +126,18 @@ moyu doctor --reset    # 终端被搞坏了（花屏、光标没了、残留图�
   所以 SSH 下预算放宽到 1200ms。要是 `moyu doctor --caps` 说「终端一个字都没回」，
   而你本地终端确实支持，直接强制：`MOYU_TIER=graphics moyu -- claude`。
   它要是说「终端答了 DA 但没答 kitty graphics」，那是终端自己说的不支持，强制没用。
+- **不确定该不该强制？跑 `moyu doctor --gfx`。** 它**不看探测结果**，直接把出货那条 40×2 的图送出去 ——
+  探测是个双向握手（回程那一半 SSH 很容易吃掉），出图是单向的。三种结果对应三个下一步：
+  看到一个火柴人 → 这条链路能过图，`MOYU_TIER=graphics` 放心用；什么都没有 → 终端认 APC 但不支持
+  kitty graphics（正常的"不支持"就长这样）；一堆 base64 乱码 → 连 APC 都不认，也是不支持。
+  后两种都别强制，等 R2 八分块档。
 - **游戏区看不见了？** 屏幕最底下那一行会写着 `^G h 展开` —— 按它。终端太窄/太矮时它会整条让位，放大就回来。
 - **退出后屏幕上还有残影？** `moyu doctor --reset`。被 `kill -9` 掉时 `bin/moyu` 那层 sh 会自己补一次还原。
 
 ## 开发
 
 ```sh
-npm test          # 289 个测试，不需要终端（PTY-in-PTY + 像素回读）
+npm test          # 291 个测试，不需要终端（PTY-in-PTY + 像素回读）
 npm run typecheck # tsc --noEmit
 npm run compile   # 产出 dist/（**不叫 build** —— 那个名字会让 npm 的 git 安装走进一条坏路，
                   #   理由写在 package.json 的 comment:scripts 里。dist/ 是进版本库的，改完 src 要重编）

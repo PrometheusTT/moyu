@@ -163,6 +163,11 @@ export class GraphicsTarget {
                 return false;
         return true;
     }
+    /**
+     * 组一帧。`screenTop` 是图左上角该落在第几行（1 起）；**给 0 或负数 = 画在光标当前
+     * 位置、不发定位**，`moyu doctor --gfx` 要的就是这个（它把图印在普通输出流里，
+     * 那时候绝对行号是未知的，只能靠相对移动）。游戏里永远给绝对行。
+     */
     encode(screenTop) {
         // 没动就一个字节都不发。静止的条（暂停、等任务）在这一档下是完全免费的。
         if (!this.dirtyAll && this.live && this.unchanged()) {
@@ -175,7 +180,7 @@ export class GraphicsTarget {
             + `,c=${this.cols},r=${this.rows},q=2,C=1`;
         // 图落在光标处，所以先把光标放到游戏区左上角。`C=1` 让它别动光标（我们每帧本来
         // 也会显式还原，所以不依赖它，但发了更省事）。
-        let out = `${ESC}[${screenTop};1H`;
+        let out = screenTop > 0 ? `${ESC}[${screenTop};1H` : '';
         if (b64.length <= CHUNK) {
             out += `${APC}${keys};${b64}${ST}`;
         }

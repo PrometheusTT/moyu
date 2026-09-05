@@ -227,3 +227,17 @@ test('出货尺寸跑真实战斗：字节/帧、编码毫秒、分块数都留�
     assert.ok(ms < 3, `${tag}：编码 ${ms.toFixed(3)} ms/帧，比实测基线慢了一个数量级`);
   }
 });
+
+test('encode(0) = 画在光标处、不发绝对定位（doctor --gfx 的印图靠这个）', () => {
+  // `--gfx` 把图印在**普通输出流**里：前面刚打了十几行文字，还可能滚过屏，所以那一刻
+  // 绝对行号是未知的，只能相对定位。这条锁住"给 0 就一个定位字节都不发" ——
+  // 漏一条 CUP 进去，图就会跳到屏幕第 N 行，把用户的 doctor 输出盖掉一块。
+  const t = new GraphicsTarget(40, 2, 16, 34);
+  t.fill(rgb(64, 160, 255));
+  const at0 = t.encode(0);
+  assert.ok(at0.startsWith('\x1b_G'), `给 0 还是发了定位：${JSON.stringify(at0.slice(0, 20))}`);
+  assert.ok(!at0.includes('\x1b['), '整条里不该有任何 CSI');
+  // 正数照旧发绝对定位 —— 游戏里靠它把图钉在条的顶边上。
+  t.invalidate();
+  assert.ok(t.encode(7).startsWith('\x1b[7;1H\x1b_G'));
+});

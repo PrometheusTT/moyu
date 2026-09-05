@@ -285,3 +285,39 @@ test('SSH 下预算放宽：晚 500ms 的回复接得住，本地那档 400ms �
   assert.equal(local.tier, 'half', '本地预算该是 400ms —— 放宽到 1200 会让每次启动多黑半秒');
   assert.match(local.why, /400ms/);
 });
+
+/**
+ * `doctor --gfx` 的契约：**探测的结论管不着它**。
+ *
+ * 这条存在的理由是一次真实的死胡同：SSH 上探测拿不到回复 → 报 half → 用户看到的仍然是
+ * 3 像素的火柴人，而"到底是链路断了还是终端真不支持"从输出里分不出来。探测是**双向**
+ * 握手（回程那一半 SSH 很容易吃掉），出图是**单向**的 —— 所以哪怕档位已经判成 half，
+ * `--gfx` 也必须照样把那张图送出去，让用户用眼睛定论。
+ */
+test('doctor --gfx：档位判成 half 也照样送图，几何是出货那条', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const path = await import('node:path');
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const run = (args: string[]): string => execFileSync(path.join(root, 'bin/moyu'), args, {
+    encoding: 'utf8',
+    // MOYU_TIER=half 是最狠的那个前提：连强制降档都不该让 --gfx 闭嘴。
+    env: { ...process.env, MOYU_TIER: 'half', TERM: 'xterm-256color', COLUMNS: '', LINES: '' },
+  });
+
+  const gfx = run(['doctor', '--gfx']);
+  const apc = /\x1b_G([^;]*);/.exec(gfx);
+  assert.notEqual(apc, null, `--gfx 没发 APC —— 那它就什么都证明不了：${JSON.stringify(gfx.slice(-200))}`);
+  const keys = apc?.[1] ?? '';
+  assert.match(keys, /a=T/);
+  assert.match(keys, /c=40,r=2/, `图必须按出货那条的格数夹住（实际键：${keys}）`);
+  assert.match(keys, /q=2/, '出帧的 APC 一定要抑制回复');
+  // 相对定位：这一页前面已经打了十几行文字，绝对行号是未知的。发了 CUP 就会盖掉输出。
+  assert.ok(!/\x1b\[\d+;1H\x1b_G/.test(gfx), '图前面发了绝对定位 —— 会跳到屏幕别处去');
+  assert.match(gfx, /火柴人/, '三种结果的说明要在图**之前**打出来');
+
+  // 不带 --gfx 就一个图字节都不发（这一页是会被贴到 issue 里的，2.6 KB base64 不能默认吐）。
+  const plain = run(['doctor', '--caps']);
+  assert.ok(!plain.includes('\x1b_G'), '--caps 自己吐图了');
+  assert.match(plain, /--gfx/, '--caps 要指路到 --gfx，否则没人知道有这条命令');
+});

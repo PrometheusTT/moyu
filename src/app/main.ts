@@ -4,6 +4,7 @@
  *
  *   moyu -- <cmd...>      外壳：内层 CLI 占满上面，游戏是最底下那条 1~2 行的窄条
  *   moyu bench            无头跑场景，报字节/帧和毫秒/帧（性能回归的看门狗）
+ *   moyu doctor --gfx     绕开探测直接送一张图（"到底能不能过 kitty graphics"的定论实验）
  *   moyu doctor --reset   无条件发一遍全部还原序列（SIGKILL 之后的逃生出口）
  *
  * ## 布局的方向不能反
@@ -100,6 +101,7 @@ function usage(): string {
     '  moyu doctor              体检：hook 装没装、事件文件、PTY、node 版本',
     '  moyu bench [帧数] [--stress|--game|--strip] [--tier=graphics|half]  无头跑渲染，报字节/帧和毫秒/帧',
     '  moyu doctor --caps       打印渲染档位探测结果（只有在真终端里跑才有意义）',
+    '  moyu doctor --gfx        同上，再直接送一张图 —— 探测说不支持也照样试一次',
     '  moyu doctor --reset      终端被搞坏之后无条件还原',
     '',
     `游戏内：J 砍 · A/D 走 · 空格 跳 · t 假装任务完成 · y 假装下一个任务开始`,
@@ -112,7 +114,7 @@ async function main(): Promise<number> {
   const cmd = argv[0];
 
   if (cmd === 'doctor') {
-    if (argv.includes('--caps')) return cmdCaps();
+    if (argv.includes('--caps') || argv.includes('--gfx')) return cmdCaps(argv.includes('--gfx'));
     if (argv.includes('--reset')) { writeAllSync(1, doctorResetSeq()); return 0; }
     return cmdDoctor();
   }
@@ -279,7 +281,8 @@ async function cmdDoctor(): Promise<number> {
     if (t === 'codex') out.push('            （Codex 那边还要在启动时点过一次 "Trust all and continue" 才真的会跑）');
   }
 
-  out.push('', '渲染档位：moyu doctor --caps（要在真终端里跑）', '终端被搞坏了：moyu doctor --reset');
+  out.push('', '渲染档位：moyu doctor --caps（要在真终端里跑）；说不支持但你不信：moyu doctor --gfx',
+    '终端被搞坏了：moyu doctor --reset');
   process.stdout.write(`${out.join('\n')}\n`);
   return 0;
 }
@@ -372,8 +375,14 @@ function benchGame(): (t: PixelTarget, f: number) => void {
  * 里永远探不到 graphics，所以"这台机器上到底选了哪一档、格像素问出来是多少"这件事
  * **只能**靠人在自己的终端里跑一次确认。选错档的症状（图溢进上半屏、糊一档）
  * 在这里是一行数字，在游戏里是"看起来坏了"。
+ *
+ * `--gfx` 再往前一步：**不看探测结果**，直接把出货那条 40×2 的图送出去。
+ * 探测是个**双向**握手（我们问、终端答、答案要原路回到我们的 stdin），SSH / mosh /
+ * 某些 web 终端上"没探到"经常只是回程那一半断了；而出图是**单向**的，只要终端认
+ * APC 就成立。所以当 `--caps` 说"没问出来"时，这条命令才是那个能定论的实验 ——
+ * 顺带还回答了"认不认得出是人"，那件事只有人眼能判。
  */
-async function cmdCaps(): Promise<number> {
+async function cmdCaps(gfx: boolean): Promise<number> {
   const tty = process.stdout.isTTY === true && process.stdin.isTTY === true;
   const t = termSize();
   // 回复必须在 raw 下读：行缓冲会把它扣到用户按回车，那时候早超时了。
@@ -450,8 +459,50 @@ async function cmdCaps(): Promise<number> {
           : '',
     '',
     '覆盖用的环境变量：MOYU_TIER=half|graphics 强制档位，MOYU_CELL=16x34 强制格像素。',
+    gfx ? '' : '想直接看这条链路到底能不能过图（探测说不支持也照样试一次）：moyu doctor --gfx',
   ].filter((x) => x !== '').join('\n') + '\n');
+  if (gfx) drawGfxSelfTest(cols, rows, caps.cellW, caps.cellH);
   return 0;
+}
+
+/**
+ * `--gfx` 的那张图：**绕开探测**，用真的 `GraphicsTarget` + 真的 `World` 画一帧出货尺寸
+ * 的条，印在普通输出流里。
+ *
+ * 三种结果各自指向一个不同的下一步，所以先把三种都写出来再发字节 —— 用户看到乱码那一刻
+ * 需要的是"这就是答案"，而不是"是不是装坏了"。
+ *
+ * 定位全用**相对**移动：这里不知道自己在第几行（前面刚打了十几行文字，还可能滚过屏）。
+ * 先 `\n` 占出 rows 行（不够就让终端自己滚），再 `CUU` 回到那块的顶上把图放下去，
+ * 最后 `CUD` 回到图下面继续打字。`C=1` 保证图本身不动光标。
+ */
+function drawGfxSelfTest(cols: number, rows: number, cellW: number, cellH: number): void {
+  const t = new GraphicsTarget(cols, rows, cellW, cellH);
+  const p = stripPainter(t);
+  const w = new World(0x5eed);
+  w.resize(p.vw, p.vh);
+  w.taskStart();
+  // 走几步再挥一刀：静止的 idle 姿势最不像人，而"看不出是人"正是要判的那件事。
+  for (let f = 0; f < 30; f++) w.step(1 / 60, { move: 1, jump: false, slash: f === 24 });
+  paintWorld(p, w);
+  const img = t.encode(0);   // 0 = 画在光标处，不发绝对定位
+
+  process.stdout.write([
+    '',
+    `下面这一段**不看探测结果**，直接送一张 ${cols}×${rows} 字符格（${t.pixelW}×${t.pixelH} 设备像素）的图。`,
+    '三种结果，三个不一样的下一步：',
+    '',
+    '  看到一个火柴人   → 这条链路能过 kitty graphics。不管 --caps 说什么，直接',
+    '                     MOYU_TIER=graphics moyu -- claude',
+    '  什么都没有       → 终端认 APC 但不支持 kitty graphics —— 正常的"不支持"就长这样',
+    `  一堆 base64 乱码 → 连 APC 都不认，也是不支持（约 ${Math.ceil(img.length / 1024)} KB，clear 一下就干净）`,
+    '',
+  ].join('\n') + '\n');
+  // 一次 write 写完：中间被别的输出（比如内层的字节）切开的话，图和定位就错位了。
+  process.stdout.write('\n'.repeat(rows) + `\x1b[${rows}A` + img + `\x1b[${rows}B`);
+  process.stdout.write(
+    `\n↑ 这就是游戏条的真实尺寸。图还留在屏幕上，clear 或 moyu doctor --reset 清掉。\n`,
+  );
 }
 
 /* ────────────────────────────── 外壳 spike ────────────────────────────── */
