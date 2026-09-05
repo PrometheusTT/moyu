@@ -1,8 +1,13 @@
 node_modules/
-dist/
 *.tgz
 *.moyu-bak-*
 .DS_Store
+
+# dist/ **刻意进版本库** —— 别删这条注释、也别把 dist/ 加回来。
+# npm i -g <git 地址> 装的时候，npm 的准备子进程会继承 global=true，于是**不会**在克隆里
+# 装 devDependencies 就去跑 prepare，tsc 一定 command not found（npm 10.9.2 实测）。
+# 所以安装路径上不能有任何构建步骤：编译产物直接躺在仓库里，装的人零脚本、零 devDeps。
+# test/bridge/packaging.test.ts 有一条测试会重新编一遍和 dist/ 逐字节比，漂了就红。
 
 # 开发机的离线兜底（@lydell/node-pty 的 darwin-arm64 预编译产物）。
 # 是别人包里的二进制，不该躺在这个仓库里；npm i 会从 registry 拿真货。

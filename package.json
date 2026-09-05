@@ -30,18 +30,19 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
-    "prepare": "npm run build",
-    "prepack": "npm run typecheck",
+    "prepublishOnly": "npm run typecheck && npm run build",
     "dev": "node --experimental-strip-types src/app/main.ts",
     "bench": "node --experimental-strip-types src/app/main.ts bench",
     "dev:link-vendor": "node scripts/link-vendor.mjs"
   },
   "comment:scripts": [
-    "prepare 是**从 GitHub 装的人**唯一的构建时机：`npm i -g github:PrometheusTT/moyu` 会克隆仓库、",
-    "装上 devDependencies、跑 prepare、然后按 files 白名单打包。而 dist/ 是 .gitignore 掉的（编译产物",
-    "不进版本库），所以 prepare 不跑 = 装出来是个只有 bin/ 的空壳，`moyu` 每条命令都报找不到 dist。",
-    "别把它并回 prepack —— prepack 只在 npm pack / npm publish 时跑，git 安装根本不走那条路。",
-    "反过来 prepack 留着 typecheck：发布前拦一道类型错误，而 git 安装的人不需要为此付 tsc --noEmit 的时间。"
+    "**安装路径上一个构建脚本都不能有**，dist/ 因此进了版本库（.gitignore 里有同一段说明）。",
+    "原因是 npm 的一个真实行为（10.9.2 实测）：`npm i -g <git 地址>` 会派一个子进程去准备克隆，",
+    "而这个子进程从环境里继承了 global=true / prefix，于是它把克隆当成**全局装的根包**处理 ——",
+    "根本不在克隆里装 devDependencies，直接跑 prepare。tsc 就 `command not found`，安装失败。",
+    "（非全局的 `npm i git+…` 反而是好的，所以这个坑只在别人用 -g 装的时候炸，本地怎么试都试不出来。）",
+    "所以：不要 prepare、不要 prepack —— 它们都在安装/打包路径上。发布前的类型检查放 prepublishOnly，",
+    "它只在 npm publish 时跑，装的人碰不到；连 --ignore-scripts 装也照样能用。"
   ],
   "dependencies": {
     "@lydell/node-pty": "1.1.0"

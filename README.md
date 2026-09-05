@@ -22,8 +22,8 @@ npm i -g github:PrometheusTT/moyu      # 或者不装：npx github:PrometheusTT/
 需要 **Node ≥ 20**、macOS 或 Linux、以及 `git`（npm 要克隆这个仓库）。**不需要编译器** ——
 PTY 走的是预编译产物（darwin/linux/win32 × x64/arm64 都有）。
 
-装的时候 npm 会克隆仓库、跑一次 `prepare` 把 TypeScript 编成 `dist/`，所以第一次会多花十几秒。
-**别加 `--ignore-scripts`** —— 那会跳过这次编译，装出来是个跑不起来的空壳。
+编译产物（`dist/`）直接在仓库里，所以装的时候**不跑任何脚本、不装 devDependencies**，
+`--ignore-scripts` 也照样能用。npm 只是克隆 + 复制。
 
 想装某个特定版本（tag 或 commit）：
 

@@ -102,25 +102,59 @@ test('bin/moyu 里的重装提示和 repository 对得上（换仓库名时最�
 
 /* ── 从 GitHub 装的那条路 ──────────────────────────────────────────────────
  *
- * 这个包的分发渠道是 `npm i -g github:<slug>`，不是 npm registry。两条路差在**构建时机**：
- * npm 克隆仓库 → 装 devDependencies → 跑 `prepare` → 按 files 白名单打包 → 装。
- * 而 dist/ 是 .gitignore 掉的（编译产物不进版本库），所以 `prepare` 是唯一那次构建。
- * 下面三条各盯着这条链上的一个前提 —— 断一个，装出来就是个只有 bin/ 的空壳，
- * 而失败发生在**别人**机器上，我们看不见。
+ * 分发渠道是 `npm i -g github:<slug>`，不是 npm registry。而这条路上有个 npm 自己的坑
+ * （10.9.2 实测，一路查到它的 debug log）：npm 派子进程去"准备"那个克隆时，子进程从环境里
+ * 继承了 `global=true` / `prefix`，于是它把克隆当成**全局装的根包**处理 —— 不在克隆里装
+ * devDependencies，就直接跑 `prepare`。于是 `tsc: command not found`，安装整个失败。
+ *
+ * 讽刺的是**非全局**的 `npm i git+…` 一切正常，所以这个坑本地怎么试都试不出来，
+ * 只在别人 `-g` 装的时候炸。结论只能是：**安装路径上一个构建步骤都不能有**，
+ * 编译产物直接进版本库。下面三条盯着这个结论的三个前提。
  */
 
-test('prepare 必须构建 —— 这是 git 安装唯一的构建时机', () => {
+test('安装路径上不许有构建脚本（prepare/prepack 都会在别人机器上跑，而那里没有 tsc）', () => {
   const scripts = pkg.scripts as Record<string, string>;
-  assert.ok(scripts.prepare !== undefined, '没有 prepare = 从 GitHub 装出来没有 dist/');
-  assert.match(scripts.prepare, /build/, 'prepare 得真的构建，不能只是占位');
+  assert.equal(scripts.prepare, undefined,
+    'prepare 会在 git 安装时跑，而那个子进程没装 devDependencies —— 加回来等于所有 -g 安装全失败');
+  assert.equal(scripts.prepack, undefined, 'prepack 在 npm pack 打包克隆时也会跑，同样没有 tsc');
+  // 发布前的那次构建挪到 prepublishOnly：只有 npm publish 会跑它，装的人碰不到。
+  assert.match(scripts.prepublishOnly ?? '', /build/, '发布前得重新编一遍，否则可能发出旧 dist');
   assert.match(scripts.build ?? '', /tsconfig\.build\.json/, 'build 必须走会 emit 的那份 tsconfig');
-  // prepack 只在 npm pack / publish 时跑，git 安装根本不走 —— 构建放那儿等于没放。
-  assert.doesNotMatch(scripts.prepack ?? '', /run build/, '构建挪回 prepack 会让 GitHub 安装静默变空壳');
 });
 
-test('typescript 必须在 devDependencies 里（git 安装时 npm 只给你 devDeps）', () => {
+test('dist/ 必须真的在版本库里（装的人拿到的就是它，没有第二次机会）', () => {
+  assert.ok(fs.existsSync(path.join(root, 'dist', 'app', 'main.js')), 'dist/app/main.js 不在，bin/moyu 会直接报错退出');
+  const gitignore = fs.readFileSync(path.join(root, '.gitignore'), 'utf8');
+  assert.doesNotMatch(gitignore, /^\s*\/?dist\/?\s*$/m, '把 dist/ 加回 .gitignore = 从 GitHub 装出来是个空壳');
+  if (!fs.existsSync(path.join(root, '.git'))) return; // 从 tarball 跑测试时没有 .git
+  const tracked = execFileSync('git', ['ls-files', 'dist'], { cwd: root, encoding: 'utf8' }).trim();
+  assert.ok(tracked.length > 0, 'dist/ 在本地但没提交 —— 克隆的人拿不到');
+});
+
+/**
+ * 编译产物进了版本库就多一个失败模式：改了 src 忘了重编，装的人跑的是旧代码。
+ * 所以这里重新编一遍到临时目录，和 dist/ 逐字节比。红了就 `npm run build` 再提交。
+ */
+test('dist/ 必须和 src/ 同步（漂移是编译产物进版本库带来的新失败模式）', (t) => {
+  const tsc = path.join(root, 'node_modules', 'typescript', 'bin', 'tsc');
+  if (!fs.existsSync(tsc)) { t.skip('没装 typescript，跳过漂移检查'); return; }
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-dist-'));
+  try {
+    execFileSync(process.execPath, [tsc, '-p', 'tsconfig.build.json', '--outDir', out], { cwd: root, stdio: 'pipe' });
+    const walk = (dir: string, base = ''): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? walk(path.join(dir, e.name), `${base}${e.name}/`) : e.name.endsWith('.js') ? [`${base}${e.name}`] : []);
+    const fresh = walk(out).sort();
+    assert.deepEqual(walk(path.join(root, 'dist')).sort(), fresh, 'dist/ 的文件清单和现在编出来的不一样 —— 跑 npm run build');
+    for (const rel of fresh) {
+      assert.equal(fs.readFileSync(path.join(root, 'dist', rel), 'utf8'), fs.readFileSync(path.join(out, rel), 'utf8'),
+        `dist/${rel} 和 src/ 不同步 —— 跑 npm run build 再提交`);
+    }
+  } finally { fs.rmSync(out, { recursive: true, force: true }); }
+});
+
+test('typescript 必须在 devDependencies 里（构建和上面那条漂移检查都要用）', () => {
   const dev = pkg.devDependencies as Record<string, string>;
-  assert.ok(dev.typescript !== undefined, 'prepare 要跑 tsc，而别人机器上没有全局 typescript');
+  assert.ok(dev.typescript !== undefined, '干净克隆里 npm run build 得有 tsc，别人机器上没有全局的');
   assert.ok(dev['@types/node'] !== undefined, '缺 @types/node 的话 tsc 在干净克隆里报一屏错');
 });
 

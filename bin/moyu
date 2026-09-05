@@ -50,9 +50,10 @@ elif [ -f "$root/dist/app/main.js" ]; then
   node_flags=''
 else
   printf 'moyu: 找不到 %s\n' "$root/dist/app/main.js" >&2
-  # 从 GitHub 装的人，dist/ 是 `prepare` 钩子在安装时编出来的 —— 所以 `--ignore-scripts`
-  # 装出来的包一定缺它。这是这条路唯一的新失败模式，值得在报错里直接点出来。
-  printf 'moyu: 从 GitHub 装的话 dist/ 由 prepare 钩子编出来，--ignore-scripts 会跳过它。重装：npm i -g github:PrometheusTT/moyu\n' >&2
+  # dist/ 是**跟着仓库和包一起发的**（安装时不跑任何构建脚本，见 package.json 的
+  # comment:scripts）。所以走到这一行只有两种情况：装到一半坏了，或者你在一个自己
+  # 克隆下来、还没 `npm run build` 过的仓库里，而 src/app/main.ts 也不在。
+  printf 'moyu: dist/ 本该跟包一起发的。重装：npm i -g github:PrometheusTT/moyu（在仓库里的话：npm run build）\n' >&2
   exit 1
 fi
 
