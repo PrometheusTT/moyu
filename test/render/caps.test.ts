@@ -123,13 +123,59 @@ test('探到了：像素档 + 精确格像素 + leftover 交还宿主', async ()
   assert.equal(listeners.length, 0, '临时 listener 没摘掉 —— 之后每个按键都会被它读两遍');
 });
 
-test('没人回：退半块档，而且不等满超时也能收工（哨兵到了）', async () => {
+test('只回哨兵：给 OK 一段宽限期，过了才退半块档', async () => {
+  // 哨兵（DA）到了但 OK 没到 ≠ 不支持 —— 图形命令在有些终端里不走 CSI 那条同步路径，
+  // 回复可能排在 DA 后面。所以这里不立刻定论，等 graceMs 再说。
   const { io } = fakeIO(DA);                     // 只回哨兵，不回 OK
   const t0 = performance.now();
-  const c = await probeCaps(io);
+  const c = await probeCaps({ ...io, graceMs: 12 });
   assert.equal(c.tier, 'half');
-  assert.equal(c.cellW, DEFAULT_CELL.w, '问不到格像素就用默认值（猜小是安全的那一侧）');
-  assert.ok(performance.now() - t0 < 40, '哨兵到了还在等超时，启动会白卡一下');
+  assert.equal(c.cellW, DEFAULT_CELL.w, '问不到格像素就用默认值（往大猜：糊比块状好，见 DEFAULT_CELL）');
+  const dt = performance.now() - t0;
+  assert.ok(dt >= 10, `宽限期没等（${dt.toFixed(1)}ms）—— 回复晚一拍就把像素档判死了`);
+  assert.ok(dt < 40, `等过了头（${dt.toFixed(1)}ms）—— 宽限期该被 graceMs 夹住，不是等满超时`);
+});
+
+test('OK 和哨兵都到了：立刻收工，不吃宽限期', async () => {
+  const { io } = fakeIO(OK + CELL + DA);
+  const t0 = performance.now();
+  const c = await probeCaps({ ...io, graceMs: 500, timeoutMs: 500 });
+  assert.equal(c.tier, 'graphics');
+  const dt = performance.now() - t0;
+  assert.ok(dt < 60, `拿到 OK 还在等（${dt.toFixed(1)}ms）—— 启动路径上这段是白卡的`);
+});
+
+test('探测没回话，但 env 认得出终端：照样走像素档', async () => {
+  // 半块档在出货尺寸（2 行）上是 3 像素高的火柴人，等于不可用。所以对自报身份就足以
+  // 确定支持 kitty graphics 的终端，一次丢包不该换来这个结果。
+  for (const env of [
+    { TERM: 'xterm-ghostty' },
+    { TERM: 'xterm-kitty' },
+    { TERM: 'xterm-256color', TERM_PROGRAM: 'WezTerm' },
+    { TERM: 'xterm-256color', KITTY_WINDOW_ID: '1' },
+    { TERM: 'xterm-256color', GHOSTTY_RESOURCES_DIR: '/x' },
+  ]) {
+    const { io } = fakeIO(DA, env);
+    const c = await probeCaps({ ...io, graceMs: 5 });
+    assert.equal(c.tier, 'graphics', `${JSON.stringify(env)} 该按 env 认定为像素档`);
+    assert.equal(c.cellW, DEFAULT_CELL.w, '格像素问不到就用默认值');
+    assert.match(c.why, /env 认定/);
+  }
+  // 认不出来的终端不许瞎猜：猜错就是把 base64 当文本打在用户屏幕上。
+  const { io } = fakeIO(DA, { TERM: 'xterm-256color' });
+  assert.equal((await probeCaps({ ...io, graceMs: 5 })).tier, 'half');
+});
+
+test('被 tmux / screen 包着时，env 认得出也不许走像素档', async () => {
+  for (const env of [
+    { TERM: 'xterm-ghostty', TMUX: '/tmp/x,1,0' },
+    { TERM: 'xterm-ghostty', STY: '1234.pts-0.host' },
+  ]) {
+    const { io, wrote } = fakeIO(OK + CELL + DA, env);
+    const c = await probeCaps(io);
+    assert.equal(c.tier, 'half', `${JSON.stringify(env)} 下不该走像素档`);
+    assert.equal(wrote.length, 0, '连探测字节都不该发（APC 会被复用器吞掉或打成乱码）');
+  }
 });
 
 test('一个字节都不回：超时兜住，退半块档', async () => {
