@@ -43,7 +43,7 @@ export function painterFor(t, vh) {
 export const STRIP_VH = 44;
 /** 按档位给 target 配画笔：像素档跑固定虚拟高度，半块档退化成 `k = 1`。 */
 export function stripPainter(t) {
-    return painterFor(t, t.tier === 'graphics' ? STRIP_VH : t.pixelH);
+    return painterFor(t, t.tier === 'half' ? t.pixelH : STRIP_VH);
 }
 /** 设备像素半径：虚拟半径 × k，加上描边的额外设备像素，夹在 0.5 以上。 */
 function devR(p, r, extra) {

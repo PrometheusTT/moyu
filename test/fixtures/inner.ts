@@ -10,6 +10,8 @@
  * 原样转述成一行 `SIZEREP` 好让测试断言。不这么分开的话回复末尾那个 `t`
  * 会被当成命令字符，而 `t` 恰好就是"问尺寸"那条命令 —— 自己把自己喂成死循环。
  */
+import { spawn } from 'node:child_process';
+
 const out = (s: string): void => { process.stdout.write(s); };
 
 process.stdin.setRawMode?.(true);
@@ -17,6 +19,10 @@ process.stdin.resume();
 
 /** 半截转义序列。外壳的回复真的可能被切成两个 chunk，和它自己的透传层同一个道理。 */
 let pend = '';
+let composer = false;
+const redrawComposer = (): void => {
+  out('\x1b[10;1HORIGINAL-CONTEXT\x1b[11;1HORIGINAL-SEPARATOR\x1b[12;1H› Ask Codex');
+};
 
 process.stdin.on('data', (buf: Buffer) => {
   const s = pend + buf.toString('latin1');
@@ -48,6 +54,17 @@ function command(ch: string): void {
       // 自报 ioctl 尺寸。这是 TIOCSWINSZ 是否真的生效的唯一可信证据。
       out(`SIZE ${process.stdout.columns}x${process.stdout.rows}\r\n`);
       break;
+    case 'e':
+      out(`EVENTS ${process.env.MOYU_EVENTS ?? ''}\r\n`);
+      break;
+    case 'x': {
+      // 启一个明确忽略 SIGHUP 的孙进程。外壳退出必须杀 PTY 的整个进程组，不能只 HUP 首进程。
+      const child = spawn(process.execPath, ['-e',
+        "process.on('SIGHUP',()=>{}); console.log('HUP-CHILD '+process.pid); setInterval(()=>{},1000)"],
+      { stdio: ['ignore', 'inherit', 'inherit'] });
+      child.unref();
+      break;
+    }
     case 'm':
       // 故意设一个覆盖整屏的滚动区。外壳必须把底边夹到内层区域内。
       out('\x1b[1;999r');
@@ -58,6 +75,15 @@ function command(ch: string): void {
       break;
     case 'a':
       out('\x1b[?1049hALT-SCREEN');
+      break;
+    case 'd':
+      // 当前 Codex 是 inline TUI：回到界面顶端后用裸 CSI J（ED 0）向屏幕末尾清除。
+      // 滚动区挡不住 ED，因此它会连 Moyu 的最底栏一起擦掉。
+      out('\x1b[H\x1b[JCODEX-INLINE-CLEAR');
+      break;
+    case 'i':
+      // Codex composer 的最小可识别形态：左侧 `›` 是宿主的锚点，游戏应落在 10..11 行。
+      composer = true; redrawComposer();
       break;
     case 'A':
       out('\x1b[?1049l');
@@ -95,5 +121,8 @@ function command(ch: string): void {
 // 'resize' 是文档承诺"columns/rows 已经变了"之后才发的，是唯一可靠的时机。
 // （这个坑真的踩到了：内层报的一直是 resize 之前的行数，看起来像外壳没转发 resize。）
 process.stdout.on('resize', () => { out(`WINCH ${process.stdout.columns}x${process.stdout.rows}\r\n`); });
+// overlay 退出使用同尺寸 SIGWINCH 请求 TUI 重绘；尺寸没变时 stdout resize 不一定触发，
+// 单独记录原始信号才能验证恢复请求确实送到了内层进程组。
+process.on('SIGWINCH', () => { out('SIGWINCH\r\n'); if (composer) redrawComposer(); });
 
 out('INNER-READY\r\n');

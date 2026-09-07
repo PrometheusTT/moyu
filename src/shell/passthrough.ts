@@ -8,7 +8,7 @@
  *   1. DECSTBM（`CSI top;bot r`）→ 夹取到我们分给它的区域
  *   2. 绝对行定位（`CSI r;cH` / `CSI f` / `CSI d`）→ 夹取行号，防它写到游戏区
  *   3. 备用屏（`?1049h/l`、`?1047`、`?47`）→ 上报给上层，让它在新缓冲区上重设滚动区
- *   4. 全屏擦除（`ED 2` / `ED 3`）→ 上报给上层，让画布下一帧全量重绘
+ *   4. 擦除到屏幕末尾/全屏（`ED 0` / `ED 2` / `ED 3`）→ 上报，让底部区域重绘
  *   5. 尺寸查询（`CSI 14/15/16/18/19 t`）→ **吞掉，我们自己回答**（见 `sizeReply`）
  *
  * ## 为什么备用屏期间**仍然**夹取
@@ -53,13 +53,14 @@ export type PassthroughOptions = {
   /** 内层请求了滚动区时回调（给的是它的**原始**请求值，未夹取）。 */
   onScrollRegion?: (top: number, bottom: number) => void;
   /**
-   * 内层发了 `ED 2` / `ED 3`（全屏擦除）时回调。
+   * 内层发了 `ED 0` / `ED 2` / `ED 3` 时回调。
    *
-   * 这个通知是**正确性要求**，不是优化：ED 不受滚动区约束，它会把游戏区一起擦掉，
+   * 这个通知是**正确性要求**，不是优化：ED 不受滚动区约束。尤其 Codex inline TUI
+   * 使用的裸 `CSI J` 就是 ED 0，会从内层光标一直擦到真实屏幕末尾，把底栏也擦掉。
    * 而我们的画布是差分编码的 —— 它以为屏幕上还是上一帧的内容，于是什么都不重发，
    * 游戏区就一直黑在那儿。上层收到这个回调必须 `canvas.invalidate()`。
    */
-  onFullClear?: () => void;
+  onDisplayErase?: () => void;
 };
 
 /** CSI 参数缓冲上限。超过就认定是畸形/恶意序列，原样吐出去不再解析。 */
@@ -103,7 +104,7 @@ export class Passthrough {
   private onSizeQuery: ((reply: string) => void) | undefined;
   private onAltScreen: ((on: boolean) => void) | undefined;
   private onScrollRegion: ((top: number, bottom: number) => void) | undefined;
-  private onFullClear: (() => void) | undefined;
+  private onDisplayErase: (() => void) | undefined;
 
   private state: ScanState = G_GROUND;
   /** 未完成的转义序列（含前导 ESC）。跨 chunk 续上靠它。 */
@@ -116,7 +117,7 @@ export class Passthrough {
     this.onSizeQuery = opts.onSizeQuery;
     this.onAltScreen = opts.onAltScreen;
     this.onScrollRegion = opts.onScrollRegion;
-    this.onFullClear = opts.onFullClear;
+    this.onDisplayErase = opts.onDisplayErase;
   }
 
   /** 是否有半截序列悬在缓冲里（测试和退出路径要检查）。 */
@@ -341,16 +342,18 @@ export class Passthrough {
       return;
     }
 
-    // ── 全屏擦除：不改写，只上报 ────────────────────────────────────
+    // ── 向下/全屏擦除：不改写，只上报 ────────────────────────────────
     //
-    // 刻意**不夹取** ED 2。夹取要么把光标搬走（`CSI {bottom};{cols}H` + ED 1），
+    // 刻意**不夹取** ED。夹取要么把光标搬走（`CSI {bottom};{cols}H` + ED 1），
     // 要么发 innerRows 条 EL（几百字节）。而内层紧跟着 ED 2 一定会重绘它自己那一片，
     // 所以擦到游戏区的那部分只会亮一帧 —— 代价是 33ms 的闪，换来的是零光标风险。
     // 真正必须做的是让画布知道"屏幕被人动过了"，否则差分编码会以为不用重发。
     if (final === 0x4a) { // 'J'
       const params = this.parseParams(seq, paramStart, paramEnd);
-      const mode = params[0] ?? 0;
-      if (mode === 2 || mode === 3) this.onFullClear?.();
+      const mode = params[0] === undefined || params[0] < 0 ? 0 : params[0];
+      // ED 0 从当前光标擦到**真实屏幕**末尾，所以只要光标属于内层，它就必然擦掉
+      // 我们位于下方的区域。ED 1 方向相反，不会碰到下方区域。
+      if (mode === 0 || mode === 2 || mode === 3) this.onDisplayErase?.();
       this.emitPending(out);
       return;
     }

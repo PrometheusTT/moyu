@@ -1,8 +1,8 @@
 {
   "name": "moyu-game",
   "version": "0.1.0",
-  "description": "终端里的像素风火柴人格斗 —— 装进 Claude Code / Codex，等任务跑完的时候在输入框上方那两行里砍一顿",
-  "keywords": ["cli", "game", "terminal", "tui", "claude-code", "codex", "kitty-graphics", "pty", "hooks", "ascii"],
+  "description": "Coding agent 工作时一键打开的轻量终端掌机与本地 Cartridge 游戏平台",
+  "keywords": ["cli", "game", "terminal", "tui", "claude-code", "codex", "ssh", "braille", "kitty-graphics", "cartridge", "pty"],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -20,6 +20,8 @@
     "bin/",
     "dist/",
     "README.md",
+    "PRODUCT.md",
+    "docs/terminal-qa.md",
     "LICENSE"
   ],
   "os": ["darwin", "linux"],

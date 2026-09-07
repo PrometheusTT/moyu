@@ -112,12 +112,12 @@ test('备用屏期间**照样**夹取（实测：真实 claude 整个会话都�
   assert.equal(once('\x1b[40;5H', p), '\x1b[30;5H', '回主屏后当然也夹');
 });
 
-test('ED 2 / ED 3 上报给上层，但字节不改写', () => {
+test('ED 0 / ED 2 / ED 3 上报给上层，但字节不改写', () => {
   // 上报是**正确性要求**：ED 不受滚动区约束，会把游戏区一起擦掉，而画布是差分编码的 ——
   // 上层不 invalidate 就以为屏幕上还是上一帧，什么都不重发，游戏区一直黑着。
-  for (const [seq, want] of [['\x1b[2J', 1], ['\x1b[3J', 1], ['\x1b[J', 0], ['\x1b[0J', 0], ['\x1b[1J', 0]] as const) {
+  for (const [seq, want] of [['\x1b[2J', 1], ['\x1b[3J', 1], ['\x1b[J', 1], ['\x1b[0J', 1], ['\x1b[1J', 0]] as const) {
     let n = 0;
-    const p = mk(R, { onFullClear: () => { n++; } });
+    const p = mk(R, { onDisplayErase: () => { n++; } });
     assert.equal(once(seq, p), seq, `${seq.replace(/\x1b/g, 'ESC')} 不该被改写`);
     assert.equal(n, want, `${seq.replace(/\x1b/g, 'ESC')} 的上报次数`);
   }

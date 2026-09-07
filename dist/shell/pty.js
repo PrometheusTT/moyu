@@ -14,7 +14,7 @@ export async function loadPty() {
     catch (e) {
         const detail = e instanceof Error ? e.message : String(e);
         throw new Error(`无法加载 PTY 原生模块（@lydell/node-pty）：${detail}\n` +
-            `外壳模式需要它。可以先用 \`moyu play\` 玩全屏版本，或者跑 \`npm install\` 补上依赖。`);
+            `外壳模式需要它。可以先用 \`moyu demo\` 玩全屏版本，或者跑 \`npm install\` 补上依赖。`);
     }
 }
 export class PtyHost {
@@ -79,6 +79,26 @@ export class PtyHost {
             // 内层已经死了但 onExit 还没派发到 —— 丢掉这次输入即可，不该炸整个进程。
         }
     }
+    pause() {
+        if (!this.killed)
+            this.pty.pause();
+    }
+    resume() {
+        if (!this.killed)
+            this.pty.resume();
+    }
+    /** forkpty 的子进程是会话/进程组首进程；杀整组才能收掉它启动的工具和孙进程。 */
+    signalGroup(signal) {
+        try {
+            process.kill(-this.pty.pid, signal);
+        }
+        catch {
+            try {
+                this.pty.kill(signal);
+            }
+            catch { /* 已退 */ }
+        }
+    }
     /**
      * 改尺寸 → 内层收到 SIGWINCH → 自己重排。
      *
@@ -100,39 +120,49 @@ export class PtyHost {
             return false;
         }
     }
+    /** 直接请求 inline TUI 重绘被临时覆盖的行；只在关闭浮层时调用。 */
+    refresh() {
+        if (this.killed)
+            return false;
+        try {
+            this.signalGroup('SIGWINCH');
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
     /** 先 SIGHUP 给内层机会自己收拾，宽限期后 SIGKILL。 */
     kill(graceMs = 250) {
         if (this.killed)
             return;
         this.killed = true;
         const pid = this.pty.pid;
-        try {
-            this.pty.kill('SIGHUP');
-        }
-        catch { /* 已经没了 */ }
+        this.signalGroup('SIGHUP');
         if (graceMs <= 0)
             return;
         const t = setTimeout(() => {
             try {
-                process.kill(pid, 'SIGKILL');
+                process.kill(-pid, 'SIGKILL');
             }
-            catch { /* 正常退了 */ }
+            catch {
+                try {
+                    process.kill(pid, 'SIGKILL');
+                }
+                catch { /* 正常退了 */ }
+            }
         }, graceMs);
         t.unref();
     }
     /** 同步收尾用（`process.on('exit')` 里没法等 timer）。 */
     killNow() {
         if (this.killed) {
-            try {
-                process.kill(this.pty.pid, 'SIGKILL');
-            }
-            catch { /* 已退 */ }
+            this.signalGroup('SIGKILL');
             return;
         }
         this.killed = true;
-        try {
-            this.pty.kill('SIGHUP');
-        }
-        catch { /* 已退 */ }
+        // 退出钩子是同步的，不能留一个 unref timer 等宽限期；先给清理信号，再确保整组消失。
+        this.signalGroup('SIGHUP');
+        this.signalGroup('SIGKILL');
     }
 }

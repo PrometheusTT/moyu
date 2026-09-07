@@ -22,7 +22,7 @@
  */
 
 /** 档位。选档在 `caps.ts`，一旦选定整个进程不再变（换档要重建 target）。 */
-export type Tier = 'graphics' | 'half';
+export type Tier = 'graphics' | 'braille' | 'half';
 
 export type PixelTarget = {
   readonly tier: Tier;
@@ -36,6 +36,8 @@ export type PixelTarget = {
   readonly lastBytes: number;
 
   resize(cols: number, rows: number): void;
+  /** 人物保持一致点阵笔触，棋盘使用连续块面；不支持该选择的后端忽略。 */
+  setGlyphStyle?(style: 'dots' | 'blocks'): void;
   setPixel(x: number, y: number, color: number): void;
   getPixel(x: number, y: number): number;
   fill(color: number): void;

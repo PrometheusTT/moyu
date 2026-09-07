@@ -36,7 +36,7 @@ const CELL = { w: 16, h: 34 };
 
 /** 出货布局：100×40 的终端 → 内层 38 行 + 2 行的游戏条。不写死数字，常数改了这里跟着变。 */
 const L = (() => {
-  const r = computeLayout({ cols: 100, rows: 40 });
+  const r = computeLayout({ cols: 100, rows: 40, manualGameRows: 2 });
   assert.equal(r.kind, 'split', '100×40 应该能分屏');
   return r.kind === 'split' ? r.layout : null!;
 })();

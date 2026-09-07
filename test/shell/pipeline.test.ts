@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Passthrough } from '../../src/shell/passthrough.ts';
 import { VtCursor } from '../../src/shell/vtcursor.ts';
-import { computeLayout, assertLayout, scrollRegionSeq, adjustGameRows, DEFAULT_GAME_ROWS, MIN_GAME_ROWS, MAX_GAME_ROWS } from '../../src/shell/regions.ts';
+import { computeLayout, assertLayout, scrollRegionSeq, adjustGameRows, expandedGameRows, DEFAULT_GAME_ROWS, MIN_GAME_ROWS, MAX_GAME_ROWS } from '../../src/shell/regions.ts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -87,12 +87,12 @@ test('游戏条恒定 2 行，而且不跟焦点联动', () => {
   }
 });
 
-test('手动调高度只在 1..4 之间，而且给 HUD 留着列', () => {
+test('手动调高度服从掌机上限，而且给 HUD 留着列', () => {
   const rows = 40;
   let cur = DEFAULT_GAME_ROWS;
-  for (let i = 0; i < 6; i++) cur = adjustGameRows(rows, cur, 1);
-  assert.equal(cur, MAX_GAME_ROWS, '往上撞到 4 行为止');
-  for (let i = 0; i < 6; i++) cur = adjustGameRows(rows, cur, -1);
+  for (let i = 0; i < 100; i++) cur = adjustGameRows(rows, cur, 1);
+  assert.equal(cur, MAX_GAME_ROWS, '往上撞到掌机上限为止');
+  for (let i = 0; i < 100; i++) cur = adjustGameRows(rows, cur, -1);
   assert.equal(cur, MIN_GAME_ROWS, '往下撞到 1 行为止');
   for (const cols of [60, 80, 120, 400]) {
     const r = computeLayout({ cols, rows });
@@ -100,10 +100,16 @@ test('手动调高度只在 1..4 之间，而且给 HUD 留着列', () => {
     if (r.kind === 'split') {
       const l = r.layout;
       assert.ok(l.fieldCols <= 40, `场地不该那么宽：${l.fieldCols}`);
-      assert.ok(l.cols - l.fieldCols - 1 >= 30, `HUD 列数不够：${l.cols - l.fieldCols - 1}`);
+      assert.equal(l.fieldCols, 40, '窄终端也保留原生 80×8；完整帮助使用临时全宽文字');
       // 最后一列必须没人碰 —— 写屏幕右下角会置上延迟换行标志，下一个字符就滚屏。
       assert.ok(l.fieldCols + (l.cols - l.fieldCols - 1) < l.cols);
     }
+  }
+});
+
+test('展开是偷玩窗口，不会再占掉接近半屏', () => {
+  for (const [rows, want] of [[24, 5], [41, 7], [60, 8], [100, 8]] as const) {
+    assert.equal(expandedGameRows(rows), want, `${rows} 行终端的展开高度`);
   }
 });
 

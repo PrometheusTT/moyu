@@ -28,6 +28,18 @@ test('可打印字符推进列号', () => {
   at(feed(vt(), 'abc'), 1, 4);
 });
 
+test('onPrint 报告字符实际落点，包含 CUP 和自动换行', () => {
+  const seen: Array<[number, number, number, number]> = [];
+  const v = new VtCursor({ cols: 5, rows: 4,
+    onPrint: (cp, row, col, width) => { seen.push([cp, row, col, width]); } });
+  feed(v, '\x1b[3;4H›ab');
+  assert.deepEqual(seen, [
+    [0x203a, 3, 4, 1],
+    [0x61, 3, 5, 1],
+    [0x62, 4, 1, 1],
+  ]);
+});
+
 test('CJK 宽字符占两列', () => {
   // 「你好」= 2 个宽字符 = 4 列，光标落在第 5 列
   at(feed(vt(), '你好'), 1, 5);
@@ -36,6 +48,12 @@ test('CJK 宽字符占两列', () => {
 test('组合字符宽度为 0', () => {
   // e + U+0301（组合尖音符）只推进一列
   at(feed(vt(), 'é'), 1, 2);
+});
+
+test('补充组合符、肤色和 ZWJ emoji 不让光标漂移', () => {
+  at(feed(vt(), `a\u1ab0b\u1dc0`), 1, 3, '补充组合符应为零宽');
+  at(feed(vt(), '👍🏽'), 1, 3, '肤色修饰符不应再占两列');
+  at(feed(vt(), '👨‍👩‍👧‍👦'), 1, 3, 'ZWJ 家庭 emoji 整个字素应占两列');
 });
 
 test('CR 回到第一列但不换行', () => {

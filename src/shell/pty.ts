@@ -2,8 +2,8 @@
  * 内层 CLI 的 PTY 宿主。
  *
  * 这一层薄到几乎透明，只做四件事：
- *   1. **懒加载** `@lydell/node-pty`。它是可选依赖（原生模块），而 `moyu play` / `moyu doctor`
- *      根本不需要它 —— 装不上也不该让整个程序起不来。
+ *   1. **懒加载** `@lydell/node-pty`。它是原生模块，但 `moyu demo` / `moyu doctor`
+ *      根本不需要它 —— 加载失败时不该让这些独立命令一起起不来。
  *   2. **改正 .d.ts 的谎**。`onData` 被声明成 `IEvent<string>`，但 `encoding: null` 下实际给的是
  *      `Buffer`（已实测确认）。字节透传层要的是字节，所以在这里把类型摆正，让谎言只存在于一处。
  *   3. **尺寸控制**（TIOCSWINSZ）。整个同屏合成方案的支点：告诉内层"你只有 innerRows 行"，
@@ -44,7 +44,7 @@ export async function loadPty(): Promise<PtyModule> {
     const detail = e instanceof Error ? e.message : String(e);
     throw new Error(
       `无法加载 PTY 原生模块（@lydell/node-pty）：${detail}\n` +
-      `外壳模式需要它。可以先用 \`moyu play\` 玩全屏版本，或者跑 \`npm install\` 补上依赖。`,
+      `外壳模式需要它。可以先用 \`moyu demo\` 玩全屏版本，或者跑 \`npm install\` 补上依赖。`,
     );
   }
 }
@@ -118,6 +118,20 @@ export class PtyHost {
     }
   }
 
+  pause(): void {
+    if (!this.killed) this.pty.pause();
+  }
+
+  resume(): void {
+    if (!this.killed) this.pty.resume();
+  }
+
+  /** forkpty 的子进程是会话/进程组首进程；杀整组才能收掉它启动的工具和孙进程。 */
+  private signalGroup(signal: NodeJS.Signals): void {
+    try { process.kill(-this.pty.pid, signal); }
+    catch { try { this.pty.kill(signal); } catch { /* 已退 */ } }
+  }
+
   /**
    * 改尺寸 → 内层收到 SIGWINCH → 自己重排。
    *
@@ -138,23 +152,32 @@ export class PtyHost {
     }
   }
 
+  /** 直接请求 inline TUI 重绘被临时覆盖的行；只在关闭浮层时调用。 */
+  refresh(): boolean {
+    if (this.killed) return false;
+    try { this.signalGroup('SIGWINCH'); return true; } catch { return false; }
+  }
+
   /** 先 SIGHUP 给内层机会自己收拾，宽限期后 SIGKILL。 */
   kill(graceMs = 250): void {
     if (this.killed) return;
     this.killed = true;
     const pid = this.pty.pid;
-    try { this.pty.kill('SIGHUP'); } catch { /* 已经没了 */ }
+    this.signalGroup('SIGHUP');
     if (graceMs <= 0) return;
     const t = setTimeout(() => {
-      try { process.kill(pid, 'SIGKILL'); } catch { /* 正常退了 */ }
+      try { process.kill(-pid, 'SIGKILL'); }
+      catch { try { process.kill(pid, 'SIGKILL'); } catch { /* 正常退了 */ } }
     }, graceMs);
     t.unref();
   }
 
   /** 同步收尾用（`process.on('exit')` 里没法等 timer）。 */
   killNow(): void {
-    if (this.killed) { try { process.kill(this.pty.pid, 'SIGKILL'); } catch { /* 已退 */ } return; }
+    if (this.killed) { this.signalGroup('SIGKILL'); return; }
     this.killed = true;
-    try { this.pty.kill('SIGHUP'); } catch { /* 已退 */ }
+    // 退出钩子是同步的，不能留一个 unref timer 等宽限期；先给清理信号，再确保整组消失。
+    this.signalGroup('SIGHUP');
+    this.signalGroup('SIGKILL');
   }
 }

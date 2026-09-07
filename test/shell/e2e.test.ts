@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeLayout } from '../../src/shell/regions.ts';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { computeLayout, MICRO_GAME_ROWS } from '../../src/shell/regions.ts';
 import { loadPty } from '../../src/shell/pty.ts';
 
 /**
@@ -13,11 +16,18 @@ import { loadPty } from '../../src/shell/pty.ts';
  */
 const COLS = 100;
 const ROWS = 40;
+const STANDBY = 'moyu  Ctrl+] 开玩';
 
 /** 外壳启动时会算出来的布局。不写死数字 —— 常数改了这个测试要跟着改才对。 */
 const L = (() => {
   const r = computeLayout({ cols: COLS, rows: ROWS });
   assert.equal(r.kind, 'split', `${COLS}×${ROWS} 应该能分屏`);
+  return r.kind === 'split' ? r.layout : null!;
+})();
+
+const PLAY = (() => {
+  const r = computeLayout({ cols: COLS, rows: ROWS, manualGameRows: MICRO_GAME_ROWS });
+  assert.equal(r.kind, 'split');
   return r.kind === 'split' ? r.layout : null!;
 })();
 
@@ -93,6 +103,151 @@ function cupRows(s: string): number[] {
   return [...s.matchAll(/\x1b\[(\d+);(\d+)H/g)].map((m) => Number(m[1]));
 }
 
+test('默认只占一行，Ctrl+] 一键展开并用 Esc 返回', async () => {
+  const s = await launch();
+  try {
+    const start = await s.waitFor((w) => w.includes(STANDBY), '一行待机条');
+    assert.ok(start.includes(`\x1b[1;${ROWS - 1}r`), '待机时应该只给底部留一行');
+
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = await s.waitFor((w) => {
+      const tail = w.slice(enter);
+      return tail.includes(`\x1b[1;${PLAY.innerRows}r`) && cupRows(tail).some((row) => row >= PLAY.gameTop)
+        && tail.includes('Esc 返回') && tail.includes('J 砍');
+    }, '展开游戏机');
+    assert.match(playing.slice(enter), /J 砍/, '进入时必须明确显示操作');
+    const begin = s.wire().length;
+    s.send('j');
+    await s.waitFor(w => /[\u2580-\u259f\u2800-\u28ff]/.test(w.slice(begin)), '操作后显示游戏');
+
+    const leave = s.wire().length;
+    s.send('\x1b');
+    await s.waitFor((w) => w.slice(leave).includes(STANDBY), 'Esc 返回待机');
+    assert.ok(s.wire().slice(leave).includes(`\x1b[1;${ROWS - 1}r`), '返回后没有恢复一行待机');
+  } finally { s.kill(); }
+});
+
+test('Codex 中游戏覆盖在输入框正上方两行，退出后立即归还画面', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '一行待机条');
+    s.send('i');
+    await s.waitFor((w) => w.includes('› Ask Codex'), 'Codex 输入框锚点');
+
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(enter);
+      return /\x1b\[(?:10|11);\d+H/.test(tail) && tail.includes('J 砍') && tail.includes('Esc 返回');
+    }, '输入框上方两行游戏')).slice(enter);
+    assert.ok(!playing.includes(`\x1b[1;${PLAY.innerRows}r`), 'overlay 不应 resize Codex 或改成底部分屏');
+    assert.ok(playing.includes(`\x1b[${ROWS};1H\x1b[2K`), '进入时应清掉最底部候场提示');
+
+    const captured = s.wire().length;
+    s.send('p');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.ok(!s.wire().slice(captured).includes('INNER-HELLO'), '游戏焦点下普通按键漏进了 Codex 输入框');
+
+    const action = s.wire().length;
+    s.send('j');
+    await s.waitFor((w) => /\x1b\[(?:10|11);\d+H/.test(w.slice(action)), '攻击动作下一帧可见');
+
+    const leave = s.wire().length;
+    s.send('\x1b');
+    const restored = (await s.waitFor((w) => {
+      const tail = w.slice(leave);
+      return tail.includes(STANDBY) && tail.includes('SIGWINCH') && tail.includes('ORIGINAL-CONTEXT') && tail.includes('ORIGINAL-SEPARATOR');
+    }, '退出后恢复候场并请求 Codex 重绘')).slice(leave);
+    assert.ok(restored.includes('\x1b[10;1H\x1b[2K\x1b[11;1H\x1b[2K'), '退出时应清掉两行浮层');
+
+    const returned = s.wire().length;
+    s.send('p');
+    await s.waitFor((w) => w.slice(returned).includes('INNER-HELLO'), '退出后键盘焦点归还 Codex');
+  } finally { s.kill(); }
+});
+
+test('E expands to six protected rows, Tab selects a full board, and E returns inline', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1', MOYU_TIER: 'braille' });
+  try {
+    await s.waitFor(w => w.includes(STANDBY), '待机');
+    s.send('i');
+    await s.waitFor(w => w.includes('› Ask Codex'), '输入框');
+    s.send('\x1d');
+    await s.waitFor(w => w.includes('J 砍'), '首次帮助');
+    let mark = s.wire().length;
+    s.send('e');
+    await s.waitFor(w => w.slice(mark).includes('\x1b[1;34r'), '六行展开');
+    mark = s.wire().length;
+    s.send('\t');
+    await s.waitFor(w => w.slice(mark).includes('贪吃蛇') && w.slice(mark).includes('WASD'), '切换游戏帮助');
+    mark = s.wire().length;
+    s.send('d');
+    await s.waitFor(w => /[\u2580-\u259f\u2800-\u28ff]/.test(w.slice(mark)), '完整棋盘');
+    mark = s.wire().length;
+    s.send('e');
+    await s.waitFor(w => w.slice(mark).includes('\x1b[1;39r') && /\x1b\[10;1H/.test(w.slice(mark))
+      && w.slice(mark).includes('E 展开'), '恢复两行入口及输入框锚点');
+    mark = s.wire().length;
+    s.send('\x1b');
+    await s.waitFor(w => w.slice(mark).includes(STANDBY) && w.slice(mark).includes('ORIGINAL-CONTEXT'), '退出后原内容恢复');
+  } finally { s.kill(); }
+});
+
+test('Codex 启动切入备用屏后会重建滚动区并重画待机条', async () => {
+  const s = await launch();
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '主屏上的待机条');
+    const mark = s.wire().length;
+    s.send('a');
+    const tail = (await s.waitFor((w) => {
+      const next = w.slice(mark);
+      return next.includes('ALT-SCREEN')
+        && next.includes(`\x1b[1;${ROWS - 1}r`)
+        && next.includes(STANDBY);
+    }, '备用屏上的待机条')).slice(mark);
+    assert.ok(tail.indexOf(`\x1b[1;${ROWS - 1}r`) > tail.indexOf('ALT-SCREEN'),
+      '滚动区必须在切换到新缓冲区之后重建');
+    assert.ok(tail.indexOf(STANDBY) > tail.indexOf('ALT-SCREEN'),
+      '待机条必须在 Codex 的备用屏上重新绘制');
+  } finally { s.kill(); }
+});
+
+test('Codex inline TUI 用 ED 0 清屏后会再次重画待机条', async () => {
+  const s = await launch();
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '初始待机条');
+    s.send('a');
+    await s.waitFor((w) => w.includes('ALT-SCREEN') && w.lastIndexOf(STANDBY) > w.indexOf('ALT-SCREEN'),
+      '备用屏待机条');
+    const mark = s.wire().length;
+    s.send('d');
+    const tail = (await s.waitFor((w) => {
+      const next = w.slice(mark);
+      return next.includes('CODEX-INLINE-CLEAR') && next.includes(STANDBY);
+    }, 'inline 清屏后的待机条')).slice(mark);
+    assert.ok(tail.indexOf(STANDBY) > tail.indexOf('CODEX-INLINE-CLEAR'),
+      'ED 0 擦除以后必须重新绘制待机条');
+  } finally { s.kill(); }
+});
+
+test('Ctrl+G 在普通和 kitty 键盘协议下都完整交给内层', async () => {
+  const s = await launch();
+  try {
+    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
+    const mark = s.wire().length;
+    s.send('\x1b[103;5u');
+    await s.waitFor((w) => w.slice(mark).includes('OTHERSEQ "\\u001b[103;5u"'), 'kitty Ctrl+G 透传');
+
+    s.send('\x1d');
+    await s.waitFor((w) => w.includes(`\x1b[1;${PLAY.innerRows}r`), '进入游戏');
+    const mark2 = s.wire().length;
+    s.send('\x1b[103;5u');
+    await s.waitFor((w) => w.slice(mark2).includes('OTHERSEQ "\\u001b[103;5u"'), '游戏中 Ctrl+G 仍透传');
+  } finally { s.kill(); }
+});
+
+
 test('外壳启动就把内层锁在上半屏，并把尺寸如实告诉它（M0 通过标准的前提）', async () => {
   const s = await launch();
   try {
@@ -137,44 +292,6 @@ test('内层越界的定位和过大的滚动区都被夹回内层区域（M0 �
   } finally { s.kill(); }
 });
 
-test('内层切备用屏后游戏照样合成在同一块屏幕上（M0 通过标准 ②，被实测改写过）', async () => {
-  // 原来的标准是"内层切备用屏时游戏自动让屏、收屏后恢复"。实测把它推翻了：
-  // 真实 claude 2.1.260 启动时发一次 ?1049h 就**整个会话待在备用屏上**（退出才 ?1049l），
-  // 按原标准游戏会在启动一秒后永久消失，同屏合成等于从来没发生过。
-  // 所以标准反了过来：备用屏上照样合成。备用屏只是另一个缓冲区，内层有多少行是
-  // TIOCSWINSZ 给的，跟缓冲区无关；唯一要补的是 DECSTBM 每缓冲区各自一份，切过去要重设。
-  const s = await launch();
-  try {
-    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
-    await new Promise((r) => setTimeout(r, 120));   // 先让游戏画几帧
-
-    s.send('a');
-    const w0 = await s.waitFor((x) => x.includes('ALT-SCREEN'), '内层进备用屏');
-    const mark = w0.indexOf('ALT-SCREEN');
-
-    // ① 新缓冲区上必须重设滚动区，否则内层一换行就能滚进游戏区
-    await s.waitFor((x) => x.slice(mark).includes(`\x1b[1;${L.innerRows}r`), '备用屏上重设滚动区');
-    // ② 游戏继续画 —— 这是这条标准被推翻之后剩下的那个要求
-    const mark2 = s.wire().length;
-    await s.waitFor((x) => cupRows(x.slice(mark2)).some((r) => r >= L.gameTop), '备用屏上继续作画');
-
-    // ③ 夹取在备用屏上照样生效（原策略在这里是停止夹取的）
-    const mark3 = s.wire().length;
-    s.send('mg');
-    const w = await s.waitFor((x) => x.slice(mark3).includes('OUT-OF-RANGE'), '备用屏上的越界输出');
-    const tail = w.slice(mark3);
-    assert.ok(!tail.includes('\x1b[1;999r'), '备用屏上那条 999 行的滚动区被原样透传了');
-    assert.ok(!tail.includes('\x1b[999;7H'), '备用屏上那条 999 行的定位被原样透传了');
-
-    // 退出备用屏走同一条路径：在回来的那个缓冲区上重设滚动区 + 继续画
-    const mark4 = s.wire().length;
-    s.send('A');
-    await s.waitFor((x) => {
-      const t = x.slice(mark4);
-      return t.includes(`\x1b[1;${L.innerRows}r`) && cupRows(t).some((r) => r >= L.gameTop);
-    }, '回主屏后重设滚动区并继续作画');
-  } finally { s.kill(); }
-});
 
 test('^G q 退出时终端状态被还原干净（M0 通过标准 ④）', async () => {
   const s = await launch();
@@ -195,6 +312,57 @@ test('^G q 退出时终端状态被还原干净（M0 通过标准 ④）', async
   } finally { s.kill(); }
 });
 
+test('两个外壳各用自己的事件文件，不会互相触发', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-sessions-'));
+  const env = { HOME: home, MOYU_EVENTS: '' };
+  const a = await launch('node', env);
+  const b = await launch('node', env);
+  try {
+    await Promise.all([
+      a.waitFor((w) => w.includes('INNER-READY'), '第一个内层启动'),
+      b.waitFor((w) => w.includes('INNER-READY'), '第二个内层启动'),
+    ]);
+    a.send('e');
+    b.send('e');
+    const [aw, bw] = await Promise.all([
+      a.waitFor((w) => w.includes('EVENTS '), '第一个事件路径'),
+      b.waitFor((w) => w.includes('EVENTS '), '第二个事件路径'),
+    ]);
+    const ap = /EVENTS ([^\r\n]+)/.exec(aw)?.[1];
+    const bp = /EVENTS ([^\r\n]+)/.exec(bw)?.[1];
+    assert.ok(ap?.includes('/.moyu/sessions/'), ap);
+    assert.ok(bp?.includes('/.moyu/sessions/'), bp);
+    assert.notEqual(ap, bp, '两个并行会话共用了事件文件');
+  } finally {
+    a.send('\x07q');
+    b.send('\x07q');
+    await Promise.all([a.exited, b.exited]);
+  }
+});
+
+test('退出会杀掉忽略 SIGHUP 的内层孙进程', async () => {
+  const s = await launch();
+  let childPid = 0;
+  try {
+    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
+    s.send('x');
+    const w = await s.waitFor((x) => /HUP-CHILD \d+/.test(x), '忽略 HUP 的孙进程');
+    childPid = Number(/HUP-CHILD (\d+)/.exec(w)?.[1]);
+    assert.ok(childPid > 1);
+    s.send('\x07q');
+    await s.exited;
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      try { process.kill(childPid, 0); } catch { childPid = 0; break; }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(childPid, 0, '忽略 SIGHUP 的孙进程还活着');
+  } finally {
+    if (childPid > 1) { try { process.kill(childPid, 'SIGKILL'); } catch { /* 已退 */ } }
+    s.kill();
+  }
+});
+
 test('内层自己退出时外壳跟着退出并原样传出退出码', async () => {
   const s = await launch();
   try {
@@ -206,33 +374,6 @@ test('内层自己退出时外壳跟着退出并原样传出退出码', async ()
   } finally { s.kill(); }
 });
 
-test('内层 push 了 kitty 键盘标志之后，^G 照样是热键（用户报的"^G 还是会进一个编辑界面"）', async () => {
-  // 这条 bug 之所以能活到用户手上：假内层从不 push kitty 标志，所以整个 e2e 套件都是绿的，
-  // 而真实 claude 启动就 push（`CSI > 5 u`）—— 之后 Ctrl+G 是 `ESC [ 103 ; 5 u`，
-  // 只认字节 0x07 的路由器把整条序列原样转发下去，claude 收到真的 Ctrl+G，打开外部编辑器。
-  const { hotkeyHint } = await import('../../src/shell/focus.ts');
-  const s = await launch();
-  try {
-    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
-    s.send('k');
-    await s.waitFor((w) => w.includes('KITTY-ON'), '内层 push kitty 标志');
-    const mark = s.wire().length;
-
-    s.send('\x1b[103;5ug');                        // kitty 编码的 ^G，然后命令 g
-    await s.waitFor((x) => x.slice(mark).includes(hotkeyHint('game')), 'HUD 切到游戏焦点');
-
-    // 'g' 是假内层的"往游戏区里定位"命令。它出现就说明命令字节漏进了内层 ——
-    // 真实 claude 上漏进去的那一下就是打开外部编辑器。
-    assert.ok(!s.wire().slice(mark).includes('OUT-OF-RANGE'), '命令字节漏进了内层');
-
-    // 切回来也走同一条编码路径。等过 FOCUS_DEBOUNCE_MS —— 切焦点有 180ms 的防抖，
-    // 紧跟着切回去会被它自己挡掉，那样这条断言测的就是防抖而不是编码了。
-    await new Promise((r) => setTimeout(r, 220));
-    const mark2 = s.wire().length;
-    s.send('\x1b[103;5u\x1b[103;5u');              // 连按 = 切焦点
-    await s.waitFor((x) => x.slice(mark2).includes(hotkeyHint('cli')), 'HUD 切回 CLI 焦点');
-  } finally { s.kill(); }
-});
 
 test('内层没弹干净的 kitty 标志由退出路径替它弹掉', async () => {
   // 内层被 SIGKILL 就不会自己弹。留在那儿的后果全落在用户的 shell 上：
@@ -255,33 +396,6 @@ function layoutAt(cols: number, rows: number): { innerRows: number; gameTop: num
   return r.kind === 'split' ? { innerRows: r.layout.innerRows, gameTop: r.layout.gameTop } : null;
 }
 
-test('终端 resize 后两边一起重排（M0 通过标准 ③）', async () => {
-  // 刻意**缩小**而不是放大。放大时旧的游戏区落在新的内层区域里，画错了也看不出来；
-  // 缩小之后旧的 gameTop（第 31 行）直接超出了屏幕总高度，任何一条落在那儿的定位都是硬错误。
-  const SMALL_ROWS = 24;
-  const small = layoutAt(COLS, SMALL_ROWS)!;
-  assert.ok(small.gameTop < L.gameTop, '这个测试要求新布局的 gameTop 比旧的小');
-  const s = await launch();
-  try {
-    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
-    await new Promise((r) => setTimeout(r, 150));   // 先按旧布局画几帧
-    const mark = s.wire().length;
-
-    s.resize(COLS, SMALL_ROWS);
-    const w = await s.waitFor((x) => x.slice(mark).includes('WINCH '), '内层收到新尺寸');
-    const tail = w.slice(mark);
-    assert.ok(tail.includes(`WINCH ${COLS}x${small.innerRows}`),
-      `内层看到的新尺寸不对，期望 ${COLS}x${small.innerRows}：${JSON.stringify(tail.match(/WINCH \d+x\d+/g))}`);
-    assert.ok(tail.includes(`\x1b[1;${small.innerRows}r`), '没按新高度重设滚动区');
-
-    // 重排稳定之后再看：必须在新的 gameTop 上作画，且一格都不能落到屏幕外。
-    const mark2 = s.wire().length;
-    const after = await s.waitFor(
-      (x) => cupRows(x.slice(mark2)).some((r) => r >= small.gameTop), '游戏区在新位置作画');
-    const off = cupRows(after.slice(mark2)).filter((r) => r > SMALL_ROWS);
-    assert.deepEqual(off, [], `resize 后还在往屏幕外（第 ${SMALL_ROWS} 行之下）画：${off}`);
-  } finally { s.kill(); }
-});
 
 test('终端小到放不下就收起游戏区，放大后自动回来', async () => {
   // 游戏条只要 1 行，所以"放不下"的门槛低到只剩 MIN_INNER_ROWS —— 10 行。
@@ -372,113 +486,10 @@ test('正常退出时 bin/moyu 不重复还原（?1049l 会搬走用户 shell �
  * `graphics.test.ts` 只知道 `encode()` 吐出来的字节对不对，不知道它们最后被谁包着写出去。
  */
 const GFX_ENV = { MOYU_TIER: 'graphics', MOYU_CELL: '16x34' };
-/** 一条完整的出帧 APC（首块带全部键，`q=2` 在里面）。 */
-const APC_FRAME = /\x1b_Ga=T,f=24,s=(\d+),v=(\d+),o=z,i=19801,p=1,c=(\d+),r=(\d+),q=2,C=1(,m=1)?;/;
 
-test('像素档：图落在游戏区顶行、格数夹住、备用屏后照样出帧、退出删图', async () => {
-  const s = await launch('node', GFX_ENV);
-  try {
-    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
-    const w0 = await s.waitFor((x) => APC_FRAME.test(x), '第一帧 APC');
-    const m = APC_FRAME.exec(w0)!;
-    // 键里的格数必须是我们分给游戏的那块矩形，像素数必须是它乘格像素 —— 差一位就溢进上半屏。
-    assert.equal(Number(m[3]), L.fieldCols, `c= 不是画布列数（${L.fieldCols}）`);
-    assert.equal(Number(m[4]), L.gameRows, `r= 不是游戏区行数（${L.gameRows}）`);
-    assert.equal(Number(m[1]), L.fieldCols * 16, 's= 和 c=×格宽 对不上');
-    assert.equal(Number(m[2]), L.gameRows * 34, 'v= 和 r=×格高 对不上');
-    // 每条 APC 前面紧贴的那条 CUP 必须指向游戏区顶行：图落在光标处，落错了就画到内层身上。
-    for (const at of [...w0.matchAll(/\x1b_Ga=T/g)].map((x) => x.index)) {
-      const before = w0.slice(0, at);
-      const cup = /\x1b\[(\d+);1H$/.exec(before);
-      assert.ok(cup, `APC 前面不是一条 CUP：${JSON.stringify(before.slice(-24))}`);
-      assert.equal(Number(cup[1]), L.gameTop, `图落在第 ${cup[1]} 行，游戏区从 ${L.gameTop} 行开始`);
-    }
 
-    // 备用屏之后还在发图（真实 claude 整个会话都待在备用屏上，这条挂了就等于游戏消失）
-    s.send('a');
-    await s.waitFor((x) => x.includes('ALT-SCREEN'), '内层进备用屏');
-    const mark = s.wire().length;
-    await s.waitFor((x) => APC_FRAME.test(x.slice(mark)), '备用屏上继续出帧');
 
-    // ^G h 收起游戏区：必须删图，否则那张图会一直挂在用户的 CLI 上面
-    const mark2 = s.wire().length;
-    s.send('\x07h');
-    await s.waitFor((x) => x.slice(mark2).includes('\x1b_Ga=d,d=I,i=19801,q=2\x1b\\'), '收起时删图');
-    // 收起之后不该再有新的图上传
-    const mark3 = s.wire().length;
-    await new Promise((r) => setTimeout(r, 150));
-    assert.ok(!APC_FRAME.test(s.wire().slice(mark3)), '游戏区收起了还在往终端上传图');
 
-    // 再按一次 ^G h 展开：终端里的图已经被删掉了，必须整幅重传，不能以为"没动就不用发"
-    s.send('\x07h');
-    await s.waitFor((x) => APC_FRAME.test(x.slice(mark3)), '重新展开后整幅重传');
-
-    const mark4 = s.wire().length;
-    s.send('\x07q');
-    const e = await s.exited;
-    assert.equal(e.exitCode, 0);
-    assertDeletedOnBothBuffers(s.wire().slice(mark4), '^G q');
-  } finally { s.kill(); }
-});
-
-/**
- * 退出路径必须在**两个屏幕缓冲区上各删一次图**。
- *
- * 这条断言是用户报的 bug 逼出来的：“退出以后渲染框还在” —— 图还挂在新提示符下面。
- * 发是发了，但只发了一遍：kitty 图的存储每个缓冲区各自一份（Ghostty 的 `kitty_images`
- * 是 `Screen` 的字段，`a=d` 只作用在活动屏幕上），而内层 claude 是启动一秒后才切进备用屏的
- * —— 在那之前的几十帧留在**主屏**上。删备用屏那张、`?1049l` 切回主屏，陈旧的那张就露出来。
- */
-function assertDeletedOnBothBuffers(tail: string, how: string): void {
-  const dels = [...tail.matchAll(/\x1b_Ga=d,d=I,i=19801,q=2\x1b\\/g)].map((m) => m.index);
-  assert.equal(dels.length, 2,
-    `${how} 退出时删图发了 ${dels.length} 次，应该是 2 次（备用屏 + 主屏各一次）`);
-  const alt = tail.lastIndexOf('\x1b[?1049l');
-  assert.ok(alt >= 0, `${how} 退出时没撤备用屏`);
-  assert.ok(dels[0]! < alt, `${how}：第一次删图要在撤备用屏之前（那时活动屏幕是备用屏）`);
-  assert.ok(dels[1]! > alt, `${how}：第二次删图要在撤备用屏之后 —— 主屏那张只有这一下删得掉`);
-}
-
-test('像素档：每条退出路径都在两个缓冲区上各删一次图', async () => {
-  // 只有 `^G q` 那条路被上面那个测试覆盖过。内层自己退出和 SIGTERM 走的是别的入口，
-  // 而用户真实退出多半是**内层自己退**（在 claude 里 /exit 或 Ctrl+D），正是没被测到的那条。
-  for (const route of ['inner', 'sigterm'] as const) {
-    const s = await launch('node', GFX_ENV);
-    try {
-      await s.waitFor((w) => w.includes('INNER-READY'), `内层启动（${route}）`);
-      await s.waitFor((x) => APC_FRAME.test(x), `第一帧 APC（${route}）`);   // 确认真上传过图
-      const mark = s.wire().length;
-      if (route === 'inner') s.send('q'); else s.signal('SIGTERM');
-      const e = await s.exited;
-      assert.equal(e.exitCode, route === 'inner' ? 7 : 143, `${route} 的退出码`);
-      assertDeletedOnBothBuffers(s.wire().slice(mark), route);
-    } finally { s.kill(); }
-  }
-});
-
-test('像素档：一帧的 APC 必须一次写完，不和光标还原的字节交错', async () => {
-  const s = await launch('node', GFX_ENV);
-  try {
-    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
-    s.send('p');
-    await s.waitFor((w) => w.includes('INNER-HELLO'), '内层输出');
-    // 等**三条完整**的 APC。只等 `a=T` 出现是不够的：那一刻最后一条可能才写了一半，
-    // 于是下面找不到它的 ST —— 报出来的是"没有 ST 结尾"，而真相只是读到一半。
-    await s.waitFor((x) => (x.match(/\x1b_Ga=T[\s\S]*?\x1b\\/g) ?? []).length >= 3, '攒够三帧');
-    const w = s.wire();
-    // APC 一旦开头，到 ST 之前不许出现任何别的转义序列 —— 交错了终端会把 CSI 当成图片数据。
-    for (const at of [...w.matchAll(/\x1b_Ga=T/g)].map((x) => x.index)) {
-      const st = w.indexOf('\x1b\\', at);
-      if (st < 0) continue;                        // 末尾那条还在写，不是交错
-      const inner = w.slice(at + 3, st);
-      assert.ok(!inner.includes('\x1b['), `APC 里夹进了一条 CSI：${JSON.stringify(inner.slice(0, 40))}`);
-    }
-    // 每帧仍然以"光标回内层区域"收尾（像素档不该改变这条）
-    const rows = cupRows(w);
-    assert.ok(rows[rows.length - 1]! <= L.innerRows,
-      `最后一条 CUP 落在第 ${rows[rows.length - 1]} 行，光标被留在游戏区了`);
-  } finally { s.kill(); }
-});
 
 test('内层问屏幕尺寸时外壳自己回答，答的是上半屏而不是整窗（P9）', async () => {
   // 让终端回答会错两次：内层以为自己有 40 行（排版按整屏算），而它按整窗高度算出来的
@@ -500,80 +511,5 @@ test('内层问屏幕尺寸时外壳自己回答，答的是上半屏而不是�
     assert.ok(!w.slice(mark).includes('\x1b[18t'), '`CSI 18 t` 漏给终端了');
     assert.ok(!w.slice(mark).includes('\x1b[16t'), '`CSI 16 t` 漏给终端了');
     assert.ok(!w.slice(mark).includes('\x1b[14t'), '`CSI 14 t` 漏给终端了');
-  } finally { s.kill(); }
-});
-
-test('收起之后内层长一行，尺寸回复跟着变（收起 ≠ 让屏）', async () => {
-  // `^G h` **不让整屏**，塌成 1 行：那一行写着怎么回来。所以内层拿到的是 ROWS-1，
-  // 不是 ROWS。这条和下一条一起钉住"收起"的两半 —— 尺寸真的变了，且回头路真的在屏幕上。
-  const s = await launch('node', GFX_ENV);
-  try {
-    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
-    s.send('\x07h');
-    await s.waitFor((w) => w.includes(`WINCH ${COLS}x${ROWS - 1}`), '内层收到长了一行的尺寸');
-    const mark = s.wire().length;
-    s.send('t');
-    const w = await s.waitFor((x) => x.slice(mark).includes('SIZEREP '), '尺寸回复');
-    const reps = [...w.slice(mark).matchAll(/SIZEREP ([\d;]+)/g)].map((m) => m[1]);
-    assert.equal(reps[0], `8;${ROWS - 1};${COLS}`, '收起之后答案必须跟着变');
-  } finally { s.kill(); }
-});
-
-test('半块档收起再展开：收起期间不画画布，展开后整条重画', async () => {
-  // 像素档那条（上面「^G h 收起时删图」）盯的是图层；这条盯的是**文本层** ——
-  // 半块档的画布是差分编码的，展开时必须 invalidate 整幅重发，不然它以为屏幕上还是
-  // 收起前那一帧，于是一格都不发，游戏区从此一直空着（和让屏那个 bug 一模一样的症状）。
-  const s = await launch();                          // 不给 MOYU_TIER：探不到就是半块档
-  try {
-    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
-    await s.waitFor((w) => cupRows(w).filter((r) => r >= L.gameTop).length >= 3, '攒够几帧画布');
-    s.send('\x07h');
-    await s.waitFor((w) => w.includes('^G h 展开'), '收起条');
-    const mark = s.wire().length;
-    await new Promise((r) => setTimeout(r, 150));
-    // 收起之后只许写最后那一行（收起条），画布那几行一格都不许碰。
-    const quiet = s.wire().slice(mark);
-    assert.deepEqual(cupRows(quiet).filter((r) => r >= L.gameTop && r < ROWS), [],
-      '收起了还在画画布那几行');
-    s.send('\x07h');
-    const back = await s.waitFor((w) => cupRows(w.slice(mark)).filter((r) => r >= L.gameTop).length >= 3,
-      '展开后重新出帧');
-    // 重画必须是**整幅**的：一帧里定位到画布每一行都至少一次（差分残留会让它只发一两行）。
-    const tail = back.slice(mark);
-    for (let r = L.gameTop; r < ROWS; r++) {
-      assert.ok(cupRows(tail).includes(r), `展开后第 ${r} 行没重画（差分状态没清）`);
-    }
-  } finally { s.kill(); }
-});
-
-test('游戏区变矮时从**旧**的顶边开始擦（让出去的那几行不留残迹）', async () => {
-  // 2 行 → 1 行：第 gameTop 行现在归内层了，但上面还留着上一帧的画布。内层是 TUI 的话
-  // SIGWINCH 会让它重画一遍盖掉，普通 shell 不会 —— 那几行就一直挂在那儿。
-  const s = await launch();
-  try {
-    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
-    await s.waitFor((w) => cupRows(w).filter((r) => r >= L.gameTop).length >= 3, '攒够几帧画布');
-    const mark = s.wire().length;
-    s.send('\x07h');
-    const w = await s.waitFor((x) => x.slice(mark).includes('\x1b[J'), '收起时的擦除');
-    assert.ok(w.slice(mark).includes(`\x1b[${L.gameTop};1H\x1b[J`),
-      `擦除该从旧顶边第 ${L.gameTop} 行开始，实际字节：${JSON.stringify(w.slice(mark, mark + 120))}`);
-  } finally { s.kill(); }
-});
-
-test('收起那一行必须写着怎么回来（用户报的"打不开了"就是这一条缺失）', async () => {
-  // 原来 `^G h` 是让整屏：按键路径本身好的，再按一次真的会回来 —— 坏的是屏幕上再没有
-  // 任何东西告诉你怎么回去，而记忆里那半个 `h` 按下去只会打进内层的输入框。
-  // 所以这条断言的是**可见的回头路**，不是可用的按键；按键那半边由上面几条覆盖。
-  const s = await launch('node', GFX_ENV);
-  try {
-    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
-    const mark = s.wire().length;
-    s.send('\x07h');
-    const w = await s.waitFor((x) => x.slice(mark).includes('^G h 展开'), '收起条上的回头路');
-    // 而且它必须落在**最后一行**（就是刚让出来的那一行），不能盖在内层身上。
-    const at = w.indexOf('^G h 展开', mark);
-    const cup = [...w.slice(mark, at).matchAll(/\x1b\[(\d+);1H/g)].map((m) => Number(m[1]));
-    assert.equal(cup[cup.length - 1], ROWS, `收起条画在第 ${cup[cup.length - 1]} 行，不是最后一行`);
   } finally { s.kill(); }
 });

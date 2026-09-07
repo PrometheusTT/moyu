@@ -62,6 +62,8 @@ export class World {
     deaths = 0;
     /** 打了多久（秒），出怪节奏按它加压。 */
     heat = 0;
+    /** 宿主可限制实际参与战斗的敌人数，避免仅在渲染层隐藏敌人。 */
+    enemyLimit = 11;
     spawnT = 1.2;
     time = 0;
     constructor(seed = 0x5eed1234) {
@@ -318,7 +320,7 @@ export class World {
     spawn(dt) {
         this.spawnT -= dt;
         // 上限同时受场地宽度约束：一个人占 0.45×身高 的间距，40 像素宽塞 11 个就是一堵墙。
-        const maxLive = Math.min(11, Math.max(2, Math.round(this.w / 12)), 3 + Math.floor(this.heat / 7));
+        const maxLive = Math.min(this.enemyLimit, 11, Math.max(2, Math.round(this.w / 12)), 3 + Math.floor(this.heat / 7));
         if (this.spawnT > 0 || this.enemies.length >= maxLive)
             return;
         this.spawnT = clamp(1.5 - this.heat * 0.045, 0.42, 1.5) * this.rng.range(0.7, 1.3);

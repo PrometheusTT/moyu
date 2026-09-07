@@ -12,6 +12,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -64,7 +65,7 @@ test('Codex 的 hooks.json 顶层只能有 description / hooks —— 多一个�
       for (const h of group.hooks) {
         assert.deepEqual(Object.keys(h).sort(), ['async', 'command', 'timeout', 'type']);
         assert.equal(h.type, 'command');
-        assert.equal(h.async, true, '同步 hook 会卡住工具调用 —— 这台机器上 hook 本来就很挤');
+        assert.equal(h.async, false, 'start/done 必须有序；异步 hook 在短任务上会倒序');
         assert.ok(h.timeout > 0);
       }
     }
@@ -148,6 +149,16 @@ test('卸载时只删我们自己造的 hooks.json，绝不删 settings.json', (
   assert.ok(fs.existsSync(b.cfg('claude')));
 });
 
+test('Codex 文件里有用户自己的 description 时，卸载只摘 hook、不删文件', () => {
+  const b = box();
+  write(b.cfg('codex'), JSON.stringify({ description: '我的 hook 配置' }, null, 2) + '\n');
+  run('codex', b);
+  const p = plan('codex', { config: b.cfg('codex'), file: b.events, home: b.home, uninstall: true });
+  assert.equal(p.action, 'update');
+  apply(p);
+  assert.deepEqual(read(b.cfg('codex')), { description: '我的 hook 配置' });
+});
+
 test('本来就没装过，卸载是空操作（别留下一个空文件）', () => {
   const b = box();
   const p = plan('codex', { config: b.cfg('codex'), file: b.events, home: b.home, uninstall: true });
@@ -167,6 +178,14 @@ test('看不懂的文件一个字节都不动，并且告诉人手动怎么弄',
   assert.equal(fs.readFileSync(b.cfg('claude'), 'utf8'), junk);
 });
 
+test('配置路径读失败不能当成文件不存在', () => {
+  const b = box();
+  fs.mkdirSync(b.cfg('codex'), { recursive: true });
+  const p = plan('codex', { config: b.cfg('codex'), file: b.events, home: b.home });
+  assert.equal(p.action, 'error');
+  assert.match(p.error ?? '', /读不出/);
+});
+
 test('hooks 存在但不是对象 → 也是不动', () => {
   const b = box();
   write(b.cfg('claude'), '{"hooks": []}');
@@ -179,8 +198,28 @@ test('写盘前先备份，备份内容等于原文', () => {
   write(b.cfg('claude'), original);
   const p = plan('claude', { config: b.cfg('claude'), file: b.events, home: b.home });
   const backup = apply(p, new Date(Date.UTC(2026, 8, 5, 12, 34, 56)));
-  assert.equal(backup, `${b.cfg('claude')}.moyu-bak-20260905T123456`);
+  assert.equal(backup, `${b.cfg('claude')}.moyu-bak-20260905123456000`);
   assert.equal(fs.readFileSync(backup ?? '', 'utf8'), original);
+});
+
+test('干跑之后配置被别人改过，apply 拒绝覆盖', () => {
+  const b = box();
+  write(b.cfg('claude'), '{"hooks": {}}\n');
+  const p = plan('claude', { config: b.cfg('claude'), file: b.events, home: b.home });
+  write(b.cfg('claude'), '{"hooks": {}, "new": true}\n');
+  assert.throws(() => apply(p), /被别的程序改过/);
+  assert.equal(fs.readFileSync(b.cfg('claude'), 'utf8'), '{"hooks": {}, "new": true}\n');
+});
+
+test('原配置是软链时原子写入目标文件，不把软链替换掉', () => {
+  const b = box();
+  const actual = write(path.join(b.home, 'dotfiles/settings.json'), '{"hooks": {}}\n');
+  fs.mkdirSync(path.dirname(b.cfg('claude')), { recursive: true });
+  fs.symlinkSync(actual, b.cfg('claude'));
+  const p = plan('claude', { config: b.cfg('claude'), file: b.events, home: b.home });
+  apply(p);
+  assert.equal(fs.lstatSync(b.cfg('claude')).isSymbolicLink(), true);
+  assert.match(fs.readFileSync(actual, 'utf8'), /moyu-signal/);
 });
 
 test('新建的文件不备份（没东西可备）', () => {
@@ -199,11 +238,30 @@ test('保住原文的缩进 —— 改完还得像用户自己的文件', () => 
 
 test('命令行是 sh 能吞的，路径带空格也不会散架', () => {
   const cmd = signalCommand('done', '/tmp/a b/events.log', '/nobody');
-  assert.ok(cmd.includes('"/tmp/a b/events.log"'), '路径没被引号包住');
-  assert.ok(cmd.startsWith('mkdir -p '), '目录不存在时第一条信号会丢');
+  assert.ok(cmd.includes('/tmp/a b/events.log'), '路径丢了');
+  assert.ok(cmd.includes('mkdir -p '), '目录不存在时第一条信号会丢');
   assert.ok(cmd.includes('>>'), '不是追加写');
   assert.ok(cmd.endsWith(`${MARK}done`), '归属标记必须在结尾 —— 幂等和卸载全靠它');
   assert.ok(!cmd.includes('node'), 'hook 里起 node 要付 ~40ms 启动成本');
+});
+
+test('hook 真实执行时展开 $HOME，也服从外壳传入的 MOYU_EVENTS', () => {
+  const b = box();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-hook-cwd-'));
+  const installed = path.join(b.home, '.moyu/events.log');
+  const cmd = signalCommand('done', installed, b.home);
+  execFileSync('/bin/sh', ['-c', cmd], { cwd, env: { ...process.env, HOME: b.home, MOYU_EVENTS: '' } });
+  assert.match(fs.readFileSync(installed, 'utf8'), / done\n$/);
+  assert.equal(fs.existsSync(path.join(cwd, '$HOME')), false, '把 $HOME 当字面目录写进了当前仓库');
+
+  const isolated = path.join(b.home, 'sessions/one.log');
+  execFileSync('/bin/sh', ['-c', cmd], { cwd, env: { ...process.env, HOME: b.home, MOYU_EVENTS: isolated } });
+  assert.match(fs.readFileSync(isolated, 'utf8'), / done\n$/);
+
+  const weird = path.join(b.home, 'a } "$` b/events.log');
+  const weirdCmd = signalCommand('start', weird, b.home);
+  execFileSync('/bin/sh', ['-c', weirdCmd], { cwd, env: { ...process.env, HOME: b.home, MOYU_EVENTS: '' } });
+  assert.match(fs.readFileSync(weird, 'utf8'), / start\n$/);
 });
 
 test('家目录换成 $HOME —— 这段会进截图，也要能跨机器复制', () => {

@@ -1,151 +1,185 @@
-# 摸鱼 · moyu
+# 摸鱼 Moyu
 
-**谁不想在 Claude Code 干活的时候酣畅淋漓地砍一顿火柴小人。**
+**Agent 在干活，你在掌机里。任务一结束，一键回到工作。**
 
-`moyu -- claude` 把你的 coding CLI 原样包起来：CLI 照常用，输入框上方多出 1–2 行，
-里面有一个像素火柴人在跑、跳、挥刀。任务跑完的那一刻，游戏里放一发清屏技，然后停住等你。
+Moyu 是一个很轻的终端游戏宿主。它把 Codex、Claude Code 或其他 coding CLI 原样包起来，
+平时只在右下角占一行；按一次 `Ctrl+]`，Codex 输入框上方两行就变成一台微型掌机。
+首次进入会显示操作说明，按游戏操作键开始，`?` 随时查看帮助。`E` 主动展开为六行，
+空间不足时使用四行；贪吃蛇与落块需要六行完整棋盘，两行中显示展开入口。
+不需要账户、服务端或首次配置，SSH 和 Termius 也能直接玩。
 
+```text
+┌──────────────────── coding CLI ────────────────────┐
+│  agent 正在运行；你的输入、滚屏和快捷键照常工作     │
+│  ⠈⠙⠦ 火柴快斩 / 贪吃蛇 / 落块（仅两行）          │
+├──────────────────── Codex 输入框 ──────────────────┤
+└────────────────────────────────────────────────────┘
 ```
-  ▁▂▃  <- 就这两行，在输入框上面
-> 帮我把这个测试修绿
-```
 
-不是截图工具，不是状态栏 —— 是个真的能玩的东西，跑在真终端里，用 kitty graphics 直接送 RGB 像素
-（Ghostty / kitty / WezTerm），送不了的终端自动退回半块字符。
-
-## 装
+## 安装
 
 ```sh
-npm i -g github:PrometheusTT/moyu      # 或者不装：npx github:PrometheusTT/moyu -- claude
+npm i -g github:PrometheusTT/moyu
 ```
 
-需要 **Node ≥ 20**、macOS 或 Linux、以及 `git`（npm 要克隆这个仓库）。**不需要编译器** ——
-PTY 走的是预编译产物（darwin/linux/win32 × x64/arm64 都有）。
+需要 **Node ≥ 20**，支持 macOS、Linux 和 Windows WSL。发布包带编译产物和预编译 PTY，
+安装时不编译、不启动 daemon，也没有运行时网络请求。
 
-编译产物（`dist/`）直接在仓库里，所以装的时候**不跑任何脚本、不装 devDependencies**，
-`--ignore-scripts` 也照样能用。npm 只是克隆 + 复制。
-
-想装某个特定版本（tag 或 commit）：
+## 开始玩
 
 ```sh
-npm i -g github:PrometheusTT/moyu#v0.1.0
+moyu -- codex          # 包住 Codex
+moyu -- claude         # 包住 Claude Code
+moyu play              # 不包 CLI，直接打开掌机
+moyu play snake        # 直接进入指定游戏
 ```
 
-还没发到 npm registry 上，所以 `npm i -g moyu-game` 现在装不到东西。升级就是把上面那条重跑一遍。
+外壳默认把输入完整交给 coding CLI：
 
-## 玩
-
-```sh
-moyu -- claude          # 包住 Claude Code
-moyu -- codex           # 包住 Codex
-moyu demo               # 不包任何东西，整屏玩（调手感用）
-```
-
-| 按键 | |
+| 按键 | 作用 |
 |---|---|
-| `A` / `D` | 走 |
-| 空格 | 跳 |
-| `J` | 砍 |
-| `t` / `y` | 手动假装「任务完成」/「下一个任务开始」（不装 hook 也能玩） |
+| `Ctrl+]` | 一次按键进入或离开游戏；SSH 可直接透传，也不占用输入法切换键 |
+| `F12` | 兼容备用键，同样进入或离开 |
+| `Ctrl+Space` | Moyu 永不占用；原样交给 CLI / 输入法 |
+| `Esc` / `q` | 从游戏回到 CLI，不结束 agent 会话 |
+| `Ctrl+C` | 始终交给 coding CLI |
+| `Ctrl+G` | 始终交给 Codex/Claude，Moyu 不再占用 |
+| `Tab` | 游戏中切换 Cartridge |
+| `E` | 两行／展开切换，展开区域位于底部 |
+| `?` | 查看或关闭操作帮助，查看时游戏暂停 |
 
-外壳热键都以 **`Ctrl+G`** 开头（按一下 `^G`，HUD 会立刻列出能按什么）：
+火柴快斩使用 `A/D` 或方向键移动、空格跳跃、`J` 攻击。贪吃蛇与落块使用
+`WASD` 或方向键；落块可用空格直落。游戏状态会保存在 `~/.moyu/state/`。
+收起和查看帮助时暂停游戏，返回后接着玩；磁盘存档目前保留战绩，不保存整局进度。
 
-| | |
-|---|---|
-| `^G g`（或 `^G Tab`） | 焦点在 CLI ↔ 游戏之间切。**焦点默认在 CLI**，所以打字永远不会被游戏吃掉 |
-| `^G h` | 收起 / 展开游戏区（收起后剩一行，那行写着怎么回来）|
-| `^G k` / `^G j` | 游戏区加高 / 变矮 |
-| `^G r` | 重画（内层 TUI 花了的时候） |
-| `^G q` | 退出 |
+## 图片画质与字符兼容
 
-## 让它知道任务什么时候跑完
+Moyu 有三层渲染能力：
 
-游戏靠一条 hook 拿到「任务开始 / 任务结束」的信号。装法：
+1. **Kitty Graphics**通过探测后提供真正 RGB 像素。火柴快斩直接按设备像素绘制，使用
+   独立镜头、连续轮廓和线性颜色空间的边缘覆盖率，不再先缩进 180×44 再放大。
+2. **彩色 Braille**是通用兼容档：一个终端字符承载 2×4 个点位。它只使用 Unicode 与 ANSI，
+   作为主流 UTF-8 终端的兼容路径。不同字体与行距仍需实机验证。内嵌画面继承终端的默认
+   前景与背景色，不会在输入框旁贴一块与主题不一致的黑色矩形。
+3. **半块字符**只作为明确指定的最低兼容档。
 
-```sh
-moyu install            # 干跑：只打印会改哪个文件、加哪几条，什么都不写
-moyu install --write    # 真的写（改之前会留一份带时间戳的备份）
-moyu install --uninstall --write   # 摘掉
-```
+字符兼容档不等于图片画质。当前完成的是原生像素升级第一阶段，iTerm2/Sixel 尚未接入，
+会在真实终端样片验收后实施。Termius 没有通过图片探测时仍使用字符档，不承诺 Kitty 级画质。
+`moyu play` 当前仍是独立字符模式；新像素路径在 `moyu -- codex` 和 `doctor --visual` 中使用。
 
-默认只动这台机器上真的存在的那个 CLI（`~/.claude` / `~/.codex`）。要点名：`--claude` / `--codex`。
-
-| | 写到哪 | 装哪几个事件 |
-|---|---|---|
-| Claude Code | `~/.claude/settings.json` 的 `hooks` | `UserPromptSubmit` → start，`Stop` → done，`Notification` → notify |
-| Codex | `~/.codex/hooks.json` | `UserPromptSubmit` → start，`Stop` → done |
-
-**Codex 还要多一步**：装完之后下次启动 codex 会问 `Hooks need review`，
-必须选 **`Trust all and continue`**，否则 hook 不会跑（Codex 对没信任过的 hook 一律不执行）。
-Claude Code 没有这一步。
-
-不想让任何程序碰你的配置文件的话，用手动路径 —— 它永远可用：
+`MOYU_TIER=graphics` 现在只是“优先尝试”：探测失败会安全回到 Braille，不会再向 Termius
+盲发图片协议导致空白。只有调试终端协议时才应使用严格覆盖：
 
 ```sh
-moyu install --print          # 打印配置片段，自己复制粘贴
-moyu install --print --codex
+MOYU_TIER=graphics moyu -- codex         # 安全尝试图片档
+MOYU_TIER=braille moyu -- codex          # 明确使用字符兼容档
+MOYU_THEME=light moyu -- codex           # 火柴快斩原生像素路径使用浅色画布
+MOYU_FORCE_GRAPHICS=1 moyu -- codex      # 严格强制；不支持的终端可能空白或乱码
+MOYU_REDUCE_MOTION=1 moyu -- codex       # 关闭震屏和闪白
+MOYU_OVERLAY=1 moyu -- my-codex-alias    # 自定义启动器也启用“输入框上方两行”识别
 ```
 
-别的 CLI（Gemini CLI、aider、自己的脚本……）没有 hook 也能接：在任务前后各调一次
+本阶段仍保留 SSH 15 fps、本地 30 fps；统一背压和自适应调度属于下一阶段。
+字符游戏绘制在固定逻辑画布上，
+标准画面和 80×8 微型画面共享同一份角色、碰撞、姿态与游戏进度；微型画面会重新构图，
+而不是把完整场景硬压扁。Codex 中它固定贴在输入框上方两行；识别不到输入框的 CLI 会安全
+回退到底部两行。候场在右下角显示 `moyu  Ctrl+] 开玩`。
+字符人物保持一致的点阵笔触，棋盘使用连续块面；火柴快斩图片档直接绘制到目标像素。
+像素画布当前默认暗色，用 `MOYU_THEME=light` 明确切换，不会修改终端主题。
+可读性与终端验证记录见 [终端验收](docs/terminal-qa.md)。
+
+## 可选的任务联动
+
+不装 hook 也能玩。想让任务完成时自动保存、回到 CLI，并在底栏留下完成标记：
 
 ```sh
-moyu signal start
-moyu signal done
+moyu setup                    # 安装已检测到的 Codex / Claude Code hook
+moyu install                  # 只预览将要修改什么
+moyu install --write          # 与 setup 等价，实际写入并先备份
+moyu install --uninstall --write
 ```
 
-### 这条 hook 到底往外写什么
+Codex 配置写入 `~/.codex/hooks.json`，Claude Code 配置写入 `~/.claude/settings.json`；
+已有配置会合并保留，实际修改前会生成带时间戳的备份。
 
-一行，两个字段：**时间戳 + 三个词之一**（`start` / `done` / `notify`），追加到 `~/.moyu/events.log`。
+hook 只向当前会话的事件文件追加 `时间戳 + start/done/notify`。它不写 prompt、命令输出、
+错误文本、命令、文件路径和仓库名。其他 agent CLI 可以调用 `moyu signal start` / `moyu signal done` 接入。
 
-```
-1788610271 done
-```
+Codex 首次加载新 hook 会显示 `Hooks need review`；请选择 **`Trust all and continue`**，
+否则 Codex 会按安全策略保持 hook 禁用。Claude Code 不需要这一步。
 
-**不写**：命令内容、命令输出、错误文本、文件路径、仓库名、你的 prompt。也不发任何网络请求，
-不读你的凭据文件。游戏画面是会被截图发出去的，所以这条边界是设计出来的，不是省事省出来的。
+## Cartridge：把终端变成游戏社区
 
-hook 本身就是一行 shell（`mkdir -p … && printf … >> …`），声明成 `async` 所以不阻塞工具调用，
-也不会为了写一行字去启动一个 Node 进程。想看它长什么样：`moyu install --print`。
-
-## 出问题了
+当前内置三个不同类型的游戏：`stick-slash`、`snake`、`blocks`。宿主提供固定步长更新、
+逻辑帧缓冲、统一输入、任务事件、存档和多档终端渲染；游戏本身不接触终端转义序列。
 
 ```sh
-moyu doctor            # 体检：node 版本、PTY、事件文件、两个 CLI 装没装（只读，不改任何东西）
-moyu doctor --caps     # 这个终端支持哪一档渲染（必须在真终端里跑）
-moyu doctor --gfx      # 同上，再**绕开探测**直接送一张图：看到火柴人就说明这条链路能过图
-moyu doctor --reset    # 终端被搞坏了（花屏、光标没了、残留图）—— 无条件还原
+moyu games list
+moyu games add ./my-game              # 先展示代码权限警告，不安装
+moyu games add ./my-game --yes        # 信任并安装到 ~/.moyu/games/
+moyu games remove my-game --yes
 ```
 
-几个已知情况：
+Cartridge 目录包含 `moyu.game.json` 和一个 ESM 入口：
 
-- **tmux / screen 里退到半块字符档。** 它们默认不透传 kitty graphics 的 APC 序列，赌不划算。
-  在 Ghostty / kitty / WezTerm 里**没进 tmux** 却还是半块档的话，跑 `moyu doctor --caps` 看它到底探到了什么。
-- **SSH 下自动降到 15fps**（像素档 30fps 约 59 KB/s，减半更稳），**而且档位容易被判成半块**：
-  ssh 默认只把 `TERM` 带过去，`TERM_PROGRAM` / `GHOSTTY_RESOURCES_DIR` 这些**本地**变量一个都不过来，
-  所以"认得出是 Ghostty"这条兜底在远端失效，只能靠探测。探测的回复要跑一个来回，
-  所以 SSH 下预算放宽到 1200ms。要是 `moyu doctor --caps` 说「终端一个字都没回」，
-  而你本地终端确实支持，直接强制：`MOYU_TIER=graphics moyu -- claude`。
-  它要是说「终端答了 DA 但没答 kitty graphics」，那是终端自己说的不支持，强制没用。
-- **不确定该不该强制？跑 `moyu doctor --gfx`。** 它**不看探测结果**，直接把出货那条 40×2 的图送出去 ——
-  探测是个双向握手（回程那一半 SSH 很容易吃掉），出图是单向的。三种结果对应三个下一步：
-  看到一个火柴人 → 这条链路能过图，`MOYU_TIER=graphics` 放心用；什么都没有 → 终端认 APC 但不支持
-  kitty graphics（正常的"不支持"就长这样）；一堆 base64 乱码 → 连 APC 都不认，也是不支持。
-  后两种都别强制，等 R2 八分块档。
-- **游戏区看不见了？** 屏幕最底下那一行会写着 `^G h 展开` —— 按它。终端太窄/太矮时它会整条让位，放大就回来。
-- **退出后屏幕上还有残影？** `moyu doctor --reset`。被 `kill -9` 掉时 `bin/moyu` 那层 sh 会自己补一次还原。
+```json
+{
+  "id": "my-game",
+  "name": "My Game",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "author": "you",
+  "description": "a tiny terminal game",
+  "entry": "index.mjs",
+  "viewport": { "width": 64, "height": 40 },
+  "microViewport": { "width": 80, "height": 8 },
+  "display": { "micro": true, "minRows": 6, "glyphs": "dots" },
+  "palette": ["#0c0d12", "#ecf0f8"],
+  "controls": [{ "action": "move", "label": "移动", "keys": ["WASD"] }]
+}
+```
+
+入口默认导出 `{ create(context) }`；实例实现 `update(dt, input)` 与 `render(canvas)`，并可选实现
+两行专用的 `renderMicro(canvas)`、展开字符画面的 `renderExpanded(canvas)`，以及
+`onHostEvent(event)`、`serialize()`、`restore(state)`、`hud()`。`display.micro` 明确声明两行
+可玩，`minRows` 指定展开所需行数，`glyphs` 选择一致点阵或块面。未声明两行能力的游戏
+显示展开入口，不自动压缩。展开画布为 80×24，四行时为 80×16，应使用实际画布尺寸。
+另可实现 `renderPixels(canvas, context)`：`canvas.width/height` 是实际目标像素，支持
+`clear/pixel/rect/line/stroke/circle`；`context` 包含 `view: 'micro' | 'expanded'`、
+`interpolation: 0..1` 和 `theme: 'dark' | 'light'`。`stroke` 的宽度参数是半径，所有坐标均为设备像素。
+此路径只在图片档调用，不经过 `viewport` 缩放；未实现时保持旧卡带行为。
+本地 Cartridge 是**受信任的
+JavaScript 代码**，拥有当前用户进程的文件和网络权限；Moyu 会明确确认，但不会假装它是沙箱。
+
+## 诊断
+
+```sh
+moyu doctor             # Node、PTY、hook 与事件文件
+moyu doctor --caps      # 当前终端选择了 graphics / braille / half 中哪一档
+moyu doctor --gfx       # 仅用于验证 Kitty Graphics 链路
+moyu doctor --visual    # 实际像素动作对比：Tab 新旧、空格暂停、e 两/六行、l 深浅、Esc 退出
+moyu doctor --reset     # 花屏、光标丢失或被 kill -9 后恢复终端
+```
+
+在 Termius 中看到 `braille` 表示当前使用通用字符绘制，并不代表画质已经通过实机验收。
+不同终端允许细节不同，但必须看清角色和动作。字符缺失、轮廓模糊或行距割裂都应作为
+兼容问题记录，不能只以“支持 Unicode”作为完成标准。
 
 ## 开发
 
 ```sh
-npm test          # 291 个测试，不需要终端（PTY-in-PTY + 像素回读）
-npm run typecheck # tsc --noEmit
-npm run compile   # 产出 dist/（**不叫 build** —— 那个名字会让 npm 的 git 安装走进一条坏路，
-                  #   理由写在 package.json 的 comment:scripts 里。dist/ 是进版本库的，改完 src 要重编）
-npm run bench     # 无头跑渲染，报字节/帧和毫秒/帧
+npm test
+npm run typecheck
+npm run compile          # 更新提交到仓库的 dist/
+npm run bench
+node --experimental-strip-types scripts/visual-qa.mjs   # 真实字形与动画预览
+node --experimental-strip-types scripts/pixel-qa.mjs    # 实际 Kitty 载荷解码后的新旧像素预览
+node --experimental-strip-types scripts/codex-smoke.mjs # 本机 Codex 接入检查
+npm pack                 # 检查实际安装包
 ```
 
-结构上分三块，风险和测法完全不同：`src/shell/`（字节级透传，最高风险，PTY-in-PTY 测）、
-`src/core/`（纯函数模拟，零 I/O，无头单测）、`src/render/`（像素/半块两档，解码回读断言）。
+架构边界见 [PRODUCT.md](./PRODUCT.md)：`src/shell/` 只负责安全透传和屏幕所有权，
+`src/platform/` 是 Cartridge 宿主，`src/render/` 将同一逻辑画布输出到不同终端。
 
 ## License
 

@@ -133,7 +133,7 @@ test('只回哨兵：给 OK 一段宽限期，过了才退半块档', async () =
   const { io } = fakeIO(DA);                     // 只回哨兵，不回 OK
   const t0 = performance.now();
   const c = await probeCaps({ ...io, graceMs: 12 });
-  assert.equal(c.tier, 'half');
+  assert.equal(c.tier, 'braille');
   assert.equal(c.cellW, DEFAULT_CELL.w, '问不到格像素就用默认值（往大猜：糊比块状好，见 DEFAULT_CELL）');
   const dt = performance.now() - t0;
   assert.ok(dt >= 10, `宽限期没等（${dt.toFixed(1)}ms）—— 回复晚一拍就把像素档判死了`);
@@ -161,13 +161,13 @@ test('探测没回话，但 env 认得出终端：照样走像素档', async () 
   ]) {
     const { io } = fakeIO(DA, env);
     const c = await probeCaps({ ...io, graceMs: 5 });
-    assert.equal(c.tier, 'graphics', `${JSON.stringify(env)} 该按 env 认定为像素档`);
+    assert.equal(c.tier, 'braille', `${JSON.stringify(env)} 已明确不支持时必须使用 Braille`);
     assert.equal(c.cellW, DEFAULT_CELL.w, '格像素问不到就用默认值');
-    assert.match(c.why, /env 认定/);
+    assert.match(c.why, /Braille/);
   }
   // 认不出来的终端不许瞎猜：猜错就是把 base64 当文本打在用户屏幕上。
   const { io } = fakeIO(DA, { TERM: 'xterm-256color' });
-  assert.equal((await probeCaps({ ...io, graceMs: 5 })).tier, 'half');
+  assert.equal((await probeCaps({ ...io, graceMs: 5 })).tier, 'braille');
 });
 
 test('被 tmux / screen 包着时，env 认得出也不许走像素档', async () => {
@@ -177,7 +177,7 @@ test('被 tmux / screen 包着时，env 认得出也不许走像素档', async (
   ]) {
     const { io, wrote } = fakeIO(OK + CELL + DA, env);
     const c = await probeCaps(io);
-    assert.equal(c.tier, 'half', `${JSON.stringify(env)} 下不该走像素档`);
+    assert.equal(c.tier, 'braille', `${JSON.stringify(env)} 下应走通用高清文本档`);
     assert.equal(wrote.length, 0, '连探测字节都不该发（APC 会被复用器吞掉或打成乱码）');
   }
 });
@@ -189,14 +189,14 @@ test('一个字节都不回：超时兜住，退半块档', async () => {
   const keep = setTimeout(() => { /* 压住事件循环 */ }, 1000);
   const c = await probeCaps(io);
   clearTimeout(keep);
-  assert.equal(c.tier, 'half');
+  assert.equal(c.tier, 'braille');
   assert.match(c.why, /没回/);
 });
 
 test('tmux 下不发探测字节，直接退半块档', async () => {
   const { io, wrote } = fakeIO(OK + CELL + DA, { TMUX: '/tmp/tmux-501/default,1,0' });
   const c = await probeCaps(io);
-  assert.equal(c.tier, 'half');
+  assert.equal(c.tier, 'braille');
   assert.equal(wrote.length, 0, 'tmux 里发了 APC 探测 —— 它不透传，字节会原样打在用户屏幕上');
   assert.match(c.why, /tmux/);
 });
@@ -221,12 +221,12 @@ test('MOYU_TIER / MOYU_CELL 强制，且不发探测字节', async () => {
   assert.equal(g.tier, 'graphics');
   assert.equal(g.cellW, 16, '全角 × 也要认（复制粘贴容易带进来）');
   assert.equal(g.cellH, 34);
-  assert.equal(forced.wrote.length, 0, '强制指定了还去问，回复就没人吞了');
+  assert.equal(forced.wrote.length, 1, 'graphics 现在是安全偏好，必须先探测避免 Termius 黑屏');
   const h = await probeCaps(fakeIO(OK + CELL + DA, { MOYU_TIER: 'half', MOYU_CELL: '8x17' }).io);
   assert.equal(h.tier, 'half');
   // 坏值当没写，不能因为一个 typo 就按 0×0 算出一张空图。
   const bad = await probeCaps(fakeIO(OK + CELL + DA, { MOYU_TIER: 'graphics', MOYU_CELL: '0x0' }).io);
-  assert.equal(bad.cellW, DEFAULT_CELL.w);
+  assert.equal(bad.cellW, 16);
 });
 
 test('离谱的格像素当没问到 —— 宁可糊一档，也不要算出一张溢屏的图', async () => {
@@ -282,8 +282,32 @@ test('SSH 下预算放宽：晚 500ms 的回复接得住，本地那档 400ms �
   assert.match(ssh.why, /格像素 16×34/, '接住了就该用终端报的值');
 
   const local = await probeCaps(late({}));
-  assert.equal(local.tier, 'half', '本地预算该是 400ms —— 放宽到 1200 会让每次启动多黑半秒');
+  assert.equal(local.tier, 'braille', '本地预算结束后应落到通用高清文本档');
   assert.match(local.why, /400ms/);
+});
+
+test('SSH 下 DA 先到时继续等图形回复，不被本地 40ms 宽限期误降档', async () => {
+  const listeners: Array<(b: Buffer) => void> = [];
+  const io = {
+    stdin: {
+      on: (_ev: 'data', f: (b: Buffer) => void) => listeners.push(f),
+      off: (_ev: 'data', f: (b: Buffer) => void) => {
+        const at = listeners.indexOf(f);
+        if (at >= 0) listeners.splice(at, 1);
+      },
+    },
+    write: (_s: string) => {
+      setImmediate(() => { for (const f of [...listeners]) f(Buffer.from(DA, 'latin1')); });
+      setTimeout(() => { for (const f of [...listeners]) f(Buffer.from(OK + CELL, 'latin1')); }, 120);
+    },
+    env: { SSH_CONNECTION: '10.0.0.1 5 10.0.0.2 22' },
+    cols: 80, rows: 24, tty: true,
+  };
+  const c = await probeCaps(io);
+  assert.equal(c.tier, 'graphics', 'DA 后 120ms 才到的 graphics OK 被 40ms 宽限切掉了');
+  assert.equal(c.fps, 15);
+  assert.equal(c.cellW, 16);
+  assert.equal(listeners.length, 0);
 });
 
 /**

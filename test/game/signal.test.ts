@@ -79,7 +79,7 @@ test('MOYU_EVENTS 能改事件文件位置（测试和多实例都要靠它）',
   }
 });
 
-test('moyu hook 打印的片段是合法 JSON，三个事件都在，而且全是 async', () => {
+test('moyu hook 打印的片段是合法 JSON，三个事件都在，而且按顺序同步落盘', () => {
   const out = hookSnippet('/tmp/moyu-t/ev.log');
   const json = out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1);
   const cfg = JSON.parse(json) as {
@@ -89,8 +89,8 @@ test('moyu hook 打印的片段是合法 JSON，三个事件都在，而且全�
   for (const [name, entries] of Object.entries(cfg.hooks)) {
     const h = entries[0]!.hooks[0]!;
     assert.equal(h.type, 'command', name);
-    // async 是硬要求：这台机器上已经有插件注册了一堆 hook，同步 hook 会拖慢每次工具调用。
-    assert.equal(h.async, true, `${name} 不是 async —— 会阻塞工具调用`);
+    // 一条 printf 的成本很小；必须同步，否则短任务的 start/done 可能倒序到达。
+    assert.equal(h.async, false, `${name} 是 async —— start/done 可能倒序`);
     assert.ok(h.timeout > 0, name);
     assert.ok(h.command.includes('>>'), `${name} 该是追加写`);
     assert.ok(!h.command.includes('node'), `${name} 里起了 node —— 每次工具调用付 40ms 启动成本`);

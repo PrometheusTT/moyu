@@ -9,7 +9,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -54,6 +54,19 @@ test('bin 指的文件存在且可执行', () => {
   assert.ok(fs.existsSync(bin));
   assert.ok((fs.statSync(bin).mode & 0o111) !== 0, '+x 掉了，npm 装完会 EACCES');
   assert.match(fs.readFileSync(bin, 'utf8'), /^#!\/bin\/sh\n/, 'shebang 必须是 /bin/sh');
+});
+
+test('终端接管标记用 mktemp 原子创建，不用可预测的 $$ 路径', () => {
+  const sh = fs.readFileSync(path.join(root, 'bin/moyu'), 'utf8');
+  assert.match(sh, /mktemp/);
+  assert.doesNotMatch(sh, /moyu-takeover\.\$\$/);
+});
+
+test('无 TTY 退化路径保留真实信号退出码', () => {
+  const { status } = spawnSync(path.join(root, 'bin/moyu'), [
+    '--', process.execPath, '-e', "process.kill(process.pid, 'SIGTERM')",
+  ], { encoding: 'utf8' });
+  assert.equal(status, 143, 'SIGTERM 应映射成 128+15，而不是把所有信号都写死成 129');
 });
 
 test('files 白名单必须把 bin 和 dist 都带上，且不带 src/vendor/test', () => {

@@ -53,10 +53,14 @@ export class VtCursor {
     /** UTF-8 多字节序列累积。 */
     u8Need = 0;
     u8Acc = 0;
+    /** ZWJ 后的下一个可见码位和前一个 emoji 占同一字素，不再推进一遍。 */
+    joinNext = false;
+    onPrint;
     constructor(opts) {
         this.cols = Math.max(1, opts.cols);
         this.rows = Math.max(1, opts.rows);
         this.scrollBot = this.rows;
+        this.onPrint = opts.onPrint;
         this.resetTabs();
     }
     resetTabs() {
@@ -108,6 +112,7 @@ export class VtCursor {
     byte(b) {
         // ESC / CAN / SUB 在任何状态下都会中断当前序列
         if (b === 0x1b) {
+            this.joinNext = false;
             this.state = S_ESC;
             this.escInter = '';
             return;
@@ -149,6 +154,7 @@ export class VtCursor {
     // ── GROUND：C0 控制字符与可打印字符 ────────────────────────────────
     ground(b) {
         if (b < 0x20) {
+            this.joinNext = false;
             switch (b) {
                 case 0x07: return; // BEL
                 case 0x08: // BS
@@ -212,9 +218,17 @@ export class VtCursor {
     }
     /** 写一个可打印码位，按宽度推进列号，处理自动换行。 */
     printCp(cp) {
+        if (cp === 0x200d) {
+            this.joinNext = true;
+            return;
+        }
         const w = charWidth(cp);
         if (w === 0)
             return; // 组合记号附着在前一格，不动光标
+        if (this.joinNext) {
+            this.joinNext = false;
+            return;
+        }
         if (this.pendingWrap) {
             this.pendingWrap = false;
             this.col = 1;
@@ -225,6 +239,7 @@ export class VtCursor {
             this.col = 1;
             this.index();
         }
+        this.onPrint?.(cp, this.row, this.col, w);
         this.col += w;
         if (this.col > this.cols) {
             this.col = this.cols;
@@ -360,6 +375,7 @@ export class VtCursor {
         this.scrollTop = 1;
         this.scrollBot = this.rows;
         this.altScreen = false;
+        this.joinNext = false;
         this.resetTabs();
     }
     // ── CSI ───────────────────────────────────────────────────────────

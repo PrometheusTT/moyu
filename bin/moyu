@@ -68,7 +68,10 @@ fi
 #
 # 用退出码判断就做不到这么准：内层 CLI 自己退出码 130 是很正常的事，不代表屏幕坏了。
 # 而重复还原有真实代价 —— `?1049l` 自带一次光标恢复，会把用户 shell 的光标搬到别处去。
-MOYU_TAKEOVER_FLAG="${TMPDIR:-/tmp}/moyu-takeover.$$"
+# `$$` 可预测，在共享 /tmp 上会留下符号链接覆盖窗口。mktemp 原子创建 0600 文件；
+# 初始内容是 idle，只有 node 真接管终端后才改成 taken。
+MOYU_TAKEOVER_FLAG=$(mktemp "${TMPDIR:-/tmp}/moyu-takeover.XXXXXXXX") || exit 1
+printf 'idle\n' > "$MOYU_TAKEOVER_FLAG"
 export MOYU_TAKEOVER_FLAG
 
 restore_terminal() {
@@ -86,7 +89,7 @@ restore_terminal() {
     printf '\033[?2026l%b\033[?1049l\033[?1047l\033[?47l%b\033[r\033[?7h\033[?6l\033[0m\033[?25h' "$img" "$img"
 }
 
-trap 'st=$?; if [ -f "$MOYU_TAKEOVER_FLAG" ]; then rm -f "$MOYU_TAKEOVER_FLAG"; restore_terminal; fi; exit $st' EXIT
+trap 'st=$?; takeover=; if [ -r "$MOYU_TAKEOVER_FLAG" ]; then IFS= read -r takeover < "$MOYU_TAKEOVER_FLAG" || :; fi; rm -f "$MOYU_TAKEOVER_FLAG"; if [ "$takeover" = taken ]; then restore_terminal; fi; exit $st' EXIT
 
 # 刻意不 trap INT/TERM/HUP：node 和它在同一个进程组里，信号直达 node，由 node 自己
 # 的钩子还原。在这里拦一道只会让 shell 比 node 先退，把 node 变成孤儿进程。

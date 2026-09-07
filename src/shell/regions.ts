@@ -8,32 +8,33 @@
  * 坐标系里本来就是对的，零坐标转换。反过来（游戏在上、CLI 在下）就需要给内层
  * 每一条绝对定位做坐标平移，那正是"要写终端模拟器"的开始。
  *
- * **2. 游戏在最下面一条，紧贴内层的输入框。**
- * 用户想要的是"输入框上方那条线"，但那个位置做不到，而且不是取舍问题：
+ * **2. 安全回退布局把游戏放在最下面，Codex 则优先使用输入框上方覆盖层。**
+ * 普通 CLI 没有可靠的输入框锚点，因此回退布局不能把 PTY 整体放到游戏下方：
  *   - 游戏区在上、CLI 在下 ⇒ 滚动区变成 `CSI top;bottom r` 且 `top ≠ 1`。
  *     按 Ghostty 的 `Terminal.zig`，`index()` 只在 `scrolling_region.top == 0` 时写
  *     history —— 也就是**所有终端上的 scrollback 都会没**。往上翻看不了刚才的输出，
  *     这个代价比"游戏在上面还是下面"大得多。
- *   - 内层的输入框在它自己的区域里是浮动的（它自己会重绘、位置随内容变），
- *     外壳没有稳定的行号可以贴。而"最后一行的下面"是**恒定**的。
- * 所以游戏条钉在屏幕最底部：内层的输入框就在它正上方，视觉上就是"输入框那条线"。
+ *   - 未知 CLI 的输入框在自己的区域里是浮动的，外壳没有稳定的行号可贴。
+ * Codex 有可观测的 `›` / `❯` composer 锚点，因此实际游玩时在它上方覆盖两行，且不改变
+ * PTY 尺寸；退出后清行并用 SIGWINCH 请 Codex 重绘。识别不到锚点时才使用底部回退布局。
  *
- * ## 尺寸：固定 2 行，不再跟焦点联动
+ * ## 尺寸
  *
- * 以前是焦点在游戏时涨到 65%、回 CLI 时缩到 32%。现在整条只有 1~4 个字符行
- * （默认 2 行 = 4 个像素行），所以**焦点不再改尺寸** —— 好处不只是简单：
- * 焦点联动要 `pty.resize()`，而 resize 会让内层 TUI 全量重绘，切一次焦点抖一次。
- * 现在切焦点只改按键路由，内层从头到尾不知道有人在它下面玩。
+ * 候场恒定一行；默认游戏条恒定两行，并始终给 CLI 留至少 10 行。
+ * 两行是产品约束而非自适应结果：它必须像输入框的一部分，而不是第二块主界面。
+ * 切换只发生在用户的一次明确手势上，不随普通按键或任务动画抖动。
  */
 
 /** 内层至少要这么多行才勉强能用（提示行 + 输入行 + 一点上下文）。 */
 export const MIN_INNER_ROWS = 10;
 /** 游戏区最少 1 行 —— 半块渲染下那也有 2 个像素行，够站一个 1 像素高的小人。 */
 export const MIN_GAME_ROWS = 1;
-/** 上限 4 行。再高就不是"输入框下面那条线"了，而是又变成半屏游戏。 */
-export const MAX_GAME_ROWS = 4;
-/** 默认 2 行 = 4 个像素行。用户的原话是"字体的 1-2 倍"。 */
-export const DEFAULT_GAME_ROWS = 2;
+/** 偷玩窗口的上限；更大就会从掌机变成屏幕上的主角。 */
+export const MAX_GAME_ROWS = 8;
+/** 候场状态只占一行。 */
+export const DEFAULT_GAME_ROWS = 1;
+/** 包裹模式的游戏高度：Braille 每格 2×4，恰好得到 80×8 的微型画布。 */
+export const MICRO_GAME_ROWS = 2;
 /** 终端至少要这么宽。半块渲染下像素宽度 = 列数。 */
 export const MIN_COLS = 60;
 
@@ -67,15 +68,24 @@ export type LayoutInput = {
   cols: number;
   rows: number;
   /**
-   * 手动指定的游戏区行数（`^G +/-` 调的值，会持久化）。
-   * 焦点**不**影响尺寸，所以这是唯一能让它变高的路径。
+   * 宿主指定的游戏区行数：包裹模式候场为 1、游戏为 `MICRO_GAME_ROWS`。
    */
   manualGameRows?: number | undefined;
+  /** 独立/调试布局可申请使用整行；日常包裹模式保持紧凑宽度。 */
+  expanded?: boolean | undefined;
 };
 
 /** 场地宽度：先给 HUD 留够，剩下的给场地，再夹到最大宽度。 */
 export function fieldColsFor(cols: number): number {
-  return clamp(cols - 1 - MIN_HUD_COLS, 12, MAX_FIELD_COLS);
+  // 两行精灵需要完整 80×8，不为提示区缩小人物；窄屏提示使用临时全宽帮助。
+  return clamp(cols - 1, 12, MAX_FIELD_COLS);
+}
+
+/** 给独立 pocket/debug 布局保留的响应式高度；日常包裹模式固定使用两行。 */
+export function expandedGameRows(rows: number): number {
+  const cap = Math.min(MAX_GAME_ROWS, Math.max(MIN_GAME_ROWS, rows - MIN_INNER_ROWS));
+  const floor = Math.min(5, cap);
+  return clamp(Math.floor(rows * 0.18), floor, cap);
 }
 
 export function computeLayout(input: LayoutInput): LayoutResult {
@@ -105,7 +115,7 @@ export function computeLayout(input: LayoutInput): LayoutResult {
       innerRows,
       gameTop: innerRows + 1,
       gameRows,
-      fieldCols: fieldColsFor(cols),
+      fieldCols: input.expanded ? cols - 1 : fieldColsFor(cols),
     },
   };
 }

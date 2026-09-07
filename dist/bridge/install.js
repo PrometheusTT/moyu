@@ -8,7 +8,7 @@
  *
  * ```json
  * { "hooks": { "<事件名>": [ { "hooks": [ { "type": "command", "command": "…",
- *                                          "async": true, "timeout": 5 } ] } ] } }
+ *                                          "async": false, "timeout": 5 } ] } ] } }
  * ```
  *
  * 区别只有三处，都参数化掉了：
@@ -22,7 +22,7 @@
  * Codex 没有 `Notification` 这个事件（它那份是 PreToolUse / PermissionRequest / PostToolUse /
  * Pre|PostCompact / Session{Start,End} / UserPromptSubmit / Subagent{Start,Stop} / Stop / Interrupt）。
  * 语义最接近的是 `PermissionRequest`，但那是条**决策**事件（hook 的输出能左右批不批），
- * 往上挂一个 async 的写文件命令是拿正确性换一个横幅，不值得 —— 所以 Codex 只装 start/done。
+ * 往上挂一个写文件命令是拿正确性换一个横幅，不值得 —— 所以 Codex 只装 start/done。
  *
  * ## 为什么不碰 Codex 的 `notify`
  *
@@ -49,6 +49,8 @@ import { eventsPath } from "./signal.js";
  * `$SHELL -lc` 跑的（Codex 的 command_runner 也是 `-lc`），所以行尾注释一定安全。
  */
 export const MARK = '# moyu-signal:';
+/** 只有这段描述可以在卸载时和我们创建的专用 Codex 文件一起删除。 */
+export const CODEX_DESCRIPTION = '摸鱼（moyu）—— 把任务开始/结束信号写给终端里的游戏';
 /** 每个 CLI 装哪几个事件。键是事件名，值是它对应的信号。 */
 const EVENTS = {
     claude: [['UserPromptSubmit', 'start'], ['Stop', 'done'], ['Notification', 'notify']],
@@ -72,6 +74,14 @@ export function homeVar(p, home = os.homedir()) {
 function dq(s) {
     return s.replace(/([\\"$`])/g, '\\$1');
 }
+/** 放进 shell 双引号里的路径表达式，同时保留家目录 `$HOME` 的变量展开。 */
+function shellPath(p, home) {
+    if (p === home)
+        return '$HOME';
+    if (p.startsWith(`${home}/`))
+        return `$HOME${dq(p.slice(home.length))}`;
+    return dq(p);
+}
 /**
  * 一条信号命令。**一行 shell，绝不起 node** —— 每次工具调用付 40ms 启动成本是不能接受的。
  *
@@ -79,15 +89,17 @@ function dq(s) {
  * `date` 不在 PATH 上（`env_clear` 之后的极端情况）这行退化成 ` start` 也照样读得对。
  */
 export function signalCommand(kind, file, home = os.homedir()) {
-    const shown = dq(homeVar(file, home));
-    const dir = dq(homeVar(path.dirname(file), home));
-    return `mkdir -p "${dir}" && printf '%s ${kind}\\n' "$(date +%s)" >> "${shown}" ${MARK}${kind}`;
+    const fallback = shellPath(file, home);
+    // 外壳给每个实例传独立的 MOYU_EVENTS；直接运行 hook 时回落到安装路径。
+    // fallback 放在参数展开 `${…:-word}` 里面会让文件名中的 `}` 提前闭合，所以分两步赋值。
+    return `moyu_events="\${MOYU_EVENTS:-}"; if [ -z "$moyu_events" ]; then moyu_events="${fallback}"; fi; mkdir -p "$(dirname "$moyu_events")" && printf '%s ${kind}\\n' "$(date +%s)" >> "$moyu_events" ${MARK}${kind}`;
 }
 /** 该装进去的那几组 hook。 */
 export function hooksFor(target, file = eventsPath(), home = os.homedir()) {
     const out = {};
     for (const [event, kind] of EVENTS[target]) {
-        out[event] = [{ hooks: [{ type: 'command', command: signalCommand(kind, file, home), async: true, timeout: 5 }] }];
+        // 写一行很快；同步执行换来 start/done 的顺序保证，异步 hook 在短任务上可能倒序。
+        out[event] = [{ hooks: [{ type: 'command', command: signalCommand(kind, file, home), async: false, timeout: 5 }] }];
     }
     return out;
 }
@@ -139,7 +151,10 @@ export function plan(target, opts = {}) {
     try {
         before = fs.readFileSync(p, 'utf8');
     }
-    catch {
+    catch (e) {
+        if (e.code !== 'ENOENT') {
+            return { ...base, action: 'error', error: `读不出 ${p}：${e instanceof Error ? e.message : String(e)}—— 没有改动` };
+        }
         before = null;
     }
     const existed = before !== null;
@@ -175,7 +190,7 @@ export function plan(target, opts = {}) {
         }
         if (target === 'codex' && !existed && root.description === undefined) {
             // Codex 的 HooksFile 是 deny_unknown_fields 的，顶层只认 description 和 hooks。
-            root.description = '摸鱼（moyu）—— 把任务开始/结束信号写给终端里的游戏';
+            root.description = CODEX_DESCRIPTION;
         }
     }
     if (Object.keys(hooks).length === 0)
@@ -184,8 +199,8 @@ export function plan(target, opts = {}) {
         root.hooks = hooks;
     // 卸载后整个文件只剩我们自己留下的壳（Codex 那个专用文件）→ 删掉，别留垃圾。
     // Claude Code 的 settings.json 是**共用**文件，哪怕空了也只写回 `{}`，绝不删。
-    const empty = Object.keys(root).filter((k) => k !== 'description').length === 0;
-    if (opts.uninstall === true && target === 'codex' && empty) {
+    const onlyOurDescription = Object.keys(root).length === 1 && root.description === CODEX_DESCRIPTION;
+    if (opts.uninstall === true && target === 'codex' && onlyOurDescription) {
         return { ...base, existed, before, action: existed ? 'remove' : 'unchanged', removed, after: null };
     }
     const after = `${JSON.stringify(root, null, before === null ? 2 : indentOf(before))}\n`;
@@ -197,18 +212,64 @@ export function plan(target, opts = {}) {
 export function apply(p, now = new Date()) {
     if (p.action === 'unchanged' || p.action === 'error')
         return null;
+    // plan/apply 之间可能有人改了配置；静默覆盖新内容比让用户重跑一次更糟。
+    let current = null;
+    try {
+        current = fs.readFileSync(p.path, 'utf8');
+    }
+    catch (e) {
+        if (e.code !== 'ENOENT')
+            throw e;
+    }
+    if (current !== p.before)
+        throw new Error(`${p.path} 在干跑之后被别的程序改过了，请重新运行 moyu install`);
     let backup = null;
     if (p.existed && p.before !== null) {
-        const t = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, '');
-        backup = `${p.path}.moyu-bak-${t}`;
-        fs.writeFileSync(backup, p.before);
+        const t = now.toISOString().replace(/\D/g, '');
+        const base = `${p.path}.moyu-bak-${t}`;
+        for (let n = 0;; n++) {
+            backup = n === 0 ? base : `${base}-${n}`;
+            try {
+                fs.writeFileSync(backup, p.before, { flag: 'wx', mode: 0o600 });
+                break;
+            }
+            catch (e) {
+                if (e.code !== 'EEXIST')
+                    throw e;
+            }
+        }
     }
     if (p.action === 'remove' || p.after === null) {
         fs.rmSync(p.path, { force: true });
         return backup;
     }
     fs.mkdirSync(path.dirname(p.path), { recursive: true });
-    fs.writeFileSync(p.path, p.after);
+    // 配置常被软链到 dotfiles 仓库。rename 到软链路径会把链接本身换掉，所以落盘目标必须是实文件。
+    const dest = p.existed ? fs.realpathSync(p.path) : p.path;
+    const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.moyu-tmp-${process.pid}-${now.getTime()}`);
+    let fd = -1;
+    try {
+        const mode = p.existed ? fs.statSync(dest).mode & 0o777 : 0o600;
+        fd = fs.openSync(tmp, 'wx', mode);
+        fs.writeFileSync(fd, p.after);
+        fs.fsyncSync(fd);
+        fs.closeSync(fd);
+        fd = -1;
+        fs.renameSync(tmp, dest);
+    }
+    catch (e) {
+        if (fd >= 0) {
+            try {
+                fs.closeSync(fd);
+            }
+            catch { /* best effort */ }
+        }
+        try {
+            fs.rmSync(tmp, { force: true });
+        }
+        catch { /* best effort */ }
+        throw e;
+    }
     return backup;
 }
 /** 已经装了什么。`stale` = 装着的命令和现在该写的不一样（多半是事件文件路径变了）。 */
@@ -266,7 +327,7 @@ export function hookSnippet(file = eventsPath(), target = 'claude', home = os.ho
         ? `# Claude Code：把下面这段并进 ${where} 的顶层（已有 hooks 就并进 hooks 里）：`
         : `# Codex：把下面这段存成 ${where}（已有就并进 hooks 里）：`;
     if (target === 'codex')
-        cfg.description = '摸鱼（moyu）—— 把任务开始/结束信号写给终端里的游戏';
+        cfg.description = CODEX_DESCRIPTION;
     const tail = target === 'codex'
         ? ['# 存好之后下次启动 codex 会问 "Hooks need review" —— 选 "Trust all and continue"，不然 hook 不会跑。']
         : [];

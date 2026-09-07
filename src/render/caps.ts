@@ -244,15 +244,17 @@ export async function probeCaps(io: ProbeIO): Promise<Caps> {
   const env = io.env;
   const ssh = env.SSH_CONNECTION !== undefined && env.SSH_CONNECTION !== '';
   const fps = ssh ? 15 : 30;
-  const forced = env.MOYU_TIER === 'half' || env.MOYU_TIER === 'graphics' ? env.MOYU_TIER : undefined;
+  const forced = env.MOYU_TIER === 'half' || env.MOYU_TIER === 'braille' || env.MOYU_TIER === 'graphics'
+    ? env.MOYU_TIER : undefined;
   const envCell = parseCellEnv(env.MOYU_CELL);
   const cell = envCell ?? DEFAULT_CELL;
 
   if (forced === 'half') return { tier: 'half', probe: 'skipped', cellW: cell.w, cellH: cell.h, fps, why: 'MOYU_TIER=half', leftover: EMPTY };
-  if (forced === 'graphics') {
+  if (forced === 'braille') return { tier: 'braille', probe: 'skipped', cellW: cell.w, cellH: cell.h, fps, why: 'MOYU_TIER=braille', leftover: EMPTY };
+  if (env.MOYU_FORCE_GRAPHICS === '1') {
     return {
       tier: 'graphics', probe: 'skipped', cellW: cell.w, cellH: cell.h, fps,
-      why: `MOYU_TIER=graphics，格像素 ${cell.w}×${cell.h}${envCell === null ? '（默认值）' : ''}`,
+      why: `MOYU_FORCE_GRAPHICS=1，格像素 ${cell.w}×${cell.h}${envCell === null ? '（默认值）' : ''}`,
       leftover: EMPTY,
     };
   }
@@ -260,7 +262,7 @@ export async function probeCaps(io: ProbeIO): Promise<Caps> {
   const mux = env.TMUX !== undefined && env.TMUX !== '' ? 'tmux'
     : env.STY !== undefined && env.STY !== '' ? 'screen' : null;
   if (mux !== null) {
-    return { tier: 'half', probe: 'skipped', cellW: cell.w, cellH: cell.h, fps, why: `${mux} 不透传 APC`, leftover: EMPTY };
+    return { tier: 'braille', probe: 'skipped', cellW: cell.w, cellH: cell.h, fps, why: `${mux} 不透传 APC，使用 Braille`, leftover: EMPTY };
   }
 
   // 400 而不是 150：会回话的终端根本走不到超时（哨兵一到就收工，本地是亚毫秒级），
@@ -274,7 +276,9 @@ export async function probeCaps(io: ProbeIO): Promise<Caps> {
   // 我们是**一次 write 里发四条查询**，回复的顺序理论上跟着查询走，但那是终端的实现细节
   // （图形命令在有些终端里走的不是 CSI 那条同步路径）。押在顺序上的代价太不对称：
   // 猜错一次就是整个像素档静默消失，而这里多等 40ms 只发生在真的没收到 OK 的那一次。
-  const grace = io.graceMs ?? 40;
+  // SSH 上 DA 往往先到，而 graphics 回复可能经过另一条终端处理队列晚几百毫秒。
+  // 以前 DA 一到仍只等 40ms，导致 1200ms 的 SSH 总预算实际上完全没有生效。
+  const grace = io.graceMs ?? (ssh ? budget : 40);
   const budgetAt = Date.now() + budget;
   let raw = '';
   let settle: (() => void) | null = null;
@@ -320,8 +324,10 @@ export async function probeCaps(io: ProbeIO): Promise<Caps> {
       ? '终端答了 DA 但没答 kitty graphics —— 真的不支持'
       : `终端一个字都没回（${budget}ms 内），支不支持没问出来`;
     const known = knownGraphicsTerm(env);
-    if (known === null) {
-      return { tier: 'half', probe: outcome, cellW: use.w, cellH: use.h, fps, why: detail, leftover };
+    // Explicit no-graphics always wins over environment guesses. This is what keeps Termius
+    // and other APC-aware terminals from producing an invisible forced image.
+    if (known === null || r.done || forced === 'graphics') {
+      return { tier: 'braille', probe: outcome, cellW: use.w, cellH: use.h, fps, why: `${detail}，使用 Braille`, leftover };
     }
     return {
       tier: 'graphics', probe: outcome, cellW: use.w, cellH: use.h, fps,

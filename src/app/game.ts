@@ -34,9 +34,9 @@ export class Game {
   /** 上一次任务的战绩，暂停横幅要报。 */
   private lastScore = 0;
 
-  constructor(opts: { seed?: number; events?: boolean } = {}) {
+  constructor(opts: { seed?: number; events?: boolean; eventsFile?: string } = {}) {
     this.world = new World(opts.seed ?? (Date.now() & 0x7fffffff));
-    this.tail = opts.events === false ? null : new SignalTail();
+    this.tail = opts.events === false ? null : new SignalTail(opts.eventsFile);
   }
 
   /** 宿主的画布尺寸变了。`h` 是**像素**行数（= canvas.pixelHeight）。 */
@@ -91,6 +91,8 @@ export class Game {
     this.world.taskDone();
     // 摸鱼摸过头错过下一步操作，这个产品就是负分 —— 所以响铃 + 桌面通知是必须的，
     // 不是锦上添花。OSC 9 不被支持的终端会忽略它，无害。
+    // The legacy full-screen demo keeps its explicit notification. The coding shell uses
+    // Arcade, whose task completion path is intentionally silent and only changes the bar.
     this.alert = `\x07\x1b]9;摸鱼：${why}（砍了 ${this.lastScore} 个）\x07`;
   }
 

@@ -1,0 +1,607 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { homedir } from 'node:os';
+import { SignalTail } from "../bridge/signal.js";
+import { World } from "../core/world.js";
+import { segments } from "../core/stick.js";
+import { paintWorld } from "../render/scene.js";
+import { stripPainter } from "../render/painter.js";
+import { LogicalCanvas } from "./canvas.js";
+import { drawMicroFighter } from "./micro-sprites.js";
+import { NativePixelCanvas } from "./pixel-canvas.js";
+import { paintPixelWorld, snapshotFighters } from "../render/pixel-scene.js";
+const EMPTY_INPUT = { left: false, right: false, up: false, down: false, jump: false, primary: false, secondary: false };
+const BG = 0x090a0e, GRID = 0x151722, INK = 0xecf0f8, ACCENT = 0xe43834, AMBER = 0xa67c00;
+class InputLatch {
+    leftUntil = 0;
+    rightUntil = 0;
+    downUntil = 0;
+    up = false;
+    jump = false;
+    primary = false;
+    secondary = false;
+    feed(bytes, now) {
+        let played = false;
+        for (let i = 0; i < bytes.length; i++) {
+            const b = bytes[i];
+            if (b === 0x71)
+                return 'leave';
+            if (b === 0x09)
+                return 'next';
+            if (b === 0x3f)
+                return 'help';
+            if (b === 0x65 || b === 0x45)
+                return 'view';
+            if (b === 0x1b && (bytes[i + 1] === 0x5b || bytes[i + 1] === 0x4f)) {
+                let j = i + 2;
+                while (j < bytes.length && !(bytes[j] >= 0x40 && bytes[j] <= 0x7e))
+                    j++;
+                const f = bytes[j];
+                if (f !== undefined && f >= 0x41 && f <= 0x44)
+                    played = true;
+                if (f === 0x41)
+                    this.up = true;
+                else if (f === 0x42)
+                    this.downUntil = now + 150;
+                else if (f === 0x43)
+                    this.rightUntil = now + 150;
+                else if (f === 0x44)
+                    this.leftUntil = now + 150;
+                i = j;
+                continue;
+            }
+            if (b === 0x61 || b === 0x68)
+                this.leftUntil = now + 180;
+            else if (b === 0x64 || b === 0x6c)
+                this.rightUntil = now + 180;
+            else if (b === 0x73)
+                this.downUntil = now + 180;
+            else if (b === 0x77 || b === 0x6b)
+                this.up = true;
+            else if (b === 0x20)
+                this.jump = true;
+            else if (b === 0x6a || b === 0x66 || b === 0x3b)
+                this.primary = true;
+            else if (b === 0x75)
+                this.secondary = true;
+            if ('ahdlswkjf;u '.includes(String.fromCharCode(b)))
+                played = true;
+        }
+        return played ? 'play' : null;
+    }
+    take(now) {
+        const out = { left: now < this.leftUntil, right: now < this.rightUntil, up: this.up,
+            down: now < this.downUntil, jump: this.jump, primary: this.primary, secondary: this.secondary };
+        this.up = this.jump = this.primary = this.secondary = false;
+        return out;
+    }
+    clear() {
+        this.leftUntil = this.rightUntil = this.downUntil = 0;
+        this.up = this.jump = this.primary = this.secondary = false;
+    }
+}
+class StickGame {
+    world = new World(0x5eed);
+    previous = new Map();
+    constructor() { this.world.resize(180, 44); this.world.enemyLimit = 3; }
+    update(dt, input) {
+        this.previous = snapshotFighters(this.world);
+        const intent = { move: input.left === input.right ? 0 : input.left ? -1 : 1,
+            jump: input.jump || input.up, slash: input.primary };
+        this.world.step(dt, intent);
+        if (process.env.MOYU_REDUCE_MOTION === '1') {
+            this.world.shake = 0;
+            this.world.shakeX = 0;
+            this.world.shakeY = 0;
+            this.world.flash = 0;
+        }
+    }
+    render(canvas) {
+        if (!(canvas instanceof LogicalCanvas))
+            return;
+        paintWorld(stripPainter(canvas), this.world);
+    }
+    renderPixels(canvas, context) {
+        paintPixelWorld(canvas, this.world, context, this.previous);
+    }
+    renderMicro(c) {
+        c.clear(BG);
+        // 64/180 maps the 29.9-world-unit attack reach to the sprite's 11-pixel blade tip.
+        const px = (x) => 8 + (x / this.world.w) * (c.width - 16);
+        const enemies = this.world.enemies;
+        for (const f of enemies) {
+            const x = px(f.x);
+            drawMicroFighter(c, f, x, 0xb37b58, AMBER);
+        }
+        const playerX = px(this.world.player.x);
+        if (this.world.respawn <= 0)
+            drawMicroFighter(c, this.world.player, playerX, INK, AMBER, Math.min(1, (this.world.ground - this.world.player.y) / 10));
+        else {
+            c.line(playerX - 3, 7, playerX + 3, 7, ACCENT);
+        }
+        // 命中停顿本来就是手感最重的一帧；在微型画面里给刀尖三粒红色火花，
+        // 比把血和断肢全部缩进来更清楚，也不会让待机画面变成噪点。
+        if (this.world.hitstop > 0) {
+            const x = Math.round(px(this.world.player.x) + this.world.player.face * 11);
+            c.pixel(x, 1, ACCENT);
+            c.pixel(x + this.world.player.face, 2, ACCENT);
+            c.pixel(x, 3, ACCENT);
+        }
+    }
+    onHostEvent(event) {
+        if (event === 'task-start')
+            this.world.taskStart();
+        else if (event === 'task-done')
+            this.world.taskDone();
+        this.previous = new Map();
+    }
+    renderExpanded(c) {
+        c.clear(BG);
+        const scale = c.width / this.world.w;
+        const ground = c.height - 3;
+        const verticalScale = Math.min(scale, ground / this.world.ground);
+        for (const f of [...this.world.enemies, ...(this.world.respawn > 0 ? [] : [this.world.player])]) {
+            const color = f === this.world.player ? (f.hurt > 0 ? ACCENT : INK) : f.windup >= 0 ? ACCENT : 0xb37b58;
+            const body = { ...f, x: f.x * scale, y: ground - (this.world.ground - f.y) * verticalScale, h: f.h * verticalScale };
+            for (const s of segments(body)) {
+                if (s.part === 'head')
+                    c.rect(Math.round(s.x0 - 1), Math.round(s.y0 - 1), 2, 2, color);
+                else
+                    c.line(s.x0, s.y0, s.x1, s.y1, s.part === 'blade' ? AMBER : color);
+            }
+        }
+        if (this.world.respawn > 0)
+            c.line(this.world.player.x * scale - 3, ground, this.world.player.x * scale + 3, ground, ACCENT);
+        if (this.world.hitstop > 0 && this.world.player.atk >= 0) {
+            const x = (this.world.player.x + this.world.player.face * this.world.fh * 1.15) * scale;
+            c.line(x, ground - 8, x, ground - 6, ACCENT);
+        }
+    }
+    serialize() { return { kills: this.world.kills, bestCombo: this.world.bestCombo }; }
+    restore(state) {
+        if (typeof state !== 'object' || state === null)
+            return;
+        const s = state;
+        if (typeof s.kills === 'number')
+            this.world.kills = s.kills;
+        if (typeof s.bestCombo === 'number')
+            this.world.bestCombo = s.bestCombo;
+    }
+    hud() { return `火柴快斩 ${this.world.kills}击破 ${this.world.respawn > 0 ? '重生中' : `血${this.world.player.hp}/4`}`; }
+}
+class SnakeGame {
+    // 微型屏上直接玩的 24×8 棋盘。旧版内部是 24×16 再压到 7 行，转弯时相邻
+    // 两节经常量化到同一格，看起来像蛇突然断掉；8 行让操作与画面一一对应。
+    body = [[8, 4], [7, 4], [6, 4], [5, 4], [4, 4]];
+    food = [17, 4];
+    dir = [1, 0];
+    acc = 0;
+    score = 0;
+    best = 0;
+    seed = 7;
+    rand() { this.seed = (this.seed * 1664525 + 1013904223) >>> 0; return this.seed / 0x100000000; }
+    update(dt, input) {
+        if ((input.up || input.jump) && this.dir[1] !== 1)
+            this.dir = [0, -1];
+        else if (input.down && this.dir[1] !== -1)
+            this.dir = [0, 1];
+        else if (input.left && this.dir[0] !== 1)
+            this.dir = [-1, 0];
+        else if (input.right && this.dir[0] !== -1)
+            this.dir = [1, 0];
+        this.acc += dt;
+        if (this.acc < Math.max(0.06, 0.14 - this.score * 0.002))
+            return;
+        this.acc = 0;
+        const head = this.body[0];
+        const next = [(head[0] + this.dir[0] + 24) % 24, (head[1] + this.dir[1] + 8) % 8];
+        if (this.body.some(([x, y]) => x === next[0] && y === next[1])) {
+            this.reset();
+            return;
+        }
+        this.body.unshift(next);
+        if (next[0] === this.food[0] && next[1] === this.food[1]) {
+            this.score++;
+            this.best = Math.max(this.best, this.score);
+            this.placeFood();
+        }
+        else
+            this.body.pop();
+    }
+    reset() { this.body = [[8, 4], [7, 4], [6, 4], [5, 4], [4, 4]]; this.dir = [1, 0]; this.score = 0; }
+    placeFood() {
+        for (let n = 0; n < 100; n++) {
+            const p = [Math.floor(this.rand() * 24), Math.floor(this.rand() * 8)];
+            if (!this.body.some(([x, y]) => x === p[0] && y === p[1])) {
+                this.food = p;
+                return;
+            }
+        }
+    }
+    render(c) {
+        c.clear(BG);
+        c.rect(7, 3, 50, 34, GRID);
+        c.rect(8 + this.food[0] * 2, 4 + this.food[1] * 4, 2, 4, ACCENT);
+        for (let i = this.body.length - 1; i >= 0; i--) {
+            const [x, y] = this.body[i];
+            c.rect(8 + x * 2, 4 + y * 4, 2, 4, i === 0 ? AMBER : INK);
+        }
+    }
+    renderMicro(c) {
+        c.clear(BG);
+        c.rect(15 + this.food[0] * 2, this.food[1], 2, 2, ACCENT);
+        for (let i = this.body.length - 1; i >= 0; i--) {
+            const [x, y] = this.body[i];
+            c.rect(15 + x * 2, y, 2, 2, i === 0 ? AMBER : INK);
+        }
+    }
+    renderExpanded(c) {
+        c.clear(BG);
+        c.line(14, 3, 65, 3, 0x687080);
+        c.line(14, 20, 65, 20, 0x687080);
+        c.line(14, 3, 14, 20, 0x687080);
+        c.line(65, 3, 65, 20, 0x687080);
+        c.rect(16 + this.food[0] * 2, 4 + this.food[1] * 2, 2, 2, ACCENT);
+        for (let n = this.body.length - 1; n >= 0; n--) {
+            const [x, y] = this.body[n];
+            c.rect(16 + x * 2, 4 + y * 2, 2, 2, n === 0 ? AMBER : INK);
+        }
+    }
+    serialize() { return { best: this.best }; }
+    restore(v) { if (typeof v?.best === 'number')
+        this.best = v.best; }
+    hud() { return `贪吃蛇 · ${this.score} · 最高 ${this.best} · Tab 换游戏`; }
+}
+const SHAPES = [
+    [[0, 0], [1, 0], [2, 0], [3, 0]], [[0, 0], [1, 0], [0, 1], [1, 1]],
+    [[1, 0], [0, 1], [1, 1], [2, 1]], [[0, 0], [0, 1], [1, 1], [2, 1]],
+    [[2, 0], [0, 1], [1, 1], [2, 1]], [[1, 0], [2, 0], [0, 1], [1, 1]],
+    [[0, 0], [1, 0], [1, 1], [2, 1]],
+];
+class BlocksGame {
+    board = new Uint8Array(10 * 18);
+    shape = 0;
+    rot = 0;
+    x = 3;
+    y = 0;
+    acc = 0;
+    score = 0;
+    best = 0;
+    seq = 1;
+    moveDirection = 0;
+    moveWait = 0;
+    cells(shape = this.shape, rot = this.rot, px = this.x, py = this.y) {
+        return SHAPES[shape].map(([ax, ay]) => {
+            let x = ax, y = ay;
+            if (shape !== 1)
+                for (let r = 0; r < rot; r++)
+                    [x, y] = [(shape === 0 ? 3 : 2) - y, x];
+            return [px + x, py + y];
+        });
+    }
+    blocked(x, y, rot = this.rot) {
+        return this.cells(this.shape, rot, x, y).some(([cx, cy]) => cx < 0 || cx >= 10 || cy >= 18 || (cy >= 0 && this.board[cy * 10 + cx] !== 0));
+    }
+    update(dt, i) {
+        const direction = i.left === i.right ? 0 : i.left ? -1 : 1;
+        this.moveWait -= dt;
+        if (direction !== 0 && (direction !== this.moveDirection || this.moveWait <= 0)) {
+            if (!this.blocked(this.x + direction, this.y))
+                this.x += direction;
+            this.moveWait = direction !== this.moveDirection ? 0.18 : 0.09;
+        }
+        this.moveDirection = direction;
+        if ((i.up || i.primary) && !this.blocked(this.x, this.y, (this.rot + 1) % 4))
+            this.rot = (this.rot + 1) % 4;
+        this.acc += dt * (i.down ? 8 : 1);
+        if (i.jump)
+            while (!this.blocked(this.x, this.y + 1))
+                this.y++;
+        if (this.acc < Math.max(0.12, 0.65 - this.score * 0.008) && !i.jump)
+            return;
+        this.acc = 0;
+        if (!this.blocked(this.x, this.y + 1)) {
+            this.y++;
+            return;
+        }
+        for (const [x, y] of this.cells())
+            if (y >= 0)
+                this.board[y * 10 + x] = this.shape + 1;
+        this.clearLines();
+        this.spawn();
+    }
+    clearLines() {
+        for (let y = 17; y >= 0; y--)
+            if (this.board.subarray(y * 10, y * 10 + 10).every((v) => v !== 0)) {
+                this.board.copyWithin(10, 0, y * 10);
+                this.board.fill(0, 0, 10);
+                this.score += 10;
+                this.best = Math.max(this.best, this.score);
+                y++;
+            }
+    }
+    spawn() {
+        this.shape = this.seq++ % SHAPES.length;
+        this.rot = 0;
+        this.x = 3;
+        this.y = 0;
+        if (this.blocked(this.x, this.y)) {
+            this.board.fill(0);
+            this.score = 0;
+        }
+    }
+    render(c) {
+        c.clear(BG);
+        c.rect(20, 1, 22, 38, GRID);
+        const colors = [INK, 0x59c3c3, AMBER, ACCENT, INK, AMBER, 0x59c3c3];
+        for (let y = 0; y < 18; y++)
+            for (let x = 0; x < 10; x++) {
+                const v = this.board[y * 10 + x] ?? 0;
+                if (v !== 0)
+                    c.rect(21 + x * 2, 2 + y * 2, 2, 2, colors[(v - 1) % colors.length]);
+            }
+        for (const [x, y] of this.cells())
+            if (y >= 0)
+                c.rect(21 + x * 2, 2 + y * 2, 2, 2, colors[this.shape]);
+    }
+    renderMicro(c) {
+        c.clear(BG);
+        const ox = Math.floor((c.width - 22) / 2);
+        c.line(ox, 0, ox, 7, GRID);
+        c.line(ox + 21, 0, ox + 21, 7, GRID);
+        const colors = [INK, 0x59c3c3, AMBER, ACCENT, INK, AMBER, 0x59c3c3];
+        // 跟随活动方块的 8 行窗口。完整 18 行直接压缩会让方块只有半个点高，
+        // 而局部窗口让移动、旋转、接触都保持一行一个台阶。
+        const top = Math.max(0, Math.min(10, this.y - 5));
+        for (let y = top; y < top + 8; y++)
+            for (let x = 0; x < 10; x++) {
+                const v = this.board[y * 10 + x] ?? 0;
+                if (v !== 0)
+                    c.rect(ox + 1 + x * 2, y - top, 2, 1, colors[(v - 1) % colors.length]);
+            }
+        for (const [x, y] of this.cells())
+            if (y >= 0) {
+                if (y >= top && y < top + 8)
+                    c.rect(ox + 1 + x * 2, y - top, 2, 1, colors[this.shape]);
+            }
+        // 相机跟随时活动方块会保持在画面中段；右框上的金色刻度显示它在完整 18 行里的深度。
+        c.pixel(ox + 21, Math.min(7, Math.round(this.y * 7 / 17)), AMBER);
+    }
+    serialize() { return { best: this.best }; }
+    restore(v) { if (typeof v?.best === 'number')
+        this.best = v.best; }
+    hud() { return `落块 · ${this.score} · 最高 ${this.best} · Tab 换游戏`; }
+    renderExpanded(c) {
+        c.clear(BG);
+        const ox = 28, oy = 2;
+        c.line(ox, oy - 1, ox, oy + 18, 0x687080);
+        c.line(ox + 22, oy - 1, ox + 22, oy + 18, 0x687080);
+        c.line(ox, oy + 18, ox + 22, oy + 18, 0x687080);
+        let landing = this.y;
+        while (!this.blocked(this.x, landing + 1))
+            landing++;
+        for (const [x, y] of this.cells(this.shape, this.rot, this.x, landing))
+            if (y >= 0)
+                c.rect(ox + 2 + x * 2, oy + y, 2, 1, 0x687080);
+        for (let y = 0; y < 18; y++)
+            for (let x = 0; x < 10; x++)
+                if (this.board[y * 10 + x])
+                    c.rect(ox + 2 + x * 2, oy + y, 2, 1, INK);
+        for (const [x, y] of this.cells())
+            if (y >= 0)
+                c.rect(ox + 2 + x * 2, oy + y, 2, 1, AMBER);
+    }
+}
+function manifest(id, name, description, viewport) {
+    return { id, name, description, viewport, microViewport: { width: 80, height: 8 }, version: '1.0.0', apiVersion: 1, author: 'Moyu', entry: 'builtin',
+        display: { micro: id === 'stick-slash', minRows: id === 'stick-slash' ? 4 : 6, glyphs: id === 'stick-slash' ? 'dots' : 'blocks' },
+        palette: ['#090a0e', '#ecf0f8', '#e43834', '#a67c00'],
+        controls: id === 'stick-slash'
+            ? [{ action: 'move', label: '移动', keys: ['A/D', '方向键'] }, { action: 'primary', label: '砍', keys: ['J'] }, { action: 'jump', label: '跳', keys: ['空格'] }]
+            : id === 'snake' ? [{ action: 'move', label: '方向', keys: ['WASD', '方向键'] }]
+                : [{ action: 'move', label: '移动', keys: ['A/D'] }, { action: 'primary', label: '旋转', keys: ['J'] }, { action: 'down', label: '下落', keys: ['S'] }, { action: 'jump', label: '直落', keys: ['空格'] }] };
+}
+export const BUILTIN_GAMES = [
+    { manifest: manifest('stick-slash', '火柴快斩', '连续动作与打击反馈', { width: 180, height: 44 }), create: () => new StickGame() },
+    { manifest: manifest('snake', '贪吃蛇', '格子移动与成长', { width: 64, height: 40 }), create: () => new SnakeGame() },
+    { manifest: manifest('blocks', '落块', '旋转、下落与消行', { width: 64, height: 40 }), create: () => new BlocksGame() },
+];
+export class Arcade {
+    keys = { clear: () => { this.input.clear(); } };
+    input = new InputLatch();
+    tail;
+    modules;
+    instances;
+    canvases;
+    microCanvases;
+    active = 0;
+    lastMs = 0;
+    acc = 0;
+    poll = 0;
+    stepped = false;
+    paused = false;
+    instructions = true;
+    viewToggle = false;
+    displayRows = 24;
+    displayTier = 'braille';
+    expandedCanvases;
+    alert = null;
+    urgent = false;
+    notice = null;
+    constructor(eventsFile, modules = BUILTIN_GAMES, startId) {
+        const context = { seed: Date.now() & 0x7fffffff, random: () => Math.random() };
+        this.modules = modules;
+        this.instances = modules.map((m) => m.create(context));
+        this.canvases = modules.map((m) => new LogicalCanvas(m.manifest.viewport.width, m.manifest.viewport.height));
+        this.expandedCanvases = modules.map(() => new LogicalCanvas(80, 24));
+        this.microCanvases = modules.map((m) => {
+            const v = m.manifest.microViewport ?? { width: 80, height: 8 };
+            return new LogicalCanvas(v.width, v.height);
+        });
+        const selected = startId === undefined ? -1 : modules.findIndex((m) => m.manifest.id === startId);
+        if (selected >= 0)
+            this.active = selected;
+        this.tail = new SignalTail(eventsFile);
+        this.loadAll();
+    }
+    resize(_w, _h) { }
+    feed(bytes, now = Date.now()) {
+        const command = this.input.feed(bytes, now);
+        if (command === 'leave')
+            return true;
+        if (command === 'next') {
+            this.instances[this.active].onHostEvent?.('pause');
+            this.save(this.active);
+            this.active = (this.active + 1) % this.instances.length;
+            this.resetClock();
+            this.instructions = true;
+        }
+        if (command === 'help') {
+            this.instructions = !this.instructions;
+            this.resetClock();
+        }
+        if (command === 'view') {
+            this.viewToggle = true;
+            this.input.clear();
+        }
+        if (command === 'play' && this.playable())
+            this.instructions = false;
+        return false;
+    }
+    takeViewToggle() { const value = this.viewToggle; this.viewToggle = false; return value; }
+    setDisplay(rows, tier) {
+        if (rows !== this.displayRows || tier !== this.displayTier)
+            this.resetClock();
+        this.displayRows = rows;
+        this.displayTier = tier;
+    }
+    playable() {
+        const m = this.modules[this.active].manifest;
+        const game = this.instances[this.active];
+        return this.displayRows <= 2
+            ? m.display?.micro === true && this.displayTier !== 'half'
+                && (game.renderMicro !== undefined || (this.displayTier === 'graphics' && game.renderPixels !== undefined))
+            : this.displayRows >= this.minimumRows();
+    }
+    minimumRows() {
+        const rows = this.modules[this.active].manifest.display?.minRows ?? 6;
+        return this.displayTier === 'half' ? rows * 2 : rows;
+    }
+    panel() {
+        const m = this.modules[this.active].manifest;
+        if (!this.playable())
+            return [m.name, this.displayRows <= 2
+                    ? `E 展开 · 需${this.minimumRows()}行 · Esc 返回`
+                    : `需${this.minimumRows()}行，请放大终端或使用 moyu play · Esc 返回`];
+        if (!this.instructions)
+            return [this.instances[this.active].hud?.() ?? m.name, 'E 大小 · ? 帮助 · Esc 返回'];
+        const controls = m.controls.map((c) => `${c.keys[0] ?? ''} ${c.label}`).join(' · ');
+        return [`${m.name} · ${controls}`, 'E 大小 · Tab 换 · Esc 返回'];
+    }
+    get showingInstructions() { return this.instructions || !this.playable(); }
+    resetClock() { this.lastMs = 0; this.acc = 0; this.stepped = false; this.input.clear(); }
+    advance(now) {
+        const elapsed = this.lastMs === 0 ? 0 : Math.max(0, Math.min(0.25, (now - this.lastMs) / 1000));
+        this.lastMs = now;
+        if (++this.poll >= 8) {
+            this.poll = 0;
+            for (const event of this.tail.poll()) {
+                const e = event === 'start' ? 'task-start' : event === 'notify' ? 'task-notify' : 'task-done';
+                for (const game of this.instances)
+                    game.onHostEvent?.(e);
+                if (e === 'task-done') {
+                    this.alert = '';
+                    this.urgent = true;
+                    this.notice = '任务完成';
+                }
+                else if (e === 'task-notify') {
+                    this.alert = '';
+                    this.urgent = true;
+                    this.notice = '需要你确认';
+                }
+                else {
+                    this.urgent = false;
+                    this.notice = null;
+                }
+            }
+        }
+        if (this.paused || this.instructions || !this.playable()) {
+            this.acc = 0;
+            return;
+        }
+        this.acc += elapsed;
+        // 不足一个模拟步时保留脉冲。持续方向在每个子步生效，跳/攻击只消费一次。
+        if (this.acc < 1 / 60)
+            return;
+        let first = this.input.take(now);
+        const held = { ...EMPTY_INPUT, left: first.left, right: first.right, down: first.down };
+        while (this.acc >= 1 / 60) {
+            this.instances[this.active].update(1 / 60, first);
+            this.stepped = true;
+            first = held;
+            this.acc -= 1 / 60;
+        }
+    }
+    render(target, profile = 'standard') {
+        const game = this.instances[this.active];
+        target.setGlyphStyle?.(this.modules[this.active].manifest.display?.glyphs ?? 'blocks');
+        if (profile === 'micro' && !this.playable()) {
+            target.fill(BG);
+            return;
+        }
+        if (target.tier === 'graphics' && game.renderPixels !== undefined) {
+            game.renderPixels(new NativePixelCanvas(target), {
+                view: profile === 'micro' ? 'micro' : 'expanded',
+                interpolation: this.paused || this.instructions || !this.stepped ? 1 : Math.max(0, Math.min(1, this.acc * 60)),
+                theme: process.env.MOYU_THEME === 'light' ? 'light' : 'dark',
+            });
+            return;
+        }
+        if (profile === 'standard' && target.tier !== 'graphics' && game.renderExpanded !== undefined) {
+            const height = Math.max(8, Math.min(24, target.pixelH));
+            if (this.expandedCanvases[this.active].height !== height)
+                this.expandedCanvases[this.active] = new LogicalCanvas(80, height);
+            const canvas = this.expandedCanvases[this.active];
+            game.renderExpanded(canvas);
+            canvas.blit(target);
+            return;
+        }
+        const micro = profile === 'micro' && target.tier !== 'graphics' && game.renderMicro !== undefined;
+        const canvas = micro ? this.microCanvases[this.active] : this.canvases[this.active];
+        if (micro)
+            game.renderMicro(canvas);
+        else
+            game.render(canvas);
+        canvas.blit(target);
+    }
+    takeAlert() { const a = this.alert; this.alert = null; if (a !== null)
+        this.save(this.active); return a; }
+    hud() {
+        const game = this.instances[this.active], name = this.modules[this.active].manifest.name;
+        const line = game.hud?.() ?? `${name} · Tab 换游戏`;
+        const short = this.notice === null ? line : `${this.notice} · ${name}`;
+        return { left: short, right: 'Ctrl+] / Esc 返回', short, urgent: this.urgent };
+    }
+    stateFile(index) { return path.join(process.env.MOYU_HOME ?? path.join(homedir(), '.moyu'), 'state', `${this.modules[index].manifest.id}.json`); }
+    pause() { this.paused = true; this.resetClock(); this.save(this.active); this.instances[this.active].onHostEvent?.('pause'); }
+    resume() { this.paused = false; this.resetClock(); this.instructions = true; this.urgent = false; this.notice = null; this.instances[this.active].onHostEvent?.('resume'); }
+    loadAll() {
+        for (let i = 0; i < this.instances.length; i++)
+            try {
+                const value = JSON.parse(fs.readFileSync(this.stateFile(i), 'utf8'));
+                this.instances[i].restore?.(value);
+            }
+            catch { /* first run or damaged save: start clean */ }
+    }
+    save(index) {
+        const value = this.instances[index].serialize?.();
+        if (value === undefined)
+            return;
+        try {
+            const file = this.stateFile(index);
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            fs.writeFileSync(file, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+        }
+        catch { /* play must not depend on persistence */ }
+    }
+}
