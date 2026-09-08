@@ -6,6 +6,126 @@ import { appendSignal } from '../../src/bridge/signal.ts';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import type { GameInstance, GameModule } from '../../src/platform/types.ts';
+
+function cartridge(id: string, create: () => GameInstance): GameModule {
+  return {
+    manifest: {
+      id, name: id.toUpperCase(), version: '1', apiVersion: 1, author: 'test', description: id,
+      entry: 'builtin', viewport: { width: 16, height: 8 }, microViewport: { width: 16, height: 8 },
+      display: { micro: true, minRows: 4 }, palette: ['#090a0e', '#ecf0f8'], controls: [],
+    },
+    create,
+  };
+}
+
+function visibleGame(id: string, calls: string[]): GameInstance {
+  return {
+    update: () => { calls.push(`update:${id}`); },
+    render: (canvas) => { calls.push(`render:${id}`); canvas.clear(id === 'a' ? 0xecf0f8 : 0xa67c00); },
+    renderMicro: (canvas) => { calls.push(`micro:${id}`); canvas.clear(id === 'a' ? 0xecf0f8 : 0xa67c00); },
+    hud: () => id,
+  };
+}
+
+test('hostile thrown values cannot escape factory quarantine', () => {
+  const hostile = new Proxy({}, { getPrototypeOf: () => { throw new Error('hostile prototype'); } });
+  const a = new Arcade('/tmp/moyu-no-events-test', [
+    cartridge('hostile-throw', () => { throw hostile; }),
+    cartridge('healthy', () => visibleGame('a', [])),
+  ]);
+  assert.equal(a.available, 1);
+  assert.match(a.hud().left, /^a$/);
+  assert.ok(a.failureFor('hostile-throw'));
+});
+
+test('each factory receives an isolated immutable context', () => {
+  const poison: GameModule = {
+    ...cartridge('poison', () => visibleGame('a', [])),
+    create(context) {
+      Object.defineProperty(context, 'random', { value: () => { throw new Error('poisoned context'); } });
+      throw new Error('factory failed');
+    },
+  };
+  const healthy: GameModule = {
+    ...cartridge('healthy', () => visibleGame('a', [])),
+    create(context) { context.random(); return visibleGame('a', []); },
+  };
+  const a = new Arcade('/tmp/moyu-no-events-test', [poison, healthy]);
+  assert.equal(a.available, 1);
+  assert.equal(a.failureFor('healthy'), undefined);
+});
+
+test('rejected async factories are observed while being quarantined', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const arcadeUrl = new URL('../../src/platform/arcade.ts', import.meta.url).href;
+  const manifest = JSON.stringify(cartridge('async', () => visibleGame('a', [])).manifest);
+  const script = `import { Arcade } from ${JSON.stringify(arcadeUrl)};\nconst manifest = ${manifest};\nconst a = new Arcade('/tmp/moyu-no-events-test', [{ manifest, create: () => Promise.reject(new Error('async boom')) }]);\nif (!a.failureFor('async')) process.exit(3);\nawait new Promise((resolve) => setImmediate(resolve));`;
+  const run = spawnSync(process.execPath, [
+    '--unhandled-rejections=strict', '--experimental-strip-types', '--input-type=module', '--eval', script,
+  ], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+});
+
+test('factory failures and invalid instances are quarantined as atomic cartridge slots', () => {
+  const calls: string[] = [];
+  const factories: string[] = [];
+  const make = (id: string, value: () => unknown): GameModule => cartridge(id, () => {
+    factories.push(id);
+    return value() as GameInstance;
+  });
+  const modules = [
+    make('a', () => visibleGame('a', calls)),
+    make('throws', () => { throw 'plain failure'; }),
+    make('missing-update', () => ({ render() {} })),
+    make('missing-render', () => ({ update() {} })),
+    make('thenable', () => ({ then() {}, update() {}, render() {} })),
+    make('bad-hook', () => ({ update() {}, render() {}, hud: true })),
+    make('hostile', () => new Proxy({}, { get: () => { throw new Error('hostile getter'); } })),
+    make('c', () => visibleGame('c', calls)),
+  ];
+  const a = new Arcade('/tmp/moyu-no-events-test', modules, 'c');
+  assert.deepEqual(factories, modules.map((m) => m.manifest.id), 'each factory runs exactly once');
+  assert.match(a.hud().left, /^c$/);
+  assert.match(a.failureFor('throws') ?? '', /plain failure/);
+  for (const id of ['missing-update', 'missing-render', 'thenable', 'bad-hook', 'hostile']) assert.ok(a.failureFor(id), id);
+  assert.equal(a.failureFor('a'), undefined);
+  a.feed(Uint8Array.of(9));
+  assert.match(a.hud().left, /^a$/);
+  a.advance(1000); a.feed(Buffer.from('j'), 1000); a.advance(1017);
+  a.render(new BrailleTarget(16, 4));
+  assert.ok(calls.includes('update:a') && calls.includes('render:a'), 'active instance and canvas remain aligned');
+});
+
+test('failed startId falls back to first survivor rather than a stale module index', () => {
+  const modules = [
+    cartridge('bad', () => { throw new Error('nope'); }),
+    cartridge('a', () => visibleGame('a', [])),
+    cartridge('c', () => visibleGame('c', [])),
+  ];
+  const failed = new Arcade('/tmp/moyu-no-events-test', modules, 'bad');
+  assert.match(failed.hud().left, /^a$/);
+  const selected = new Arcade('/tmp/moyu-no-events-test', modules, 'c');
+  assert.match(selected.hud().left, /^c$/);
+});
+
+test('empty and all-failed arcades keep every public operation total', () => {
+  for (const a of [
+    new Arcade('/tmp/moyu-no-events-test', []),
+    new Arcade('/tmp/moyu-no-events-test', [cartridge('bad', () => { throw new Error('broken'); })]),
+  ]) {
+    const target = new BrailleTarget(16, 2);
+    assert.equal(a.playable(), false);
+    assert.equal(a.feed(Buffer.from('q')), true);
+    assert.doesNotThrow(() => {
+      a.resize(80, 24); a.keys.clear(); a.feed(Buffer.from('\t')); a.feed(Buffer.from('j'));
+      a.setDisplay(2, 'braille'); a.panel(); void a.showingInstructions; a.advance(1000); a.advance(1200);
+      a.render(target, 'micro'); a.takeAlert(); a.hud(); a.pause(); a.resume(); a.takeViewToggle();
+    });
+    assert.match(a.panel().join(' '), /没有可用游戏/);
+    assert.match(a.hud().left, /没有可用游戏/);
+  }
+});
 
 test('three built-in cartridges cover action, grid, and falling blocks', () => {
   assert.deepEqual(BUILTIN_GAMES.map((g) => g.manifest.id), ['stick-slash', 'snake', 'blocks']);

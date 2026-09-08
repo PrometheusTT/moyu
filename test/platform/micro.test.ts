@@ -83,6 +83,26 @@ test('snake turn changes the two-row image without losing its five-segment body'
   assert.ok(occupied >= 18, `snake collapsed after turning: only ${occupied} player-colored pixels remain`);
 });
 
+function headPixel(game: ReturnType<(typeof BUILTIN_GAMES)[number]['create']>): [number, number] {
+  const pixels = microPixels(game);
+  const amber = [...pixels].flatMap((p, i) => p === BLADE ? [[i % 80, Math.floor(i / 80)] as [number, number]] : []);
+  assert.ok(amber.length > 0, 'snake head is missing');
+  return [Math.min(...amber.map(([x]) => x)), Math.min(...amber.map(([, y]) => y))];
+}
+
+test('snake accepts at most one turn before each grid movement', () => {
+  const game = BUILTIN_GAMES[1]!.create({ seed: 1, random: () => 0.5 });
+  const none = { left: false, right: false, up: false, down: false, jump: false, primary: false, secondary: false };
+  game.update(0.01, { ...none, up: true });
+  game.update(0.01, { ...none, left: true });
+  game.update(0.13, none);
+  assert.deepEqual(headPixel(game), [31, 3], '先按上再按左，本格只能向上走');
+
+  game.update(0.01, { ...none, down: true });
+  game.update(0.13, none);
+  assert.deepEqual(headPixel(game), [31, 2], '相对 committed 上方向的反向下必须被拒绝');
+});
+
 test('falling block visibly descends before the micro camera begins following it', () => {
   const game = BUILTIN_GAMES[2]!.create({ seed: 1, random: () => 0.5 });
   const ys = (): number[] => [...microPixels(game)].flatMap((p, i) => p === BODY ? [Math.floor(i / 80)] : []);

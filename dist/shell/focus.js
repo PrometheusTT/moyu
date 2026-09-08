@@ -63,22 +63,20 @@ function kittyAction(key, reply, focus, bytes) {
         return { kind: 'forward', bytes };
     if (key === null)
         return 'pass';
-    if (key.event === 3)
-        return 'drop';
-    // Ctrl+] is the portable primary gesture: it becomes the single byte 0x1d on legacy
-    // terminals and CSI 93;5u under Kitty's keyboard protocol. Ctrl+Space is deliberately
-    // not an alias: desktop IMEs own it, so Moyu must never steal it even for compatibility.
+    // Moyu owns every phase of its two focus gestures so repeat/release cannot leak into
+    // the wrapped CLI. Event filtering for every other key happens only after ownership.
     if (key.ctrl && !key.alt && key.code === 93) {
         return key.event === 1 ? { kind: 'toggle-focus' } : 'drop';
     }
-    if (key.ctrl && !key.alt && (key.code === 103 || key.code === 99))
-        return { kind: 'forward', bytes };
-    if (key.code === 57375 && !key.ctrl && !key.alt)
+    if (key.code === 57375 && !key.ctrl && !key.alt) {
         return key.event === 1 ? { kind: 'toggle-focus' } : 'drop';
+    }
     if (focus === 'cli')
         return 'pass';
     if (key.alt || key.ctrl)
         return { kind: 'forward', bytes };
+    if (key.event === 3)
+        return 'drop';
     if (key.code === 27)
         return { kind: 'toggle-focus' };
     const arrow = key.code === 57350 ? '\x1b[D' : key.code === 57351 ? '\x1b[C'
@@ -93,8 +91,10 @@ export class InputRouter {
     focus;
     held = EMPTY;
     pasting = false;
+    /** 0=普通输入，1=OSC/DCS/SOS/PM/APC 载荷，2=载荷中待判定 ST 的 ESC。 */
+    terminalString = 0;
     constructor(opts = {}) { this.focus = opts.focus ?? 'cli'; }
-    get heldBytes() { return this.held.length; }
+    get heldBytes() { return this.held.length + (this.terminalString === 2 ? 1 : 0); }
     route(chunk) {
         const buf = this.held.length === 0 ? chunk : join(this.held, chunk);
         this.held = EMPTY;
@@ -112,6 +112,53 @@ export class InputRouter {
         let i = 0;
         while (i < buf.length) {
             const b = buf[i];
+            if (this.terminalString === 1) {
+                let end = i;
+                while (end < buf.length && buf[end] !== 0x07 && buf[end] !== 0x18
+                    && buf[end] !== 0x1a && buf[end] !== 0x1b)
+                    end++;
+                if (end > i)
+                    actions.push({ kind: 'forward', bytes: buf.subarray(i, end) });
+                i = end;
+                if (i >= buf.length)
+                    continue;
+                const special = buf[i];
+                if (special === 0x1b) {
+                    this.terminalString = 2;
+                    i++;
+                    continue;
+                }
+                actions.push({ kind: 'forward', bytes: buf.subarray(i, i + 1) });
+                this.terminalString = 0; // BEL terminates; CAN/SUB interrupts.
+                i++;
+                continue;
+            }
+            if (this.terminalString === 2) {
+                if (b === 0x5c) {
+                    actions.push({ kind: 'forward', bytes: Uint8Array.of(0x1b, b) });
+                    this.terminalString = 0;
+                    i++;
+                    continue;
+                }
+                // The preceding ESC did not form ST. Reparse it and the remaining bytes as a
+                // fresh escape sequence rather than treating them as string payload.
+                this.terminalString = 0;
+                const rest = new Uint8Array(1 + buf.length - i);
+                rest[0] = 0x1b;
+                rest.set(buf.subarray(i), 1);
+                actions.push(...this.route(rest));
+                return actions;
+            }
+            if (!this.pasting && b === 0x1b) {
+                const next = buf[i + 1];
+                if (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
+                    flush(i);
+                    actions.push({ kind: 'forward', bytes: buf.subarray(i, i + 2) });
+                    this.terminalString = 1;
+                    i += 2;
+                    continue;
+                }
+            }
             if (b === 0x1b) {
                 const scan = scanEsc(buf, i);
                 if (scan === 'partial') {

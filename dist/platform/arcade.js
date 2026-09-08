@@ -16,6 +16,7 @@ class InputLatch {
     leftUntil = 0;
     rightUntil = 0;
     downUntil = 0;
+    lastHorizontal = 1;
     up = false;
     jump = false;
     primary = false;
@@ -43,17 +44,25 @@ class InputLatch {
                     this.up = true;
                 else if (f === 0x42)
                     this.downUntil = now + 150;
-                else if (f === 0x43)
+                else if (f === 0x43) {
                     this.rightUntil = now + 150;
-                else if (f === 0x44)
+                    this.lastHorizontal = 1;
+                }
+                else if (f === 0x44) {
                     this.leftUntil = now + 150;
+                    this.lastHorizontal = -1;
+                }
                 i = j;
                 continue;
             }
-            if (b === 0x61 || b === 0x68)
+            if (b === 0x61 || b === 0x68) {
                 this.leftUntil = now + 180;
-            else if (b === 0x64 || b === 0x6c)
+                this.lastHorizontal = -1;
+            }
+            else if (b === 0x64 || b === 0x6c) {
                 this.rightUntil = now + 180;
+                this.lastHorizontal = 1;
+            }
             else if (b === 0x73)
                 this.downUntil = now + 180;
             else if (b === 0x77 || b === 0x6b)
@@ -70,7 +79,13 @@ class InputLatch {
         return played ? 'play' : null;
     }
     take(now) {
-        const out = { left: now < this.leftUntil, right: now < this.rightUntil, up: this.up,
+        let left = now < this.leftUntil;
+        let right = now < this.rightUntil;
+        if (left && right) {
+            left = this.lastHorizontal === -1;
+            right = this.lastHorizontal === 1;
+        }
+        const out = { left, right, up: this.up,
             down: now < this.downUntil, jump: this.jump, primary: this.primary, secondary: this.secondary };
         this.up = this.jump = this.primary = this.secondary = false;
         return out;
@@ -175,24 +190,31 @@ class SnakeGame {
     body = [[8, 4], [7, 4], [6, 4], [5, 4], [4, 4]];
     food = [17, 4];
     dir = [1, 0];
+    pendingDir = null;
     acc = 0;
     score = 0;
     best = 0;
     seed = 7;
     rand() { this.seed = (this.seed * 1664525 + 1013904223) >>> 0; return this.seed / 0x100000000; }
     update(dt, input) {
-        if ((input.up || input.jump) && this.dir[1] !== 1)
-            this.dir = [0, -1];
-        else if (input.down && this.dir[1] !== -1)
-            this.dir = [0, 1];
-        else if (input.left && this.dir[0] !== 1)
-            this.dir = [-1, 0];
-        else if (input.right && this.dir[0] !== -1)
-            this.dir = [1, 0];
+        if (this.pendingDir === null) {
+            if ((input.up || input.jump) && this.dir[1] !== 1)
+                this.pendingDir = [0, -1];
+            else if (input.down && this.dir[1] !== -1)
+                this.pendingDir = [0, 1];
+            else if (input.left && this.dir[0] !== 1)
+                this.pendingDir = [-1, 0];
+            else if (input.right && this.dir[0] !== -1)
+                this.pendingDir = [1, 0];
+        }
         this.acc += dt;
         if (this.acc < Math.max(0.06, 0.14 - this.score * 0.002))
             return;
         this.acc = 0;
+        if (this.pendingDir !== null) {
+            this.dir = this.pendingDir;
+            this.pendingDir = null;
+        }
         const head = this.body[0];
         const next = [(head[0] + this.dir[0] + 24) % 24, (head[1] + this.dir[1] + 8) % 8];
         if (this.body.some(([x, y]) => x === next[0] && y === next[1])) {
@@ -208,7 +230,12 @@ class SnakeGame {
         else
             this.body.pop();
     }
-    reset() { this.body = [[8, 4], [7, 4], [6, 4], [5, 4], [4, 4]]; this.dir = [1, 0]; this.score = 0; }
+    reset() {
+        this.body = [[8, 4], [7, 4], [6, 4], [5, 4], [4, 4]];
+        this.dir = [1, 0];
+        this.pendingDir = null;
+        this.score = 0;
+    }
     placeFood() {
         for (let n = 0; n < 100; n++) {
             const p = [Math.floor(this.rand() * 24), Math.floor(this.rand() * 8)];
@@ -406,14 +433,57 @@ export const BUILTIN_GAMES = [
     { manifest: manifest('snake', '贪吃蛇', '格子移动与成长', { width: 64, height: 40 }), create: () => new SnakeGame() },
     { manifest: manifest('blocks', '落块', '旋转、下落与消行', { width: 64, height: 40 }), create: () => new BlocksGame() },
 ];
+const OPTIONAL_GAME_HOOKS = [
+    'renderMicro', 'renderExpanded', 'renderPixels', 'onHostEvent', 'serialize', 'restore', 'hud',
+];
+function gameInstance(value) {
+    if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+        throw new Error('create 必须返回游戏实例');
+    }
+    if (value instanceof Promise) {
+        void value.catch(() => { });
+        throw new Error('create 不能返回 Promise 或 thenable');
+    }
+    const candidate = value;
+    if (candidate.then !== undefined)
+        throw new Error('create 不能返回 Promise 或 thenable');
+    const required = (name) => {
+        const method = candidate[name];
+        if (typeof method !== 'function')
+            throw new Error(`游戏实例缺少 ${name}()`);
+        return method.bind(value);
+    };
+    const normalized = {
+        update: required('update'),
+        render: required('render'),
+    };
+    const hooks = normalized;
+    for (const name of OPTIONAL_GAME_HOOKS) {
+        const method = candidate[name];
+        if (method === undefined)
+            continue;
+        if (typeof method !== 'function')
+            throw new Error(`游戏实例的 ${name} 必须是函数`);
+        hooks[name] = method.bind(value);
+    }
+    return normalized;
+}
+function failureMessage(value) {
+    try {
+        if (value instanceof Error)
+            return value.message || value.name;
+        return String(value);
+    }
+    catch {
+        return '未知错误';
+    }
+}
 export class Arcade {
     keys = { clear: () => { this.input.clear(); } };
     input = new InputLatch();
     tail;
-    modules;
-    instances;
-    canvases;
-    microCanvases;
+    slots = [];
+    failures = new Map();
     active = 0;
     lastMs = 0;
     acc = 0;
@@ -424,35 +494,43 @@ export class Arcade {
     viewToggle = false;
     displayRows = 24;
     displayTier = 'braille';
-    expandedCanvases;
     alert = null;
     urgent = false;
     notice = null;
     constructor(eventsFile, modules = BUILTIN_GAMES, startId) {
-        const context = { seed: Date.now() & 0x7fffffff, random: () => Math.random() };
-        this.modules = modules;
-        this.instances = modules.map((m) => m.create(context));
-        this.canvases = modules.map((m) => new LogicalCanvas(m.manifest.viewport.width, m.manifest.viewport.height));
-        this.expandedCanvases = modules.map(() => new LogicalCanvas(80, 24));
-        this.microCanvases = modules.map((m) => {
-            const v = m.manifest.microViewport ?? { width: 80, height: 8 };
-            return new LogicalCanvas(v.width, v.height);
-        });
-        const selected = startId === undefined ? -1 : modules.findIndex((m) => m.manifest.id === startId);
+        for (const module of modules)
+            try {
+                const context = Object.freeze({ seed: Date.now() & 0x7fffffff, random: () => Math.random() });
+                const instance = gameInstance(module.create(context));
+                const micro = module.manifest.microViewport ?? { width: 80, height: 8 };
+                this.slots.push({
+                    module,
+                    instance,
+                    canvas: new LogicalCanvas(module.manifest.viewport.width, module.manifest.viewport.height),
+                    microCanvas: new LogicalCanvas(micro.width, micro.height),
+                    expandedCanvas: new LogicalCanvas(80, 24),
+                });
+            }
+            catch (error) {
+                this.failures.set(module.manifest.id, failureMessage(error));
+            }
+        const selected = startId === undefined ? -1 : this.slots.findIndex((slot) => slot.module.manifest.id === startId);
         if (selected >= 0)
             this.active = selected;
         this.tail = new SignalTail(eventsFile);
         this.loadAll();
     }
+    failureFor(id) { return this.failures.get(id); }
+    get available() { return this.slots.length; }
     resize(_w, _h) { }
     feed(bytes, now = Date.now()) {
         const command = this.input.feed(bytes, now);
         if (command === 'leave')
             return true;
-        if (command === 'next') {
-            this.instances[this.active].onHostEvent?.('pause');
+        if (command === 'next' && this.slots.length > 0) {
+            this.slots[this.active].instance.onHostEvent?.('pause');
             this.save(this.active);
-            this.active = (this.active + 1) % this.instances.length;
+            this.active = (this.active + 1) % this.slots.length;
             this.resetClock();
             this.instructions = true;
         }
@@ -476,25 +554,31 @@ export class Arcade {
         this.displayTier = tier;
     }
     playable() {
-        const m = this.modules[this.active].manifest;
-        const game = this.instances[this.active];
+        const slot = this.slots[this.active];
+        if (slot === undefined)
+            return false;
+        const m = slot.module.manifest;
+        const game = slot.instance;
         return this.displayRows <= 2
             ? m.display?.micro === true && this.displayTier !== 'half'
                 && (game.renderMicro !== undefined || (this.displayTier === 'graphics' && game.renderPixels !== undefined))
             : this.displayRows >= this.minimumRows();
     }
     minimumRows() {
-        const rows = this.modules[this.active].manifest.display?.minRows ?? 6;
+        const rows = this.slots[this.active]?.module.manifest.display?.minRows ?? 6;
         return this.displayTier === 'half' ? rows * 2 : rows;
     }
     panel() {
-        const m = this.modules[this.active].manifest;
+        const slot = this.slots[this.active];
+        if (slot === undefined)
+            return ['没有可用游戏', '请检查已安装 Cartridge · Esc 返回'];
+        const m = slot.module.manifest;
         if (!this.playable())
             return [m.name, this.displayRows <= 2
                     ? `E 展开 · 需${this.minimumRows()}行 · Esc 返回`
                     : `需${this.minimumRows()}行，请放大终端或使用 moyu play · Esc 返回`];
         if (!this.instructions)
-            return [this.instances[this.active].hud?.() ?? m.name, 'E 大小 · ? 帮助 · Esc 返回'];
+            return [slot.instance.hud?.() ?? m.name, 'E 大小 · ? 帮助 · Esc 返回'];
         const controls = m.controls.map((c) => `${c.keys[0] ?? ''} ${c.label}`).join(' · ');
         return [`${m.name} · ${controls}`, 'E 大小 · Tab 换 · Esc 返回'];
     }
@@ -507,8 +591,8 @@ export class Arcade {
             this.poll = 0;
             for (const event of this.tail.poll()) {
                 const e = event === 'start' ? 'task-start' : event === 'notify' ? 'task-notify' : 'task-done';
-                for (const game of this.instances)
-                    game.onHostEvent?.(e);
+                for (const slot of this.slots)
+                    slot.instance.onHostEvent?.(e);
                 if (e === 'task-done') {
                     this.alert = '';
                     this.urgent = true;
@@ -536,15 +620,20 @@ export class Arcade {
         let first = this.input.take(now);
         const held = { ...EMPTY_INPUT, left: first.left, right: first.right, down: first.down };
         while (this.acc >= 1 / 60) {
-            this.instances[this.active].update(1 / 60, first);
+            this.slots[this.active].instance.update(1 / 60, first);
             this.stepped = true;
             first = held;
             this.acc -= 1 / 60;
         }
     }
     render(target, profile = 'standard') {
-        const game = this.instances[this.active];
-        target.setGlyphStyle?.(this.modules[this.active].manifest.display?.glyphs ?? 'blocks');
+        const slot = this.slots[this.active];
+        if (slot === undefined) {
+            target.fill(BG);
+            return;
+        }
+        const game = slot.instance;
+        target.setGlyphStyle?.(slot.module.manifest.display?.glyphs ?? 'blocks');
         if (profile === 'micro' && !this.playable()) {
             target.fill(BG);
             return;
@@ -559,15 +648,15 @@ export class Arcade {
         }
         if (profile === 'standard' && target.tier !== 'graphics' && game.renderExpanded !== undefined) {
             const height = Math.max(8, Math.min(24, target.pixelH));
-            if (this.expandedCanvases[this.active].height !== height)
-                this.expandedCanvases[this.active] = new LogicalCanvas(80, height);
-            const canvas = this.expandedCanvases[this.active];
+            if (slot.expandedCanvas.height !== height)
+                slot.expandedCanvas = new LogicalCanvas(80, height);
+            const canvas = slot.expandedCanvas;
             game.renderExpanded(canvas);
             canvas.blit(target);
             return;
         }
         const micro = profile === 'micro' && target.tier !== 'graphics' && game.renderMicro !== undefined;
-        const canvas = micro ? this.microCanvases[this.active] : this.canvases[this.active];
+        const canvas = micro ? slot.microCanvas : slot.canvas;
         if (micro)
             game.renderMicro(canvas);
         else
@@ -577,27 +666,50 @@ export class Arcade {
     takeAlert() { const a = this.alert; this.alert = null; if (a !== null)
         this.save(this.active); return a; }
     hud() {
-        const game = this.instances[this.active], name = this.modules[this.active].manifest.name;
+        const slot = this.slots[this.active];
+        if (slot === undefined) {
+            const short = this.notice ?? '没有可用游戏';
+            return { left: short, right: 'Ctrl+] / Esc 返回', short, urgent: this.urgent };
+        }
+        const game = slot.instance, name = slot.module.manifest.name;
         const line = game.hud?.() ?? `${name} · Tab 换游戏`;
         const short = this.notice === null ? line : `${this.notice} · ${name}`;
         return { left: short, right: 'Ctrl+] / Esc 返回', short, urgent: this.urgent };
     }
-    stateFile(index) { return path.join(process.env.MOYU_HOME ?? path.join(homedir(), '.moyu'), 'state', `${this.modules[index].manifest.id}.json`); }
-    pause() { this.paused = true; this.resetClock(); this.save(this.active); this.instances[this.active].onHostEvent?.('pause'); }
-    resume() { this.paused = false; this.resetClock(); this.instructions = true; this.urgent = false; this.notice = null; this.instances[this.active].onHostEvent?.('resume'); }
+    stateFile(index) { return path.join(process.env.MOYU_HOME ?? path.join(homedir(), '.moyu'), 'state', `${this.slots[index].module.manifest.id}.json`); }
+    pause() {
+        this.paused = true;
+        this.resetClock();
+        const game = this.slots[this.active]?.instance;
+        if (game !== undefined) {
+            this.save(this.active);
+            game.onHostEvent?.('pause');
+        }
+    }
+    resume() {
+        this.paused = false;
+        this.resetClock();
+        this.instructions = true;
+        this.urgent = false;
+        this.notice = null;
+        this.slots[this.active]?.instance.onHostEvent?.('resume');
+    }
     loadAll() {
-        for (let i = 0; i < this.instances.length; i++)
+        for (let i = 0; i < this.slots.length; i++)
             try {
                 const value = JSON.parse(fs.readFileSync(this.stateFile(i), 'utf8'));
-                this.instances[i].restore?.(value);
+                this.slots[i].instance.restore?.(value);
             }
             catch { /* first run or damaged save: start clean */ }
     }
     save(index) {
-        const value = this.instances[index].serialize?.();
-        if (value === undefined)
+        const slot = this.slots[index];
+        if (slot === undefined)
             return;
         try {
+            const value = slot.instance.serialize?.();
+            if (value === undefined)
+                return;
             const file = this.stateFile(index);
             fs.mkdirSync(path.dirname(file), { recursive: true });
             fs.writeFileSync(file, `${JSON.stringify(value)}\n`, { mode: 0o600 });

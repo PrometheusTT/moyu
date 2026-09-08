@@ -547,8 +547,9 @@ class Shell {
     collapsed = true;
     expanded = false;
     surface = new PlaySurface();
-    /** Codex 的 `›` 输入提示所在行；由透传字节观察得到，不依赖终端品牌。 */
+    /** 已确认的 Codex 输入提示行；完整匹配 prompt 签名后才设置。 */
     composerRow = null;
+    composerCandidate = null;
     /** true 时游戏覆盖在输入框上方两行，底部分屏仍保持一行候场几何。 */
     inlinePlay = false;
     inlineTop = null;
@@ -612,8 +613,7 @@ class Shell {
             // 输出缓存：只清画布/HUD 缓存会让收起状态误以为底栏还在，真实 Codex 启动
             // 时切备用屏后再 ED 2，用户看到的正是“一直没有最下面那行”。
             onDisplayErase: () => {
-                this.composerRow = null;
-                this.inlineTop = null;
+                this.invalidateComposer();
                 this.target.invalidate();
                 this.lastBar = '';
             },
@@ -736,6 +736,7 @@ class Shell {
         const prevTop = this.layout?.gameTop;
         const clearFrom = prevTop === undefined ? l.gameTop : Math.min(prevTop, l.gameTop);
         this.layout = l;
+        this.invalidateComposerCandidate();
         this.pass.region = { top: 1, bottom: l.innerRows };
         this.pass.cols = l.cols;
         this.vt.resize(l.cols, l.innerRows);
@@ -791,11 +792,9 @@ class Shell {
         // 让屏要顺手把终端里那张图删掉：擦文字擦不掉它（图是终端另存的一层），
         // 收起游戏区之后一张挂在那儿的图就是纯粹的垃圾。
         this.write(this.target.disposeSeq() + fullScrollRegionSeq() + `\x1b[${gameTop};1H\x1b[J` + this.vt.restoreSeq());
-        if (this.inlinePlay) {
-            this.composerRow = null;
-            this.inlineTop = null;
+        this.invalidateComposer();
+        if (this.inlinePlay)
             this.target.invalidate();
-        }
         this.pass.region = { top: 1, bottom: t.rows };
         this.pass.cols = t.cols;
         this.vt.resize(t.cols, t.rows);
@@ -847,8 +846,7 @@ class Shell {
             }
             if (this.inlinePlay) {
                 const removeImage = this.target.tier === 'graphics' ? deleteImageSeq() : '';
-                this.composerRow = null;
-                this.inlineTop = null;
+                this.invalidateComposer();
                 this.target.invalidate();
                 this.lastBar = '';
                 this.write(removeImage + scrollRegionSeq(l)
@@ -873,10 +871,7 @@ class Shell {
     }
     onResize() {
         const t = termSize();
-        if (this.inlinePlay) {
-            this.composerRow = null;
-            this.inlineTop = null;
-        }
+        this.invalidateComposer();
         const r = computeLayout({ cols: t.cols, rows: t.rows, manualGameRows: this.wantGameRows() });
         if (r.kind !== 'split') {
             this.arbiter.set('too-small', true);
@@ -1089,26 +1084,50 @@ class Shell {
         this.lastBar = '';
     }
     observeComposer(cp, row, col) {
-        if (!this.preferComposerOverlay || col > 4 || row <= MICRO_GAME_ROWS)
+        if (!this.preferComposerOverlay)
             return;
-        // Codex 现行主题用 ›，部分终端/版本使用 ❯；两者都是左侧输入提示。
-        if (cp === 0x203a || cp === 0x276f) {
-            this.composerRow = row;
-            if (this.inlinePlay && this.inlineTop !== null && row - MICRO_GAME_ROWS !== this.inlineTop) {
-                setImmediate(() => {
-                    if (!this.inlinePlay || this.composerRow === null || this.inlineTop === this.composerRow - MICRO_GAME_ROWS)
-                        return;
-                    this.stopInlinePlay();
-                    this.startInlinePlay();
-                });
+        const signature = ' Ask Codex';
+        const candidate = this.composerCandidate;
+        if (candidate !== null && row === candidate.row && col === candidate.col) {
+            if (cp === signature.codePointAt(candidate.index)) {
+                candidate.index++;
+                candidate.col++;
+                if (candidate.index === signature.length) {
+                    this.composerCandidate = null;
+                    this.confirmComposer(row);
+                }
+                return;
             }
-            if (this.focus === 'game' && !this.expanded && this.collapsed && !this.inlinePlay) {
-                setImmediate(() => {
-                    if (this.focus === 'game' && !this.expanded && this.collapsed && !this.inlinePlay && this.canUseComposerOverlay())
-                        this.startInlinePlay();
-                });
-            }
+            this.composerCandidate = null;
         }
+        else if (candidate !== null)
+            this.composerCandidate = null;
+        if (col <= 4 && row > MICRO_GAME_ROWS && (cp === 0x203a || cp === 0x276f)) {
+            this.composerCandidate = { row, col: col + 1, index: 0 };
+        }
+    }
+    confirmComposer(row) {
+        this.composerRow = row;
+        if (this.inlinePlay && this.inlineTop !== null && row - MICRO_GAME_ROWS !== this.inlineTop) {
+            setImmediate(() => {
+                if (!this.inlinePlay || this.composerRow === null || this.inlineTop === this.composerRow - MICRO_GAME_ROWS)
+                    return;
+                this.stopInlinePlay();
+                this.startInlinePlay();
+            });
+        }
+        if (this.focus === 'game' && !this.expanded && this.collapsed && !this.inlinePlay) {
+            setImmediate(() => {
+                if (this.focus === 'game' && !this.expanded && this.collapsed && !this.inlinePlay && this.canUseComposerOverlay())
+                    this.startInlinePlay();
+            });
+        }
+    }
+    invalidateComposerCandidate() { this.composerCandidate = null; }
+    invalidateComposer() {
+        this.composerCandidate = null;
+        this.composerRow = null;
+        this.inlineTop = null;
     }
     toggleSize() {
         if (this.focus !== 'game')
@@ -1117,7 +1136,7 @@ class Shell {
             this.stopInlinePlay();
         this.expanded = !this.expanded;
         // Expanded views use a protected bottom region. The PTY resize invalidates old composer rows.
-        this.composerRow = null;
+        this.invalidateComposer();
         this.collapsed = false;
         this.relayout();
         if (!this.expanded) {
@@ -1126,7 +1145,7 @@ class Shell {
                 if (this.focus !== 'game' || this.expanded || this.inlinePlay || !this.canUseComposerOverlay())
                     return;
                 this.setCollapsed(true);
-                this.composerRow = null;
+                this.invalidateComposer();
                 this.pty?.refresh();
             }, 80).unref();
         }

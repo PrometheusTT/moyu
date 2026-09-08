@@ -29,6 +29,8 @@ jobs:
         run: git diff --exit-code -- dist
       - name: Node 20 distribution smoke test
         if: matrix.node == '20'
+        env:
+          MOYU_DIST: '1'
         run: ./bin/moyu --help
       - if: matrix.node == '24'
         run: npm pack --dry-run

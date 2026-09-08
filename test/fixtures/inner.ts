@@ -20,8 +20,9 @@ process.stdin.resume();
 /** 半截转义序列。外壳的回复真的可能被切成两个 chunk，和它自己的透传层同一个道理。 */
 let pend = '';
 let composer = false;
+let composerGlyph = '›';
 const redrawComposer = (): void => {
-  out('\x1b[10;1HORIGINAL-CONTEXT\x1b[11;1HORIGINAL-SEPARATOR\x1b[12;1H› Ask Codex');
+  out(`\x1b[10;1HORIGINAL-CONTEXT\x1b[11;1HORIGINAL-SEPARATOR\x1b[12;1H${composerGlyph} Ask Codex`);
 };
 
 process.stdin.on('data', (buf: Buffer) => {
@@ -82,8 +83,14 @@ function command(ch: string): void {
       out('\x1b[H\x1b[JCODEX-INLINE-CLEAR');
       break;
     case 'i':
-      // Codex composer 的最小可识别形态：左侧 `›` 是宿主的锚点，游戏应落在 10..11 行。
-      composer = true; redrawComposer();
+      composer = true; composerGlyph = '›'; redrawComposer();
+      break;
+    case 'I':
+      composer = true; composerGlyph = '❯'; redrawComposer();
+      break;
+    case 'v':
+      // 左边缘 prompt glyph 出现在普通 transcript；不应被当成 Codex composer。
+      out('\x1b[10;1HORIGINAL-CONTEXT\x1b[11;1HORIGINAL-SEPARATOR\x1b[12;1H› ordinary transcript');
       break;
     case 'A':
       out('\x1b[?1049l');

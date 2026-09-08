@@ -31,6 +31,43 @@ const PLAY = (() => {
   return r.kind === 'split' ? r.layout : null!;
 })();
 
+test('PTY 启动环境清掉宿主终端状态并保留无关变量', () => {
+  const inherited: NodeJS.ProcessEnv = {
+    PATH: '/bin', HOME: '/home/test', LANG: 'zh_CN.UTF-8', CUSTOM: 'kept',
+    MOYU_TIER: 'graphics', MOYU_FUTURE_FLAG: '1', MOYU_TAKEOVER_FLAG: '/tmp/leak',
+    TMUX: '/tmp/tmux', STY: 'screen', SSH_CONNECTION: 'remote', SSH_CLIENT: 'remote', SSH_TTY: '/dev/ttys001',
+    TERM_PROGRAM: 'kitty', COLORTERM: 'truecolor', KITTY_WINDOW_ID: '7',
+    GHOSTTY_RESOURCES_DIR: '/ghostty', WEZTERM_PANE: '9', COLUMNS: '200', LINES: '60',
+    NODE_OPTIONS: '--require ambient-hook',
+  };
+  const before = { ...inherited };
+  const env = launchEnv('node', inherited);
+  assert.deepEqual(inherited, before, '不能修改调用方传入的 env');
+  assert.equal(env.PATH, '/bin');
+  assert.equal(env.HOME, '/home/test');
+  assert.equal(env.LANG, 'zh_CN.UTF-8');
+  assert.equal(env.CUSTOM, 'kept');
+  assert.equal(env.TERM, 'xterm-256color');
+  assert.equal(env.MOYU_TIER, 'braille');
+  assert.equal(env.MOYU_REDUCE_MOTION, '1');
+  assert.equal(env.MOYU_TAKEOVER_FLAG, '');
+  for (const key of ['MOYU_FUTURE_FLAG', 'TMUX', 'STY', 'SSH_CONNECTION', 'SSH_CLIENT', 'SSH_TTY',
+    'TERM_PROGRAM', 'COLORTERM', 'KITTY_WINDOW_ID', 'GHOSTTY_RESOURCES_DIR', 'WEZTERM_PANE',
+    'COLUMNS', 'LINES', 'NODE_OPTIONS']) assert.equal(env[key], undefined, key);
+});
+
+test('PTY 启动环境先清洗再应用显式覆盖，但 takeover 始终归 launcher 所有', () => {
+  const inherited = { MOYU_TIER: 'half', SSH_CONNECTION: 'ambient', MOYU_TAKEOVER_FLAG: 'ambient' };
+  const extra = { MOYU_TIER: 'graphics', SSH_CONNECTION: 'intentional', MOYU_TAKEOVER_FLAG: 'override' };
+  assert.deepEqual(launchEnv('node', inherited, extra), {
+    TERM: 'xterm-256color', MOYU_TIER: 'graphics', MOYU_REDUCE_MOTION: '1',
+    SSH_CONNECTION: 'intentional', MOYU_TAKEOVER_FLAG: '',
+  });
+  assert.deepEqual(launchEnv('sh', inherited, extra), {
+    TERM: 'xterm-256color', MOYU_TIER: 'graphics', MOYU_REDUCE_MOTION: '1', SSH_CONNECTION: 'intentional',
+  });
+});
+
 type Session = {
   send: (s: string) => void;
   /** 到目前为止外壳写到"终端"上的全部字节。 */
@@ -42,6 +79,29 @@ type Session = {
   pid: number;
   kill: () => void;
 };
+
+const AMBIENT_ENV = [
+  'TMUX', 'STY', 'SSH_CONNECTION', 'SSH_CLIENT', 'SSH_TTY', 'TERM_PROGRAM', 'COLORTERM',
+  'KITTY_WINDOW_ID', 'GHOSTTY_RESOURCES_DIR', 'WEZTERM_PANE', 'COLUMNS', 'LINES', 'NODE_OPTIONS',
+] as const;
+
+function launchEnv(
+  via: 'node' | 'sh',
+  inherited: NodeJS.ProcessEnv,
+  extra: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  const env = { ...inherited };
+  for (const key of Object.keys(env)) if (key.startsWith('MOYU_')) delete env[key];
+  for (const key of AMBIENT_ENV) delete env[key];
+  Object.assign(env, {
+    TERM: 'xterm-256color',
+    MOYU_TIER: 'braille',
+    MOYU_REDUCE_MOTION: '1',
+  }, extra);
+  if (via === 'node') env.MOYU_TAKEOVER_FLAG = '';
+  else delete env.MOYU_TAKEOVER_FLAG;
+  return env;
+}
 
 /**
  * `via: 'node'` 直接跑 main.ts；`via: 'sh'` 走 `bin/moyu`，用来测那层 sh 包装的 SIGKILL 兜底。
@@ -55,8 +115,7 @@ async function launch(via: 'node' | 'sh' = 'node', extraEnv: NodeJS.ProcessEnv =
   const [file, args] = via === 'sh'
     ? [`${root}bin/moyu`, ['--', ...inner]]
     : [process.execPath, [...flags, `${root}src/app/main.ts`, '--', ...inner]];
-  const env: NodeJS.ProcessEnv = { ...process.env, TERM: 'xterm-256color', ...extraEnv };
-  if (via === 'node') env.MOYU_TAKEOVER_FLAG = '';
+  const env = launchEnv(via, process.env, extraEnv);
   const p = spawn(file, args, {
     cols: COLS, rows: ROWS, cwd: root, encoding: null, env,
     handleFlowControl: false,
@@ -102,6 +161,26 @@ async function launch(via: 'node' | 'sh' = 'node', extraEnv: NodeJS.ProcessEnv =
 function cupRows(s: string): number[] {
   return [...s.matchAll(/\x1b\[(\d+);(\d+)H/g)].map((m) => Number(m[1]));
 }
+
+test('a broken installed Cartridge cannot prevent the wrapped CLI from starting', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-broken-cartridge-'));
+  const game = path.join(home, 'games', 'broken');
+  fs.mkdirSync(game, { recursive: true });
+  fs.writeFileSync(path.join(game, 'moyu.game.json'), JSON.stringify({
+    id: 'broken', name: 'Broken', version: '1', apiVersion: 1, author: 'test', description: 'broken',
+    entry: 'index.mjs', viewport: { width: 16, height: 8 }, palette: ['#000000', '#ffffff'], controls: [],
+  }));
+  fs.writeFileSync(path.join(game, 'index.mjs'), `export default { create() { throw new Error('factory exploded'); } };\n`);
+  const s = await launch('node', { MOYU_HOME: home });
+  try {
+    await s.waitFor((w) => w.includes('INNER-READY') && w.includes(STANDBY), '坏 Cartridge 后内层仍启动');
+    const mark = s.wire().length;
+    s.send('p');
+    await s.waitFor((w) => w.slice(mark).includes('INNER-HELLO'), '内层仍能响应');
+    s.send('q');
+    assert.equal((await s.exited).exitCode, 7);
+  } finally { s.kill(); fs.rmSync(home, { recursive: true, force: true }); }
+});
 
 test('默认只占一行，Ctrl+] 一键展开并用 Esc 返回', async () => {
   const s = await launch();
@@ -164,6 +243,44 @@ test('Codex 中游戏覆盖在输入框正上方两行，退出后立即归还�
     const returned = s.wire().length;
     s.send('p');
     await s.waitFor((w) => w.slice(returned).includes('INNER-HELLO'), '退出后键盘焦点归还 Codex');
+  } finally { s.kill(); }
+});
+
+test('both Codex prompt glyphs confirm the composer before using inline overlay', async () => {
+  for (const command of ['i', 'I']) {
+    const s = await launch('node', { MOYU_OVERLAY: '1' });
+    try {
+      await s.waitFor((w) => w.includes(STANDBY), '一行待机条');
+      s.send(command);
+      await s.waitFor((w) => w.includes('Ask Codex'), 'Codex 输入框签名');
+      const enter = s.wire().length;
+      s.send('\x1d');
+      const playing = (await s.waitFor((w) => {
+        const tail = w.slice(enter);
+        return /\x1b\[(?:10|11);\d+H/.test(tail) && tail.includes('J 砍');
+      }, '确认后的输入框浮层')).slice(enter);
+      assert.ok(!playing.includes(`\x1b[1;${PLAY.innerRows}r`), `${command}: 不应退回底部分屏`);
+    } finally { s.kill(); }
+  }
+});
+
+test('a prompt glyph in ordinary transcript falls back to the protected bottom split', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '一行待机条');
+    s.send('v');
+    await s.waitFor((w) => w.includes('› ordinary transcript'), '普通 transcript');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(enter);
+      return tail.includes(`\x1b[1;${PLAY.innerRows}r`) && tail.includes('J 砍');
+    }, '受保护的底部分屏')).slice(enter);
+    assert.ok(!/\x1b\[(?:10|11);1H\x1b\[2K/.test(playing), '不能清掉 transcript 上方两行');
+    const leave = s.wire().length;
+    s.send('\x1b');
+    const restored = await s.waitFor((w) => w.slice(leave).includes(STANDBY), '返回待机');
+    assert.ok(restored.includes('› ordinary transcript'), '普通 transcript 必须保留');
   } finally { s.kill(); }
 });
 

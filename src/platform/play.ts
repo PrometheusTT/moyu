@@ -4,12 +4,29 @@ import { Teardown } from '../shell/teardown.ts';
 import { Arcade } from './arcade.ts';
 import { loadGameModules } from './registry.ts';
 import { PlaySurface } from './surface.ts';
+import type { GameModule } from './types.ts';
+
+export type PlayPreparation = { arcade: Arcade; error?: never } | { arcade?: never; error: string };
+
+function oneLine(value: string): string { return value.replace(/[\x00-\x1f\x7f]+/g, ' ').trim() || '未知错误'; }
+
+export function preparePlay(modules: GameModule[], id?: string): PlayPreparation {
+  if (id !== undefined && !modules.some((m) => m.manifest.id === id)) return { error: `找不到游戏 ${id}` };
+  const arcade = new Arcade(undefined, modules, id);
+  if (id !== undefined) {
+    const failure = arcade.failureFor(id);
+    if (failure !== undefined) return { error: `游戏 ${id} 启动失败：${oneLine(failure)}` };
+  }
+  if (arcade.available === 0) return { error: '没有可用游戏：请检查已安装 Cartridge' };
+  return { arcade };
+}
 
 export async function cmdPlay(id?: string): Promise<number> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) { process.stderr.write('moyu play 需要真终端\n'); return 2; }
   const modules = await loadGameModules();
-  if (id !== undefined && !modules.some((m) => m.manifest.id === id)) { process.stderr.write(`找不到游戏 ${id}\n`); return 2; }
-  const arcade = new Arcade(undefined, modules, id);
+  const prepared = preparePlay(modules, id);
+  if (prepared.error !== undefined) { process.stderr.write(`${prepared.error}\n`); return 2; }
+  const arcade = prepared.arcade;
   const teardown = new Teardown(() => ({}));
   let expanded = true;
   const rows = (): number => expanded ? Math.min(6, Math.max(2, (process.stdout.rows ?? 24) - 2)) : 2;

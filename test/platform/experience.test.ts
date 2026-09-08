@@ -45,6 +45,23 @@ test('held direction applies to every 60Hz step at both 15fps and 30fps; action 
   }
 });
 
+test('overlapping horizontal holds use the most recently pressed direction', () => {
+  const { game, steps } = recorder();
+  game.advance(1000);
+  game.feed(Buffer.from('d'), 1000);
+  game.feed(Buffer.from('a'), 1005);
+  game.advance(1017);
+  assert.deepEqual(steps.at(-1), {
+    left: true, right: false, up: false, down: false,
+    jump: false, primary: false, secondary: false,
+  });
+
+  game.feed(Buffer.from('d'), 1020);
+  game.advance(1034);
+  assert.equal(steps.at(-1)?.left, false);
+  assert.equal(steps.at(-1)?.right, true, '再次按右必须更新重叠期间的胜者');
+});
+
 test('sub-step frames do not consume an attack', () => {
   const { game, steps } = recorder();
   game.advance(1000); game.feed(Buffer.from('j'), 1000);

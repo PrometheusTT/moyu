@@ -35,6 +35,14 @@ test('local trusted cartridge joins built-ins without shadowing them', async () 
     assert.deepEqual(modules.slice(0, 3).map((m) => m.manifest.id), ['stick-slash', 'snake', 'blocks']);
     assert.equal(modules.filter((m) => m.manifest.id === 'tiny-test').length, 1);
 
+    const throwing = path.join(home, 'games', 'throws-on-create');
+    fs.mkdirSync(throwing, { recursive: true });
+    fs.writeFileSync(path.join(throwing, 'moyu.game.json'), JSON.stringify(manifest('throws-on-create')));
+    fs.writeFileSync(path.join(throwing, 'index.mjs'), `export default { create() { throw new Error('factory failed'); } };\n`);
+    const withThrowing = await loadGameModules();
+    assert.equal(withThrowing.filter((m) => m.manifest.id === 'throws-on-create').length, 1,
+      'registry imports the module; Arcade owns factory isolation');
+
     const duplicate = path.join(home, 'games', 'snake');
     fs.mkdirSync(duplicate, { recursive: true });
     fs.writeFileSync(path.join(duplicate, 'moyu.game.json'), JSON.stringify(manifest('snake')));

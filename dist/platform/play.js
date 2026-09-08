@@ -4,17 +4,32 @@ import { Teardown } from "../shell/teardown.js";
 import { Arcade } from "./arcade.js";
 import { loadGameModules } from "./registry.js";
 import { PlaySurface } from "./surface.js";
+function oneLine(value) { return value.replace(/[\x00-\x1f\x7f]+/g, ' ').trim() || '未知错误'; }
+export function preparePlay(modules, id) {
+    if (id !== undefined && !modules.some((m) => m.manifest.id === id))
+        return { error: `找不到游戏 ${id}` };
+    const arcade = new Arcade(undefined, modules, id);
+    if (id !== undefined) {
+        const failure = arcade.failureFor(id);
+        if (failure !== undefined)
+            return { error: `游戏 ${id} 启动失败：${oneLine(failure)}` };
+    }
+    if (arcade.available === 0)
+        return { error: '没有可用游戏：请检查已安装 Cartridge' };
+    return { arcade };
+}
 export async function cmdPlay(id) {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
         process.stderr.write('moyu play 需要真终端\n');
         return 2;
     }
     const modules = await loadGameModules();
-    if (id !== undefined && !modules.some((m) => m.manifest.id === id)) {
-        process.stderr.write(`找不到游戏 ${id}\n`);
+    const prepared = preparePlay(modules, id);
+    if (prepared.error !== undefined) {
+        process.stderr.write(`${prepared.error}\n`);
         return 2;
     }
-    const arcade = new Arcade(undefined, modules, id);
+    const arcade = prepared.arcade;
     const teardown = new Teardown(() => ({}));
     let expanded = true;
     const rows = () => expanded ? Math.min(6, Math.max(2, (process.stdout.rows ?? 24) - 2)) : 2;
