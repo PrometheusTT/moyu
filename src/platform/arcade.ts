@@ -158,10 +158,10 @@ class SnakeGame implements GameInstance {
   private rand(): number { this.seed = (this.seed * 1664525 + 1013904223) >>> 0; return this.seed / 0x100000000; }
   update(dt: number, input: GameInput): void {
     if (this.pendingDir === null) {
-      if ((input.up || input.jump) && this.dir[1] !== 1) this.pendingDir = [0, -1];
-      else if (input.down && this.dir[1] !== -1) this.pendingDir = [0, 1];
-      else if (input.left && this.dir[0] !== 1) this.pendingDir = [-1, 0];
-      else if (input.right && this.dir[0] !== -1) this.pendingDir = [1, 0];
+      if ((input.up || input.jump) && this.dir[0] !== 0) this.pendingDir = [0, -1];
+      else if (input.down && this.dir[0] !== 0) this.pendingDir = [0, 1];
+      else if (input.left && this.dir[1] !== 0) this.pendingDir = [-1, 0];
+      else if (input.right && this.dir[1] !== 0) this.pendingDir = [1, 0];
     }
     this.acc += dt;
     if (this.acc < Math.max(0.06, 0.14 - this.score * 0.002)) return;
@@ -344,7 +344,8 @@ function gameInstance(value: unknown): GameInstance {
     throw new Error('create 不能返回 Promise 或 thenable');
   }
   const candidate = value as Record<string, unknown>;
-  if (candidate.then !== undefined) throw new Error('create 不能返回 Promise 或 thenable');
+  const then = candidate.then;
+  if (typeof then === 'function') throw new Error('create 不能返回 Promise 或 thenable');
   const required = (name: 'update' | 'render'): ((...args: never[]) => unknown) => {
     const method = candidate[name];
     if (typeof method !== 'function') throw new Error(`游戏实例缺少 ${name}()`);
@@ -366,8 +367,8 @@ function gameInstance(value: unknown): GameInstance {
 
 function failureMessage(value: unknown): string {
   try {
-    if (value instanceof Error) return value.message || value.name;
-    return String(value);
+    const detail: unknown = value instanceof Error ? value.message || value.name : value;
+    return String(detail) || '未知错误';
   } catch { return '未知错误'; }
 }
 

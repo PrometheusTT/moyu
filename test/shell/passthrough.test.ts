@@ -134,6 +134,39 @@ test('onAltScreen 只在状态真正翻转时触发', () => {
   assert.deepEqual(events, [true, false]);
 });
 
+test('控制序列回调带着改写输出中紧随序列之后的偏移', () => {
+  const events: Array<{ kind: 'erase' | 'alt'; value?: boolean; offset: number }> = [];
+  const p = mk(R, {
+    onDisplayErase: (offset) => events.push({ kind: 'erase', offset }),
+    onAltScreen: (on, offset) => events.push({ kind: 'alt', value: on, offset }),
+  });
+  const input = 'before\x1b[2Jmiddle\x1b[?1049hafter\x1b[Jtail\x1b[?1049lfin';
+  const output = once(input, p);
+  assert.equal(output, input);
+  assert.deepEqual(events, [
+    { kind: 'erase', offset: enc.encode('before\x1b[2J').length },
+    { kind: 'alt', value: true, offset: enc.encode('before\x1b[2Jmiddle\x1b[?1049h').length },
+    { kind: 'erase', offset: enc.encode('before\x1b[2Jmiddle\x1b[?1049hafter\x1b[J').length },
+    { kind: 'alt', value: false, offset: enc.encode('before\x1b[2Jmiddle\x1b[?1049hafter\x1b[Jtail\x1b[?1049l').length },
+  ]);
+});
+
+test('跨 push 补齐的控制序列按完成它的那次输出报告偏移', () => {
+  const events: Array<[string, number]> = [];
+  const p = mk(R, {
+    onDisplayErase: (offset) => events.push(['erase', offset]),
+    onAltScreen: (on, offset) => events.push([on ? 'alt-on' : 'alt-off', offset]),
+  });
+  assert.equal(once('before\x1b[2', p), 'before');
+  assert.equal(once('Jbetween\x1b[?10', p), '\x1b[2Jbetween');
+  assert.deepEqual(events, [['erase', enc.encode('\x1b[2J').length]]);
+  assert.equal(once('49hafter', p), '\x1b[?1049hafter');
+  assert.deepEqual(events, [
+    ['erase', enc.encode('\x1b[2J').length],
+    ['alt-on', enc.encode('\x1b[?1049h').length],
+  ]);
+});
+
 test('?47 和 ?1047 也算备用屏', () => {
   for (const seq of ['\x1b[?47h', '\x1b[?1047h']) {
     const p = mk();

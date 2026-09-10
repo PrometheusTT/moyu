@@ -237,6 +237,7 @@ export class Passthrough {
         if (prefix === '?' && (final === 0x68 || final === 0x6c)) {
             const on = final === 0x68;
             const params = this.parseParams(seq, paramStart, paramEnd);
+            let changed = false;
             for (const p of params) {
                 if (p === 1049 || p === 1047 || p === 47) {
                     // 注意：真实终端把它当幂等的 set/reset，不是计数器。
@@ -244,11 +245,13 @@ export class Passthrough {
                     // 但那个歧义真实终端本来就有，内层程序自己会重绘，我们跟着它就对。
                     if (this.inAltScreen !== on) {
                         this.inAltScreen = on;
-                        this.onAltScreen?.(on);
+                        changed = true;
                     }
                 }
             }
             this.emitPending(out);
+            if (changed)
+                this.onAltScreen?.(on, out.length);
             return;
         }
         // ── kitty 键盘标志栈：只数，不改写 ──────────────────────────────
@@ -315,9 +318,9 @@ export class Passthrough {
             const mode = params[0] === undefined || params[0] < 0 ? 0 : params[0];
             // ED 0 从当前光标擦到**真实屏幕**末尾，所以只要光标属于内层，它就必然擦掉
             // 我们位于下方的区域。ED 1 方向相反，不会碰到下方区域。
-            if (mode === 0 || mode === 2 || mode === 3)
-                this.onDisplayErase?.();
             this.emitPending(out);
+            if (mode === 0 || mode === 2 || mode === 3)
+                this.onDisplayErase?.(out.length);
             return;
         }
         // ── 绝对行定位：夹取行号 ────────────────────────────────────────

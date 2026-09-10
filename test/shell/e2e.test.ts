@@ -162,6 +162,43 @@ function cupRows(s: string): number[] {
   return [...s.matchAll(/\x1b\[(\d+);(\d+)H/g)].map((m) => Number(m[1]));
 }
 
+function inlineGameAt(s: string, row: number): boolean {
+  const expected = row - MICRO_GAME_ROWS;
+  let at = -1;
+  while ((at = s.indexOf('J 砍', at + 1)) >= 0) {
+    const rows = cupRows(s.slice(0, at));
+    if (rows.at(-1) === expected) return true;
+  }
+  return false;
+}
+
+function protectedSplit(s: string, innerRows: number): boolean {
+  let region = -1;
+  while ((region = s.indexOf(`\x1b[1;${innerRows}r`, region + 1)) >= 0) {
+    if (s.indexOf('J 砍', region) >= 0) return true;
+  }
+  return false;
+}
+
+async function establishComposer(s: Session, command = 'G'): Promise<void> {
+  const mark = s.wire().length;
+  s.send(command);
+  await s.waitFor((w) => w.slice(mark).includes('Ask Codex'), 'Codex 输入框初始签名');
+  if (command === 'G') {
+    const pending = s.wire().length;
+    s.send('f');
+    await s.waitFor((w) => w.slice(pending).includes('REFRESH-PENDING 1'), '输入框验证刷新已等待放行');
+    const intermediate = s.wire().length;
+    s.send('F');
+    await s.waitFor((w) => w.slice(intermediate).includes('INTERMEDIATE-ONLY'), '验证期间的独立 PTY 输出');
+    s.send('3');
+  }
+  await s.waitFor((w) => {
+    const tail = w.slice(mark);
+    return [...tail.matchAll(/Ask Codex/g)].length >= 2;
+  }, 'Codex 输入框验证重绘');
+}
+
 test('a broken installed Cartridge cannot prevent the wrapped CLI from starting', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-broken-cartridge-'));
   const game = path.join(home, 'games', 'broken');
@@ -211,8 +248,7 @@ test('Codex 中游戏覆盖在输入框正上方两行，退出后立即归还�
   const s = await launch('node', { MOYU_OVERLAY: '1' });
   try {
     await s.waitFor((w) => w.includes(STANDBY), '一行待机条');
-    s.send('i');
-    await s.waitFor((w) => w.includes('› Ask Codex'), 'Codex 输入框锚点');
+    await establishComposer(s);
 
     const enter = s.wire().length;
     s.send('\x1d');
@@ -246,22 +282,124 @@ test('Codex 中游戏覆盖在输入框正上方两行，退出后立即归还�
   } finally { s.kill(); }
 });
 
+test('verification keeps its proposal across intermediate PTY chunks', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '一行待机条');
+    await establishComposer(s, 'G');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(enter);
+      return inlineGameAt(tail, 12) || protectedSplit(tail, PLAY.innerRows);
+    }, '跨 marker chunk 验证后的浮层')).slice(enter);
+    assert.ok(inlineGameAt(playing, 12), 'SIGWINCH marker 不应清掉待验证的输入框 proposal');
+  } finally { s.kill(); }
+});
+
 test('both Codex prompt glyphs confirm the composer before using inline overlay', async () => {
-  for (const command of ['i', 'I']) {
+  for (const command of ['G', 'H']) {
     const s = await launch('node', { MOYU_OVERLAY: '1' });
     try {
       await s.waitFor((w) => w.includes(STANDBY), '一行待机条');
-      s.send(command);
-      await s.waitFor((w) => w.includes('Ask Codex'), 'Codex 输入框签名');
+      await establishComposer(s, command);
       const enter = s.wire().length;
       s.send('\x1d');
       const playing = (await s.waitFor((w) => {
         const tail = w.slice(enter);
-        return /\x1b\[(?:10|11);\d+H/.test(tail) && tail.includes('J 砍');
+        return inlineGameAt(tail, 12) || protectedSplit(tail, PLAY.innerRows);
       }, '确认后的输入框浮层')).slice(enter);
-      assert.ok(!playing.includes(`\x1b[1;${PLAY.innerRows}r`), `${command}: 不应退回底部分屏`);
+      assert.ok(inlineGameAt(playing, 12), `${command}: 应在输入框正上方绘制`);
+      assert.ok(!protectedSplit(playing, PLAY.innerRows), `${command}: 不应退回底部分屏`);
     } finally { s.kill(); }
   }
+});
+
+test('explicit refresh reacquires a composer that moved nearby', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    s.send('R');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    await s.waitFor((w) => inlineGameAt(w.slice(enter), 12), '首次输入框浮层');
+    const leave = s.wire().length;
+    s.send('\x1b');
+    await s.waitFor((w) => w.slice(leave).includes('\x1b[14;1H› Ask Codex'), '移动后的 refresh 重绘');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const reenter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => inlineGameAt(w.slice(reenter), 14),
+      '移动后的输入框浮层')).slice(reenter);
+    assert.ok(!inlineGameAt(playing, 12));
+  } finally { s.kill(); }
+});
+
+test('split refresh prefers the later real composer over transcript glyphs', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    s.send('2');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    await s.waitFor((w) => inlineGameAt(w.slice(enter), 12), '首次输入框浮层');
+    const leave = s.wire().length;
+    s.send('\x1b');
+    await s.waitFor((w) => {
+      const tail = w.slice(leave);
+      return tail.includes('› transcript before composer') && tail.includes('Ask Codex');
+    }, 'split refresh 两个候选');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const reenter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => inlineGameAt(w.slice(reenter), 12),
+      '真实输入框候选获胜')).slice(reenter);
+    assert.ok(!inlineGameAt(playing, 10), '较早的 transcript glyph 不得获胜');
+  } finally { s.kill(); }
+});
+
+test('a silent refresh expires without discarding a still-valid row', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    s.send('0');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    await s.waitFor((w) => inlineGameAt(w.slice(enter), 12), '首次输入框浮层');
+    const leave = s.wire().length;
+    s.send('\x1b');
+    await s.waitFor((w) => w.slice(leave).includes('SIGWINCH'), 'silent refresh 信号');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const reenter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(reenter);
+      return inlineGameAt(tail, 12) || protectedSplit(tail, PLAY.innerRows);
+    }, 'silent refresh 过期后重入')).slice(reenter);
+    assert.ok(inlineGameAt(playing, 12));
+  } finally { s.kill(); }
+});
+
+test('an exact static transcript cannot establish composer trust', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    const transcript = s.wire().length;
+    s.send('V');
+    await s.waitFor((w) => w.slice(transcript).includes('Ask Codex static transcript'), '静态精确签名');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(enter);
+      return protectedSplit(tail, PLAY.innerRows) || inlineGameAt(tail, 12);
+    }, '静态签名后的安全回退')).slice(enter);
+    assert.ok(protectedSplit(playing, PLAY.innerRows), '静态 transcript 不得建立输入框信任');
+    assert.ok(!inlineGameAt(playing, 12));
+  } finally { s.kill(); }
 });
 
 test('a prompt glyph in ordinary transcript falls back to the protected bottom split', async () => {
@@ -284,12 +422,136 @@ test('a prompt glyph in ordinary transcript falls back to the protected bottom s
   } finally { s.kill(); }
 });
 
+test('non-empty drafts reacquire after invalidation', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    const redraw = s.wire().length;
+    s.send('Dn');
+    await s.waitFor((w) => w.slice(redraw).includes('› draft text'), 'ED 后非空草稿重绘');
+    await s.waitFor((w) => [...w.slice(redraw).matchAll(/› draft text/g)].length >= 2,
+      '非空草稿验证重绘');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(enter);
+      return inlineGameAt(tail, 12) || protectedSplit(tail, PLAY.innerRows);
+    }, '非空草稿锚点重获')).slice(enter);
+    assert.ok(inlineGameAt(playing, 12));
+  } finally { s.kill(); }
+});
+
+test('same-write ED accepts only the post-boundary composer row', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    const repaint = s.wire().length;
+    s.send('o');
+    await s.waitFor((w) => w.slice(repaint).includes('ordered draft'), 'ED 后的新输入框');
+    await s.waitFor((w) => [...w.slice(repaint).matchAll(/› ordered draft/g)].length >= 2,
+      'ED 后输入框验证重绘');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(enter);
+      return inlineGameAt(tail, 14) || protectedSplit(tail, PLAY.innerRows);
+    }, 'ED 后输入框重获')).slice(enter);
+    assert.ok(inlineGameAt(playing, 14), '必须使用 ED 后的输入框坐标');
+    assert.ok(!inlineGameAt(playing, 8), 'ED 前 transcript 坐标不得存活');
+  } finally { s.kill(); }
+});
+
+test('ED without redraw invalidates the composer anchor', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    const erase = s.wire().length;
+    s.send('D');
+    await s.waitFor((w) => w.slice(erase).includes('ED-WITHOUT-REDRAW'), '无重绘 ED');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => protectedSplit(w.slice(enter), PLAY.innerRows),
+      '无锚点安全回退')).slice(enter);
+    assert.ok(!inlineGameAt(playing, 12), 'ED 前锚点不得继续使用');
+  } finally { s.kill(); }
+});
+
+test('a transcript glyph cannot satisfy an authorized repaint without a complete signature', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((wire) => wire.includes(STANDBY), '待机');
+    await establishComposer(s);
+    const repaint = s.wire().length;
+    s.send('Dw');
+    await s.waitFor((wire) => {
+      const tail = wire.slice(repaint);
+      return tail.includes('› ordinary repaint transcript') && tail.includes('SIGWINCH');
+    }, '不完整候选的验证刷新');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.equal([...s.wire().slice(repaint).matchAll(/› ordinary repaint transcript/g)].length, 1,
+      '静态 transcript 不应随验证刷新重画');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((wire) => {
+      const tail = wire.slice(enter);
+      return protectedSplit(tail, PLAY.innerRows) || inlineGameAt(tail, 13);
+    }, '不完整候选后的安全回退')).slice(enter);
+    assert.ok(!inlineGameAt(playing, 13), '只有完整 prompt 签名才能提交重绘坐标');
+  } finally { s.kill(); }
+});
+
+test('a split candidate cannot complete across an invalidation boundary', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    const stale = s.wire().length;
+    s.send('z');
+    await s.waitFor((w) => w.slice(stale).includes('Codex stale'), '跨 ED 的半截签名');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => protectedSplit(w.slice(enter), PLAY.innerRows),
+      '陈旧半截签名后的安全回退')).slice(enter);
+    assert.ok(!inlineGameAt(playing, 12));
+  } finally { s.kill(); }
+});
+
+test('expanded collapse waits for an authorized composer repaint', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    s.send('4');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    await s.waitFor((w) => inlineGameAt(w.slice(enter), 12), '首次输入框浮层');
+    let mark = s.wire().length;
+    s.send('e');
+    await s.waitFor((w) => w.slice(mark).includes('\x1b[1;34r'), '展开六行');
+    s.send('\x00');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    mark = s.wire().length;
+    s.send('e');
+    await s.waitFor((w) => w.slice(mark).includes('SIGWINCH'), '折叠刷新信号');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.ok(!inlineGameAt(s.wire().slice(mark), 12), '未授权重绘前不应恢复浮层');
+    const release = s.wire().length;
+    s.send('\x00');
+    await s.waitFor((w) => inlineGameAt(w.slice(release), 12), '授权重绘后恢复浮层');
+  } finally { s.kill(); }
+});
+
 test('E expands to six protected rows, Tab selects a full board, and E returns inline', async () => {
   const s = await launch('node', { MOYU_OVERLAY: '1', MOYU_TIER: 'braille' });
   try {
     await s.waitFor(w => w.includes(STANDBY), '待机');
-    s.send('i');
-    await s.waitFor(w => w.includes('› Ask Codex'), '输入框');
+    await establishComposer(s);
     s.send('\x1d');
     await s.waitFor(w => w.includes('J 砍'), '首次帮助');
     let mark = s.wire().length;
@@ -303,12 +565,51 @@ test('E expands to six protected rows, Tab selects a full board, and E returns i
     await s.waitFor(w => /[\u2580-\u259f\u2800-\u28ff]/.test(w.slice(mark)), '完整棋盘');
     mark = s.wire().length;
     s.send('e');
-    await s.waitFor(w => w.slice(mark).includes('\x1b[1;39r') && /\x1b\[10;1H/.test(w.slice(mark))
+    await s.waitFor(w => /\x1b\[(?:10|11);1H/.test(w.slice(mark))
       && w.slice(mark).includes('E 展开'), '恢复两行入口及输入框锚点');
+    await new Promise((resolve) => setTimeout(resolve, 80));
     mark = s.wire().length;
     s.send('\x1b');
-    await s.waitFor(w => w.slice(mark).includes(STANDBY) && w.slice(mark).includes('ORIGINAL-CONTEXT'), '退出后原内容恢复');
+    await s.waitFor(w => w.slice(mark).includes(STANDBY), '退出后归还 CLI 焦点');
   } finally { s.kill(); }
+});
+
+test('alternate-screen transitions require post-boundary composer evidence', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    const swap = s.wire().length;
+    s.send('aA');
+    await s.waitFor((w) => {
+      const tail = w.slice(swap);
+      return tail.includes('ALT-SCREEN') && tail.includes('\x1b[?1049l')
+        && tail.lastIndexOf('Ask Codex') > tail.lastIndexOf('\x1b[?1049l');
+    }, '换屏边界后的输入框重绘');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(enter);
+      return inlineGameAt(tail, 12) || protectedSplit(tail, PLAY.innerRows);
+    }, '换屏后的输入框重获')).slice(enter);
+    assert.ok(inlineGameAt(playing, 12));
+  } finally { s.kill(); }
+
+  const stale = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await stale.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(stale);
+    const swap = stale.wire().length;
+    stale.send('a');
+    await stale.waitFor((w) => w.slice(swap).includes('ALT-SCREEN'), '只进入备用屏');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const enter = stale.wire().length;
+    stale.send('\x1d');
+    const playing = (await stale.waitFor((w) => protectedSplit(w.slice(enter), PLAY.innerRows),
+      '无边界后证据的安全回退')).slice(enter);
+    assert.ok(!inlineGameAt(playing, 12));
+  } finally { stale.kill(); }
 });
 
 test('Codex 启动切入备用屏后会重建滚动区并重画待机条', async () => {
@@ -345,6 +646,23 @@ test('Codex inline TUI 用 ED 0 清屏后会再次重画待机条', async () => 
     }, 'inline 清屏后的待机条')).slice(mark);
     assert.ok(tail.indexOf(STANDBY) > tail.indexOf('CODEX-INLINE-CLEAR'),
       'ED 0 擦除以后必须重新绘制待机条');
+  } finally { s.kill(); }
+});
+
+test('a game-owned Kitty Escape release never reaches the wrapped CLI', async () => {
+  const s = await launch();
+  try {
+    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
+    s.send('\x1d');
+    await s.waitFor((w) => w.includes(`\x1b[1;${PLAY.innerRows}r`), '进入游戏');
+    const mark = s.wire().length;
+    s.send('\x1b[27;1:1u\x1b[27;3:3u');
+    await s.waitFor((w) => w.slice(mark).includes(STANDBY), 'Kitty Escape 返回待机');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.ok(!s.wire().slice(mark).includes('OTHERSEQ'), 'Kitty Escape release leaked into the inner PTY');
+    const check = s.wire().length;
+    s.send('p');
+    await s.waitFor((w) => w.slice(check).includes('INNER-HELLO'), '焦点已归还内层');
   } finally { s.kill(); }
 });
 
@@ -513,6 +831,45 @@ function layoutAt(cols: number, rows: number): { innerRows: number; gameTop: num
   return r.kind === 'split' ? { innerRows: r.layout.innerRows, gameTop: r.layout.gameTop } : null;
 }
 
+
+test('too-small yield never paints stale inline rows and reacquires the bottom composer on resume', async () => {
+  const TINY = 10;
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    s.send('B');
+    await establishComposer(s);
+    const initialRow = L.innerRows - 2;
+    const enter = s.wire().length;
+    s.send('\x1d');
+    await s.waitFor((w) => inlineGameAt(w.slice(enter), initialRow), '底部输入框上方的浮层');
+
+    const shrink = s.wire().length;
+    s.resize(COLS, TINY);
+    await s.waitFor((w) => {
+      const tail = w.slice(shrink);
+      return tail.includes(`WINCH ${COLS}x${TINY}`) && tail.includes(`\x1b[${TINY - 2};1H`)
+        && cupRows(tail).at(-1) === TINY - 2;
+    }, '让屏后内层拿到整屏并重绘输入框');
+    const yielded = s.wire().length;
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    const quiet = s.wire().slice(yielded);
+    assert.deepEqual(cupRows(quiet).filter((row) => row > TINY), [], '让屏期间还按旧布局画到屏幕外');
+    assert.ok(!quiet.includes('J 砍'), '让屏期间不应重启输入框浮层');
+
+    const resume = s.wire().length;
+    s.resize(COLS, ROWS);
+    await s.waitFor((w) => {
+      const tail = w.slice(resume);
+      return tail.includes(`\x1b[1;${L.innerRows}r`) && tail.includes(`WINCH ${COLS}x${L.innerRows}`);
+    }, '恢复一行候场分屏');
+    const repaint = s.wire().length;
+    s.send('\x00');
+    const resumed = (await s.waitFor((w) => inlineGameAt(w.slice(repaint), initialRow),
+      '恢复后重获底部输入框并继续浮层')).slice(repaint);
+    assert.ok(!protectedSplit(resumed, L.innerRows), '恢复后不应退回底部分屏');
+  } finally { s.kill(); }
+});
 
 test('终端小到放不下就收起游戏区，放大后自动回来', async () => {
   // 游戏条只要 1 行，所以"放不下"的门槛低到只剩 MIN_INNER_ROWS —— 10 行。

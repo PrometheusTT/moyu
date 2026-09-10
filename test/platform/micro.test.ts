@@ -103,6 +103,15 @@ test('snake accepts at most one turn before each grid movement', () => {
   assert.deepEqual(headPixel(game), [31, 2], '相对 committed 上方向的反向下必须被拒绝');
 });
 
+test('held current snake direction does not occupy the next turn slot', () => {
+  const game = BUILTIN_GAMES[1]!.create({ seed: 1, random: () => 0.5 });
+  const none = { left: false, right: false, up: false, down: false, jump: false, primary: false, secondary: false };
+  game.update(0.14, none);
+  game.update(0.01, { ...none, right: true });
+  game.update(0.13, { ...none, up: true });
+  assert.deepEqual(headPixel(game), [33, 3]);
+});
+
 test('falling block visibly descends before the micro camera begins following it', () => {
   const game = BUILTIN_GAMES[2]!.create({ seed: 1, random: () => 0.5 });
   const ys = (): number[] => [...microPixels(game)].flatMap((p, i) => p === BODY ? [Math.floor(i / 80)] : []);

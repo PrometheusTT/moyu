@@ -25,6 +25,27 @@ test('preparePlay distinguishes unknown IDs from known factory failures', () => 
   assert.match(failed.error ?? '', /^游戏 bad 启动失败：boom with control$/);
 });
 
+test('preparePlay flattens C0, DEL, and C1 controls', () => {
+  const bad = module('bad', () => { throw new Error('boom\nwithC1control\x7f\x1b'); });
+  assert.equal(preparePlay([bad], 'bad').error, '游戏 bad 启动失败：boom with C1 control');
+});
+
+test('preparePlay safely normalizes malformed Error messages', () => {
+  const numeric = module('numeric', () => {
+    const error = new Error('unused');
+    Object.defineProperty(error, 'message', { value: 42 });
+    throw error;
+  });
+  assert.equal(preparePlay([numeric], 'numeric').error, '游戏 numeric 启动失败：42');
+
+  const hostile = module('hostile', () => {
+    const error = new Error('unused');
+    Object.defineProperty(error, 'message', { value: { toString() { throw new Error('no string'); } } });
+    throw error;
+  });
+  assert.equal(preparePlay([hostile], 'hostile').error, '游戏 hostile 启动失败：未知错误');
+});
+
 test('preparePlay rejects invalid known instances and zero survivors', () => {
   const invalid = module('invalid', () => ({ update() {} }) as unknown as GameInstance);
   assert.match(preparePlay([invalid], 'invalid').error ?? '', /启动失败.*缺少 render/);

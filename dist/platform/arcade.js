@@ -198,13 +198,13 @@ class SnakeGame {
     rand() { this.seed = (this.seed * 1664525 + 1013904223) >>> 0; return this.seed / 0x100000000; }
     update(dt, input) {
         if (this.pendingDir === null) {
-            if ((input.up || input.jump) && this.dir[1] !== 1)
+            if ((input.up || input.jump) && this.dir[0] !== 0)
                 this.pendingDir = [0, -1];
-            else if (input.down && this.dir[1] !== -1)
+            else if (input.down && this.dir[0] !== 0)
                 this.pendingDir = [0, 1];
-            else if (input.left && this.dir[0] !== 1)
+            else if (input.left && this.dir[1] !== 0)
                 this.pendingDir = [-1, 0];
-            else if (input.right && this.dir[0] !== -1)
+            else if (input.right && this.dir[1] !== 0)
                 this.pendingDir = [1, 0];
         }
         this.acc += dt;
@@ -445,7 +445,8 @@ function gameInstance(value) {
         throw new Error('create 不能返回 Promise 或 thenable');
     }
     const candidate = value;
-    if (candidate.then !== undefined)
+    const then = candidate.then;
+    if (typeof then === 'function')
         throw new Error('create 不能返回 Promise 或 thenable');
     const required = (name) => {
         const method = candidate[name];
@@ -470,9 +471,8 @@ function gameInstance(value) {
 }
 function failureMessage(value) {
     try {
-        if (value instanceof Error)
-            return value.message || value.name;
-        return String(value);
+        const detail = value instanceof Error ? value.message || value.name : value;
+        return String(detail) || '未知错误';
     }
     catch {
         return '未知错误';

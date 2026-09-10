@@ -67,6 +67,44 @@ test('rejected async factories are observed while being quarantined', async () =
   assert.equal(run.status, 0, run.stderr);
 });
 
+test('non-callable then state remains valid game data', () => {
+  for (const [index, then] of [null, false, 0, 'state'].entries()) {
+    const id = `state-${index}`;
+    const a = new Arcade('/tmp/moyu-no-events-test', [
+      cartridge(id, () => ({ ...visibleGame('a', []), then }) as GameInstance),
+    ]);
+    assert.equal(a.available, 1, id);
+    assert.equal(a.failureFor(id), undefined, id);
+  }
+});
+
+test('callable then accessors are inspected once and never invoked', () => {
+  let reads = 0, calls = 0;
+  const a = new Arcade('/tmp/moyu-no-events-test', [cartridge('then-getter', () => {
+    const game = visibleGame('a', []);
+    Object.defineProperty(game, 'then', {
+      get() { reads++; return () => { calls++; }; },
+    });
+    return game;
+  })]);
+  assert.equal(a.available, 0);
+  assert.equal(reads, 1);
+  assert.equal(calls, 0);
+  assert.ok(a.failureFor('then-getter'));
+});
+
+test('throwing then accessors are quarantined without hiding later cartridges', () => {
+  const broken = cartridge('then-throws', () => {
+    const game = visibleGame('a', []);
+    Object.defineProperty(game, 'then', { get() { throw new Error('then getter failed'); } });
+    return game;
+  });
+  const a = new Arcade('/tmp/moyu-no-events-test', [broken, cartridge('healthy', () => visibleGame('a', []))]);
+  assert.equal(a.available, 1);
+  assert.match(a.failureFor('then-throws') ?? '', /then getter failed/);
+  assert.equal(a.failureFor('healthy'), undefined);
+});
+
 test('factory failures and invalid instances are quarantined as atomic cartridge slots', () => {
   const calls: string[] = [];
   const factories: string[] = [];

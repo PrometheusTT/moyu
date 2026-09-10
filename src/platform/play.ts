@@ -8,7 +8,7 @@ import type { GameModule } from './types.ts';
 
 export type PlayPreparation = { arcade: Arcade; error?: never } | { arcade?: never; error: string };
 
-function oneLine(value: string): string { return value.replace(/[\x00-\x1f\x7f]+/g, ' ').trim() || '未知错误'; }
+function oneLine(value: string): string { return value.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim() || '未知错误'; }
 
 export function preparePlay(modules: GameModule[], id?: string): PlayPreparation {
   if (id !== undefined && !modules.some((m) => m.manifest.id === id)) return { error: `找不到游戏 ${id}` };

@@ -10,6 +10,7 @@ export type Action =
 
 type KittyKey = { code: number; ctrl: boolean; alt: boolean; event: number };
 type Scan = { end: number; key: KittyKey | null; reply: boolean } | 'partial' | null;
+type TerminalString = 'normal' | 'osc' | 'st' | 'osc-esc' | 'st-esc';
 const EMPTY = new Uint8Array(0);
 const MAX_HOLD = 24;
 
@@ -31,27 +32,22 @@ function parseKitty(params: string): KittyKey | null {
     event: subParam(params, 1, 1) ?? 1 };
 }
 
-function scanEsc(buf: Uint8Array, at: number): Scan {
-  const next = buf[at + 1];
-  // A lone Escape is a real key, not an indefinitely buffered sequence.
+function scanEscTail(buf: Uint8Array, tailAt: number): Scan {
+  const next = buf[tailAt];
   if (next === undefined || next < 0x20) return null;
   if (next !== 0x5b) {
-    if (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
-      for (let j = at + 2; j < buf.length; j++) {
-        if (buf[j] === 0x07) return { end: j + 1, key: null, reply: true };
-        if (buf[j] === 0x1b && buf[j + 1] === 0x5c) return { end: j + 2, key: null, reply: true };
-      }
+    if (next === 0x4f && buf[tailAt + 1] !== undefined) {
+      return { end: tailAt + 2, key: null, reply: false };
     }
-    if (next === 0x4f && buf[at + 2] !== undefined) return { end: at + 3, key: null, reply: false };
-    return { end: at + 2, key: null, reply: false };
+    return { end: tailAt + 1, key: null, reply: false };
   }
-  let j = at + 2;
+  let j = tailAt + 1;
   while (j < buf.length && buf[j]! >= 0x30 && buf[j]! <= 0x3f) j++;
   const paramEnd = j;
   while (j < buf.length && buf[j]! >= 0x20 && buf[j]! <= 0x2f) j++;
-  if (j >= buf.length) return j - at <= MAX_HOLD ? 'partial' : null;
+  if (j >= buf.length) return j - tailAt + 1 <= MAX_HOLD ? 'partial' : null;
   const end = j + 1;
-  const params = Buffer.from(buf.subarray(at + 2, paramEnd)).toString('latin1');
+  const params = Buffer.from(buf.subarray(tailAt + 1, paramEnd)).toString('latin1');
   const inter = Buffer.from(buf.subarray(paramEnd, j)).toString('latin1');
   const final = String.fromCharCode(buf[j]!);
   const reply = (final === 'c' && /^[?>]/.test(params))
@@ -61,6 +57,11 @@ function scanEsc(buf: Uint8Array, at: number): Scan {
     || (final === 'y' && inter.includes('$'));
   if (final !== 'u' || /[<=>?]/.test(params)) return { end, key: null, reply };
   return { end, key: parseKitty(params), reply: false };
+}
+
+function scanEsc(buf: Uint8Array, at: number): Scan {
+  // A lone Escape is a real key, not an indefinitely buffered sequence.
+  return scanEscTail(buf, at + 1);
 }
 
 function kittyAction(key: KittyKey | null, reply: boolean, focus: Focus, bytes: Uint8Array): Action | 'pass' | 'drop' {
@@ -91,92 +92,195 @@ export class InputRouter {
   focus: Focus;
   private held: Uint8Array = EMPTY;
   private pasting = false;
-  /** 0=普通输入，1=OSC/DCS/SOS/PM/APC 载荷，2=载荷中待判定 ST 的 ESC。 */
-  private terminalString: 0 | 1 | 2 = 0;
+  private terminalString: TerminalString = 'normal';
+  private csiOverflow = false;
+  private kittyEscapeOwner: Focus | null = null;
 
   constructor(opts: { focus?: Focus } = {}) { this.focus = opts.focus ?? 'cli'; }
-  get heldBytes(): number { return this.held.length + (this.terminalString === 2 ? 1 : 0); }
+  get heldBytes(): number {
+    return this.held.length + (this.terminalString.endsWith('-esc') ? 1 : 0);
+  }
 
-  route(chunk: Uint8Array): Action[] {
-    const buf = this.held.length === 0 ? chunk : join(this.held, chunk);
+  private kittyEscapeAction(key: KittyKey, bytes: Uint8Array): Action | 'drop' {
+    if (key.event === 1) {
+      this.kittyEscapeOwner = this.focus;
+      return this.focus === 'game' ? { kind: 'toggle-focus' } : { kind: 'forward', bytes };
+    }
+    const owner = this.kittyEscapeOwner;
+    if (key.event === 3) this.kittyEscapeOwner = null;
+    if (owner === 'cli') return { kind: 'forward', bytes };
+    if (owner === 'game') return 'drop';
+    return this.focus === 'cli' ? { kind: 'forward', bytes } : 'drop';
+  }
+
+  route(chunk: Uint8Array, onAction?: (action: Action) => void): Action[] {
+    const pendingStringEsc = this.terminalString.endsWith('-esc') && chunk.length > 0;
+    const completedString = pendingStringEsc && chunk[0] === 0x5c;
+    const cancelledString = pendingStringEsc && (chunk[0] === 0x18 || chunk[0] === 0x1a);
+    const doubledStringEsc = pendingStringEsc && chunk[0] === 0x1b;
+    const interruptedString = pendingStringEsc && !completedString && !cancelledString && !doubledStringEsc;
+    const heldEsc = this.held.length === 1 && this.held[0] === 0x1b;
+    if (pendingStringEsc) this.terminalString = 'normal';
+    const buf = interruptedString ? join(Uint8Array.of(0x1b), chunk)
+      : this.held.length === 0 ? chunk : join(this.held, chunk);
+    const heldFreshEsc = heldEsc && this.terminalString === 'normal' && !interruptedString;
+    const causalStringEsc = interruptedString || doubledStringEsc || heldFreshEsc;
     this.held = EMPTY;
     const actions: Action[] = [];
+    const emit = (action: Action): void => {
+      if (onAction === undefined) actions.push(action); else onAction(action);
+    };
     let runStart = -1;
+    const pushRun = (bytes: Uint8Array): void => {
+      emit(this.pasting || this.focus === 'cli' ? { kind: 'forward', bytes } : { kind: 'game', bytes });
+    };
     const flush = (end: number): void => {
       if (runStart < 0 || end <= runStart) { runStart = -1; return; }
-      const bytes = buf.subarray(runStart, end);
-      actions.push(this.pasting || this.focus === 'cli' ? { kind: 'forward', bytes } : { kind: 'game', bytes });
+      pushRun(buf.subarray(runStart, end));
       runStart = -1;
     };
 
     let i = 0;
+    // An ESC that interrupted a terminal string is a sequence introducer, even when the
+    // resulting two-byte opener happens to occupy an otherwise ambiguous whole chunk.
+    let causalEscAt = causalStringEsc ? 0 : -1;
+    if (this.csiOverflow) {
+      let j = 0;
+      while (j < buf.length && !(buf[j]! >= 0x40 && buf[j]! <= 0x7e)) j++;
+      const end = Math.min(buf.length, j + 1);
+      if (end > 0) emit({ kind: 'forward', bytes: buf.subarray(0, end) });
+      if (j >= buf.length) return actions;
+      this.csiOverflow = false;
+      i = end;
+    }
+    if (completedString || cancelledString) {
+      emit({ kind: 'forward', bytes: Uint8Array.of(0x1b, chunk[0]!) });
+      i = 1;
+    } else if (doubledStringEsc) {
+      emit({ kind: 'forward', bytes: Uint8Array.of(0x1b) });
+      if (chunk.length === 1) {
+        // The string-ending ESC established that this second ESC starts a fresh sequence.
+        // Keep it across one more PTY split instead of reinterpreting it as a bare key.
+        this.held = chunk.slice();
+        return actions;
+      }
+    }
     while (i < buf.length) {
+      if (i >= buf.length) break;
       const b = buf[i]!;
-      if (this.terminalString === 1) {
+      if (this.terminalString === 'osc' || this.terminalString === 'st') {
         let end = i;
-        while (end < buf.length && buf[end] !== 0x07 && buf[end] !== 0x18
-          && buf[end] !== 0x1a && buf[end] !== 0x1b) end++;
-        if (end > i) actions.push({ kind: 'forward', bytes: buf.subarray(i, end) });
+        while (end < buf.length && buf[end] !== 0x18 && buf[end] !== 0x1a
+          && buf[end] !== 0x1b && !(this.terminalString === 'osc' && buf[end] === 0x07)) end++;
+        if (end > i) emit({ kind: 'forward', bytes: buf.subarray(i, end) });
         i = end;
         if (i >= buf.length) continue;
         const special = buf[i]!;
-        if (special === 0x1b) { this.terminalString = 2; i++; continue; }
-        actions.push({ kind: 'forward', bytes: buf.subarray(i, i + 1) });
-        this.terminalString = 0; // BEL terminates; CAN/SUB interrupts.
+        if (special === 0x1b) {
+          if (i + 1 >= buf.length) {
+            this.terminalString = this.terminalString === 'osc' ? 'osc-esc' : 'st-esc';
+            break;
+          }
+          if (buf[i + 1] === 0x5c) {
+            emit({ kind: 'forward', bytes: buf.subarray(i, i + 2) });
+            this.terminalString = 'normal';
+            i += 2;
+            continue;
+          }
+          if (buf[i + 1] === 0x1b) {
+            emit({ kind: 'forward', bytes: buf.subarray(i, i + 1) });
+            this.terminalString = 'normal';
+            i++;
+            // This Escape is not an ambiguous standalone key: the preceding string Escape
+            // established that it begins a fresh sequence. Retain it if its tail was split.
+            if (i + 1 >= buf.length) {
+              this.held = buf.slice(i);
+              return actions;
+            }
+            continue;
+          }
+          if (buf[i + 1] === 0x18 || buf[i + 1] === 0x1a) {
+            emit({ kind: 'forward', bytes: buf.subarray(i, i + 2) });
+            this.terminalString = 'normal';
+            i += 2;
+            continue;
+          }
+          this.terminalString = 'normal';
+          causalEscAt = i;
+          continue;
+        }
+        emit({ kind: 'forward', bytes: buf.subarray(i, i + 1) });
+        this.terminalString = 'normal';
         i++;
         continue;
       }
-      if (this.terminalString === 2) {
-        if (b === 0x5c) {
-          actions.push({ kind: 'forward', bytes: Uint8Array.of(0x1b, b) });
-          this.terminalString = 0;
-          i++;
-          continue;
-        }
-        // The preceding ESC did not form ST. Reparse it and the remaining bytes as a
-        // fresh escape sequence rather than treating them as string payload.
-        this.terminalString = 0;
-        const rest = new Uint8Array(1 + buf.length - i);
-        rest[0] = 0x1b;
-        rest.set(buf.subarray(i), 1);
-        actions.push(...this.route(rest));
-        return actions;
-      }
       if (!this.pasting && b === 0x1b) {
         const next = buf[i + 1];
-        if (next === 0x5d || next === 0x50 || next === 0x58 || next === 0x5e || next === 0x5f) {
+        const kind = next === 0x5d ? 'osc' : next === 0x50 || next === 0x58
+          || next === 0x5e || next === 0x5f ? 'st' : null;
+        if (kind !== null && (causalEscAt === i || i + 2 < buf.length || i > 0)) {
           flush(i);
-          actions.push({ kind: 'forward', bytes: buf.subarray(i, i + 2) });
-          this.terminalString = 1;
+          emit({ kind: 'forward', bytes: buf.subarray(i, i + 2) });
+          this.terminalString = kind;
           i += 2;
           continue;
+        }
+        if (kind !== null && i === 0 && buf.length === 2) {
+          flush(i);
+          emit({ kind: 'forward', bytes: buf });
+          return actions;
         }
       }
       if (b === 0x1b) {
         const scan = scanEsc(buf, i);
         if (scan === 'partial') { flush(i); this.held = buf.slice(i); return actions; }
+        if (scan !== null && scan.end - i > MAX_HOLD) {
+          flush(i);
+          emit({ kind: 'forward', bytes: buf.subarray(i, scan.end) });
+          i = scan.end;
+          continue;
+        }
+        if (scan === null && buf[i + 1] === 0x5b && buf.length - i > MAX_HOLD) {
+          flush(i);
+          // Once the bounded parser gives up, conservatively forward the whole CSI through
+          // its final byte. That keeps an eventual terminal reply on one destination without
+          // retaining an attacker-controlled parameter body.
+          emit({ kind: 'forward', bytes: buf.subarray(i) });
+          this.csiOverflow = true;
+          return actions;
+        }
         if (scan !== null) {
           const bytes = buf.subarray(i, scan.end);
           const seq = Buffer.from(bytes).toString('latin1');
           if (seq === '\x1b[200~' || seq === '\x1b[201~') {
-            flush(i); actions.push({ kind: 'forward', bytes }); this.pasting = seq === '\x1b[200~'; i = scan.end; continue;
+            flush(i); emit({ kind: 'forward', bytes }); this.pasting = seq === '\x1b[200~'; i = scan.end; continue;
           }
           if (this.pasting) { if (runStart < 0) runStart = i; i = scan.end; continue; }
-          if (seq === '\x1b[24~') { flush(i); actions.push({ kind: 'toggle-focus' }); i = scan.end; continue; }
-          const action = kittyAction(scan.key, scan.reply, this.focus, bytes);
+          if (seq === '\x1b[24~') { flush(i); emit({ kind: 'toggle-focus' }); i = scan.end; continue; }
+          const escapePhase = scan.key?.code === 27 && !scan.reply;
+          if (escapePhase && scan.key!.event === 1 && (scan.key!.ctrl || scan.key!.alt)) {
+            // A modified Escape press belongs to the wrapped CLI. Modifiers may be released
+            // before Escape, so remember that ownership for later unmodified repeat/release phases.
+            this.kittyEscapeOwner = 'cli';
+          }
+          const action = escapePhase
+            && ((scan.key!.event !== 1 && this.kittyEscapeOwner !== null)
+              || (!scan.key!.ctrl && !scan.key!.alt))
+            ? this.kittyEscapeAction(scan.key!, bytes)
+            : kittyAction(scan.key, scan.reply, this.focus, bytes);
           if (action === 'pass') { if (runStart < 0) runStart = i; }
-          else { flush(i); if (action !== 'drop') actions.push(action); }
+          else { flush(i); if (action !== 'drop') emit(action); }
           i = scan.end; continue;
         }
       }
       if (this.pasting) { if (runStart < 0) runStart = i; i++; continue; }
-      if (b === 0x1d) { flush(i); actions.push({ kind: 'toggle-focus' }); i++; continue; }
+      if (b === 0x1d) { flush(i); emit({ kind: 'toggle-focus' }); i++; continue; }
       // Legacy terminals encode Ctrl+Space as NUL. Preserve it for the wrapped CLI even
       // while the game has focus; swallowing it here still breaks terminal-side IME setups.
-      if (b === 0x00) { flush(i); actions.push({ kind: 'forward', bytes: Uint8Array.of(b) }); i++; continue; }
-      if (b === 0x1b && this.focus === 'game') { flush(i); actions.push({ kind: 'toggle-focus' }); i++; continue; }
+      if (b === 0x00) { flush(i); emit({ kind: 'forward', bytes: Uint8Array.of(b) }); i++; continue; }
+      if (b === 0x1b && this.focus === 'game') { flush(i); emit({ kind: 'toggle-focus' }); i++; continue; }
       if ((b === PREFIX || b === 0x03) && this.focus === 'game') {
-        flush(i); actions.push({ kind: 'forward', bytes: Uint8Array.of(b) }); i++; continue;
+        flush(i); emit({ kind: 'forward', bytes: Uint8Array.of(b) }); i++; continue;
       }
       if (runStart < 0) runStart = i;
       i++;

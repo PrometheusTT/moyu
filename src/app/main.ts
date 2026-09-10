@@ -68,6 +68,10 @@ const SGR_IDLE = '\x1b[38;2;112;118;134m\x1b[49m';
  * 焦点变化会 resize PTY，而 resize 让内层 TUI 全量重绘 —— 连按会把它抖成一片。
  */
 const FOCUS_DEBOUNCE_MS = 180;
+/** A repaint may span several PTY reads; choose its anchor only after output has gone quiet. */
+const COMPOSER_SETTLE_MS = 60;
+/** Repaint authorization is causally useful only near the resize/refresh/control that created it. */
+const COMPOSER_PERMIT_MS = 750;
 
 function usage(): string {
   return [
@@ -497,6 +501,39 @@ function drawGfxSelfTest(cols: number, rows: number, cellW: number, cellH: numbe
 
 /* ────────────────────────────── 外壳 spike ────────────────────────────── */
 
+type PtyBoundary =
+  | { kind: 'alt-screen'; on: boolean; offset: number }
+  | { kind: 'display-erase'; offset: number };
+
+type ComposerBaseline = {
+  row: number;
+  cols: number;
+  innerRows: number;
+  screen: number;
+};
+
+type ComposerPermit = {
+  generation: number;
+  screen: number;
+  mode: 'verify' | 'repaint' | 'draft' | 'draft-verify';
+  preserveRow: boolean;
+  cols: number;
+  innerRows: number;
+  expectedRow: number;
+  minRow: number;
+  maxRow: number;
+  bestRow: number | null;
+  bestDistance: number;
+};
+
+type ComposerProposal = {
+  generation: number;
+  screen: number;
+  row: number;
+  cols: number;
+  innerRows: number;
+};
+
 async function cmdWrap(inner: string[]): Promise<number> {
   // 没有 TTY 就没有"分屏"可言（管道、CI、被别的程序调用）。这时候唯一正确的行为是
   // 完全退化成一层透明的转发 —— 装作外壳不存在，别把转义序列灌进人家的管道里。
@@ -543,10 +580,23 @@ class Shell {
   private readonly surface = new PlaySurface();
   /** 已确认的 Codex 输入提示行；完整匹配 prompt 签名后才设置。 */
   private composerRow: number | null = null;
-  private composerCandidate: { row: number; col: number; index: number } | null = null;
-  /** true 时游戏覆盖在输入框上方两行，底部分屏仍保持一行候场几何。 */
+  /** 一次确认后持续有效；坐标失效不等于签名的来源不再可信。 */
+  private composerTrusted = false;
+  private composerCandidate: { row: number; col: number; index: number; generation: number } | null = null;
+  private composerProposal: ComposerProposal | null = null;
+  private composerBaseline: ComposerBaseline | null = null;
+  private composerPermit: ComposerPermit | null = null;
+  private composerGeneration = 0;
+  private composerSettleTimer: NodeJS.Timeout | null = null;
+  private composerExpiryTimer: NodeJS.Timeout | null = null;
+  /** 主屏/备用屏各自有一份坐标空间；切换一次就换一代。 */
+  private composerScreen = 0;
+  /** Passthrough 在一次 push 内按输出偏移排好的逻辑边界。 */
+  private readonly ptyBoundaries: PtyBoundary[] = [];
   private inlinePlay = false;
   private inlineTop: number | null = null;
+  /** 用户缩回两行后，即使坐标要等重绘确认，也应继续回到 inline。 */
+  private wantInline = false;
   private readonly preferComposerOverlay: boolean;
   /** 收起那一行上一次写出去的字节，用来做“没变就不发”。 */
   private lastBar = '';
@@ -606,16 +656,10 @@ class Shell {
       // "你有整个窗口"，内层照那个数排版就会算错，按窗口高度算的图还会溢进游戏区。
       // 回复要写进内层的 **stdin**，所以走 pty.write 而不是 this.write。
       onSizeQuery: (reply) => { this.pty?.write(reply); },
-      // 备用屏切换**不让屏**，只在新缓冲区上重建几何 —— 见 altscreen.ts 的文件头，
-      // 真实 claude 整个会话都待在备用屏上，让屏等于游戏永久消失。
-      onAltScreen: () => { this.onScreenSwap(); },
-      // ED 2 / ED 3 不受滚动区约束，会把游戏区和候场条一起擦掉。两种状态都有
-      // 输出缓存：只清画布/HUD 缓存会让收起状态误以为底栏还在，真实 Codex 启动
-      // 时切备用屏后再 ED 2，用户看到的正是“一直没有最下面那行”。
-      onDisplayErase: () => {
-        this.invalidateComposer();
-        this.target.invalidate(); this.lastBar = '';
-      },
+      // 回调只记录**改写输出里的有序边界**。状态变化要等 VtCursor 吃完边界前的字节再做，
+      // 否则同一 chunk 里的「旧 prompt → ED/切屏 → 新 prompt」会被倒序解释。
+      onAltScreen: (on, offset) => { this.ptyBoundaries.push({ kind: 'alt-screen', on, offset }); },
+      onDisplayErase: (offset) => { this.ptyBoundaries.push({ kind: 'display-erase', offset }); },
     });
     this.vt = new VtCursor({ cols: t.cols, rows: innerRows,
       onPrint: (cp, row, col) => { this.observeComposer(cp, row, col); } });
@@ -646,6 +690,7 @@ class Shell {
 
     this.teardown.install();
     this.teardown.onRestore(() => { this.stopFrames(); });
+    this.teardown.onRestore(() => { this.clearComposerTimers(); });
     this.teardown.onRestore(() => { try { process.stdin.setRawMode(false); } catch { /* 已经不是 TTY 了 */ } });
     this.teardown.onRestore(() => { this.pty?.killNow(); });
     this.teardown.onRestore(() => { this.closeTee(); });
@@ -742,7 +787,8 @@ class Shell {
     const prevTop = this.layout?.gameTop;
     const clearFrom = prevTop === undefined ? l.gameTop : Math.min(prevTop, l.gameTop);
     this.layout = l;
-    this.invalidateComposerCandidate();
+    const resized = this.pty === null || this.pty.cols !== l.cols || this.pty.rows !== l.innerRows;
+    if (!resized) this.invalidateComposerCandidate();
 
     this.pass.region = { top: 1, bottom: l.innerRows };
     this.pass.cols = l.cols;
@@ -767,7 +813,7 @@ class Shell {
     seq += `\x1b[${clearFrom};1H\x1b[J`;
     this.write(seq + this.vt.restoreSeq());
 
-    this.pty?.resize(l.cols, l.innerRows);
+    this.resizePty(l.cols, l.innerRows);
   }
 
   /** 候场一行；安全回退路径也只打开两行。 */
@@ -798,12 +844,21 @@ class Shell {
     // 让屏要顺手把终端里那张图删掉：擦文字擦不掉它（图是终端另存的一层），
     // 收起游戏区之后一张挂在那儿的图就是纯粹的垃圾。
     this.write(this.target.disposeSeq() + fullScrollRegionSeq() + `\x1b[${gameTop};1H\x1b[J` + this.vt.restoreSeq());
-    this.invalidateComposer();
-    if (this.inlinePlay) this.target.invalidate();
+    if (this.inlinePlay) {
+      this.inlinePlay = false;
+      this.inlineTop = null;
+      this.target.invalidate();
+    }
+    // Composer output at full-screen geometry must not mutate split-layout coordinates.
+    // resizePty keeps the durable pre-yield baseline for the resume transaction.
+    this.abortComposerOperation();
+    this.composerGeneration++;
+    this.composerRow = null;
+    this.inlineTop = null;
     this.pass.region = { top: 1, bottom: t.rows };
     this.pass.cols = t.cols;
     this.vt.resize(t.cols, t.rows);
-    this.pty?.resize(t.cols, t.rows);
+    this.resizePty(t.cols, t.rows);
   }
 
   /** 收屏，重新分屏。 */
@@ -820,25 +875,12 @@ class Shell {
     }
   }
 
-  /**
-   * 内层切了备用屏（`?1049h` / `?1049l`）。**不让屏**，只把我们的几何在新缓冲区上重建。
-   *
-   * 为什么不让屏：实测真实 claude 2.1.260 启动时切过去就再也不回来（退出才 `?1049l`），
-   * 让屏等于游戏在启动一秒后永久消失、同屏合成根本没发生过。备用屏只是另一个缓冲区，
-   * 内层有多少行是我们用 TIOCSWINSZ 告诉它的，跟它画在哪个缓冲区上无关 ——
-   * 所以尺寸不用动，也**不要** resize PTY（那会白白触发内层一次全量重绘）。
-   *
-   * 两个缓冲区之间唯一的实质差别是 **DECSTBM 是每缓冲区各自一份**：切过去之后新缓冲区
-   * 的边距是默认的整屏，不重设的话内层换行就能滚到游戏区上。
-   *
-   * 必须推到 setImmediate：回调是在 `?1049h/l` 的字节**还没写出去**的时候触发的
-   * （Passthrough 先上报、再吐字节），这时候活动屏幕还是旧的那个。同步设滚动区就设到了
-   * 旧缓冲区上 —— 白设一遍，而真正要去的那个缓冲区还是整屏边距。
-   */
-  private onScreenSwap(): void {
+  /** 内层切换主屏/备用屏以后，在**新缓冲区**上重建外壳几何。 */
+  private onScreenSwap(_on: boolean): void {
+    const screen = this.composerScreen;
     setImmediate(() => {
       const l = this.layout;
-      if (this.finished || l === null) return;
+      if (this.finished || l === null || screen !== this.composerScreen) return;
       // live 是 target 级状态，但 kitty 图片实际按主/备用屏分别存。收起或让屏后切到另一个
       // 缓冲区时，那里可能还有旧图，必须在新缓冲区上再无条件删一次。
       if (this.arbiter.yielded) {
@@ -847,7 +889,6 @@ class Shell {
       }
       if (this.inlinePlay) {
         const removeImage = this.target.tier === 'graphics' ? deleteImageSeq() : '';
-        this.invalidateComposer();
         this.target.invalidate();
         this.lastBar = '';
         this.write(removeImage + scrollRegionSeq(l)
@@ -873,7 +914,6 @@ class Shell {
 
   private onResize(): void {
     const t = termSize();
-    this.invalidateComposer();
     const r = computeLayout({ cols: t.cols, rows: t.rows, manualGameRows: this.wantGameRows() });
 
     if (r.kind !== 'split') {
@@ -882,7 +922,7 @@ class Shell {
       this.pass.region = { top: 1, bottom: t.rows };
       this.pass.cols = t.cols;
       this.vt.resize(t.cols, t.rows);
-      this.pty?.resize(t.cols, t.rows);
+      this.resizePty(t.cols, t.rows);
       return;
     }
 
@@ -892,7 +932,7 @@ class Shell {
       this.pass.region = { top: 1, bottom: t.rows };
       this.pass.cols = t.cols;
       this.vt.resize(t.cols, t.rows);
-      this.pty?.resize(t.cols, t.rows);
+      this.resizePty(t.cols, t.rows);
       return;
     }
     // flipped 为真时 onResume 已经排好了 applyLayout，别做第二遍。
@@ -1001,12 +1041,18 @@ class Shell {
     if (this.tee !== null) {
       try { fs.writeSync(this.tee, data); } catch { this.closeTee(); }
     }
+    this.ptyBoundaries.length = 0;
     const rewritten = this.pass.push(data);
+    let start = 0;
+    for (const boundary of this.ptyBoundaries) {
+      const end = Math.max(start, Math.min(rewritten.length, boundary.offset));
+      if (end > start) this.vt.feed(rewritten.subarray(start, end));
+      this.applyPtyBoundary(boundary);
+      start = end;
+    }
+    if (start < rewritten.length) this.vt.feed(rewritten.subarray(start));
+    this.activateComposerProposal();
     if (rewritten.length === 0) return;
-    // 喂 VtCursor 的必须是**改写后**的字节：我们要还原的是真实终端光标的位置，
-    // 而真实终端看到的就是这一版。喂原始字节的话，一条被夹取的定位会让跟踪值和终端
-    // 实际状态分叉 —— 而这个分叉恰好只在"内层试图越界"时发生，也就是最需要还原正确的时候。
-    this.vt.feed(rewritten);
     // Codex 会按需重绘输入框附近；下一帧必须把被它盖掉的微型画面补回来。
     if (this.inlinePlay) this.target.invalidate();
     const ready = process.stdout.write(rewritten);
@@ -1020,8 +1066,23 @@ class Shell {
     }
   }
 
+  private applyPtyBoundary(boundary: PtyBoundary): void {
+    this.abortComposerOperation();
+    if (this.inlinePlay) {
+      // ED/换屏已经擦掉旧 overlay；这里只撤销状态，不能在 PTY 控制序列写出前另写清行。
+      this.inlinePlay = false;
+      this.inlineTop = null;
+      this.target.invalidate();
+    }
+    if (boundary.kind === 'alt-screen') this.composerScreen++;
+    this.beginComposerRepaint(false);
+    this.target.invalidate();
+    this.lastBar = '';
+    if (boundary.kind === 'alt-screen') this.onScreenSwap(boundary.on);
+  }
+
   private onStdin(chunk: Uint8Array): void {
-    for (const a of this.router.route(chunk)) {
+    this.router.route(chunk, (a) => {
       switch (a.kind) {
         case 'forward': this.pty?.write(a.bytes); break;
         // 焦点在游戏：按键喂给游戏，**不**转发给内层（不然打字会跑进 claude 的输入框）。
@@ -1033,7 +1094,7 @@ class Shell {
           break;
         case 'toggle-focus': this.toggleFocus(); break;
       }
-    }
+    });
   }
 
   private toggleFocus(): void {
@@ -1049,83 +1110,342 @@ class Shell {
     // 路由器必须跟着变。漏了这一行的后果是 HUD 说"焦点在游戏"、按键却还在往内层跑，
     // 而且是**静默**的分叉 —— M0 里两条路都通向内层，所以症状要到 M1 才会显形。
     this.router.focus = this.focus;
+    if (entering) this.wantInline = !this.expanded;
     if (entering && this.canUseComposerOverlay()) this.startInlinePlay();
-    else if (!entering && this.inlinePlay) this.stopInlinePlay();
-    else this.setCollapsed(!entering);
+    else if (!entering && this.inlinePlay) {
+      // A normal inline overlay still has one-row standby geometry and needs a same-size
+      // refresh to restore the covered composer. Returning from expanded play has two-row
+      // geometry, so collapsing it performs the resize/repaint instead.
+      const needsResize = !this.collapsed;
+      this.stopInlinePlay(!needsResize);
+      this.setCollapsed(true);
+    } else this.setCollapsed(!entering);
+    if (!entering) this.wantInline = false;
     if (entering) this.game.resume(); else this.game.pause();
     this.lastBar = '';
   }
 
   private observeComposer(cp: number, row: number, col: number): void {
-    if (!this.preferComposerOverlay) return;
+    if (!this.preferComposerOverlay || this.arbiter.yielded) return;
     const signature = ' Ask Codex';
+    const generation = this.composerGeneration;
     const candidate = this.composerCandidate;
-    if (candidate !== null && row === candidate.row && col === candidate.col) {
+    if (candidate !== null && candidate.generation === generation
+      && row === candidate.row && col === candidate.col) {
       if (cp === signature.codePointAt(candidate.index)) {
         candidate.index++;
         candidate.col++;
         if (candidate.index === signature.length) {
           this.composerCandidate = null;
-          this.confirmComposer(row);
+          this.observeExactComposer(row);
         }
         return;
       }
       this.composerCandidate = null;
-    } else if (candidate !== null) this.composerCandidate = null;
+    } else if (candidate !== null) {
+      this.composerCandidate = null;
+    }
+
     if (col <= 4 && row > MICRO_GAME_ROWS && (cp === 0x203a || cp === 0x276f)) {
-      this.composerCandidate = { row, col: col + 1, index: 0 };
+      const permit = this.composerPermit;
+      this.composerCandidate = { row, col: col + 1, index: 0, generation };
+      if (this.composerTrusted && permit !== null && permit.mode !== 'verify'
+        && permit.generation === generation && permit.screen === this.composerScreen
+        && row >= permit.minRow && row <= permit.maxRow) {
+        this.recordComposerCandidate(permit, row, false);
+      }
     }
   }
 
-  private confirmComposer(row: number): void {
+  private observeExactComposer(row: number): void {
+    const l = this.layout;
+    const permit = this.composerPermit;
+    if (!this.composerTrusted) {
+      const proposal = this.composerProposal;
+      if (permit?.mode === 'verify' && permit.generation === this.composerGeneration
+        && permit.screen === this.composerScreen && proposal !== null && l !== null
+        && proposal.generation === permit.generation && proposal.screen === permit.screen
+        && row === permit.expectedRow && row === proposal.row
+        && l.cols === proposal.cols && l.innerRows === proposal.innerRows) {
+        this.commitComposer(row, true);
+        return;
+      }
+      if (permit === null && l !== null && row > MICRO_GAME_ROWS) {
+        this.composerProposal = {
+          generation: this.composerGeneration,
+          screen: this.composerScreen,
+          row,
+          cols: l.cols,
+          innerRows: l.innerRows,
+        };
+      }
+      return;
+    }
+    if (permit !== null && permit.mode !== 'verify'
+      && permit.generation === this.composerGeneration && permit.screen === this.composerScreen
+      && row >= permit.minRow && row <= permit.maxRow) {
+      this.recordComposerCandidate(permit, row, true);
+    }
+  }
+
+  private activateComposerProposal(): void {
+    const proposal = this.composerProposal;
+    const l = this.layout;
+    if (proposal === null || this.composerTrusted || this.arbiter.yielded) return;
+    // Refresh acknowledgement and repaint can arrive in separate PTY chunks. Once verification
+    // is armed, unrelated output must not discard the proposal the repaint is bound to.
+    if (this.composerPermit !== null) return;
+    if (this.pty === null || l === null || proposal.generation !== this.composerGeneration
+      || proposal.screen !== this.composerScreen || proposal.cols !== l.cols
+      || proposal.innerRows !== l.innerRows) {
+      this.composerProposal = null;
+      return;
+    }
+    const generation = ++this.composerGeneration;
+    const permit: ComposerPermit = {
+      generation,
+      screen: proposal.screen,
+      mode: 'verify',
+      preserveRow: false,
+      cols: proposal.cols,
+      innerRows: proposal.innerRows,
+      expectedRow: proposal.row,
+      minRow: proposal.row,
+      maxRow: proposal.row,
+      bestRow: null,
+      bestDistance: Number.POSITIVE_INFINITY,
+    };
+    // Keep the proposal while the refresh is live so verification also binds to its geometry.
+    this.composerProposal = { ...proposal, generation };
+    this.composerPermit = permit;
+    this.scheduleComposerExpiry(permit);
+    if (this.pty.refresh() !== true) this.abortComposerOperation();
+  }
+
+  private recordComposerCandidate(permit: ComposerPermit, row: number, exact: boolean): void {
+    if (exact) {
+      // A full signature is authoritative. Discard provisional glyph-only rows so an earlier,
+      // closer transcript glyph cannot outrank the real composer during the same repaint.
+      permit.bestRow = row;
+      permit.bestDistance = -1;
+    } else if (permit.mode === 'draft' || permit.mode === 'draft-verify') {
+      const distance = Math.abs(row - permit.expectedRow);
+      // A non-empty draft has no fixed suffix. Its first repaint only nominates a row; a fresh
+      // same-size challenge must redraw that same row before it can become an anchor.
+      if (distance < permit.bestDistance || (distance === permit.bestDistance
+        && (permit.bestRow === null || row >= permit.bestRow))) {
+        permit.bestRow = row;
+        permit.bestDistance = distance;
+      }
+    } else if (permit.bestDistance >= 0) {
+      const distance = Math.abs(row - permit.expectedRow);
+      // Preserve-row refreshes may emit transcript first; a provisional glyph is never committed.
+      if (distance < permit.bestDistance || (distance === permit.bestDistance
+        && (permit.bestRow === null || row >= permit.bestRow))) {
+        permit.bestRow = row;
+        permit.bestDistance = distance;
+      }
+    }
+    if (exact || ((permit.mode === 'draft' || permit.mode === 'draft-verify')
+      && permit.bestRow === row)) this.scheduleComposerSettle(permit);
+  }
+
+  private resolveComposerPermit(permit: ComposerPermit): void {
+    const row = permit.bestRow;
+    if (row === null) return;
+    if (permit.bestDistance < 0 || permit.mode === 'draft-verify') {
+      this.commitComposer(row);
+      return;
+    }
+    if (permit.mode === 'draft') this.challengeDraftComposer(permit, row);
+  }
+
+  private challengeDraftComposer(permit: ComposerPermit, row: number): void {
+    const pty = this.pty;
+    const l = this.layout;
+    if (this.finished || pty === null || l === null || this.arbiter.yielded
+      || this.composerPermit !== permit || permit.generation !== this.composerGeneration
+      || permit.screen !== this.composerScreen || l.cols !== permit.cols
+      || l.innerRows !== permit.innerRows) return;
+    this.abortComposerOperation();
+    const generation = ++this.composerGeneration;
+    const challenge: ComposerPermit = {
+      generation,
+      screen: permit.screen,
+      mode: 'draft-verify',
+      preserveRow: false,
+      cols: permit.cols,
+      innerRows: permit.innerRows,
+      expectedRow: row,
+      minRow: row,
+      maxRow: row,
+      bestRow: null,
+      bestDistance: Number.POSITIVE_INFINITY,
+    };
+    this.composerPermit = challenge;
+    this.scheduleComposerExpiry(challenge);
+    if (pty.refresh() !== true) {
+      this.abortComposerOperation();
+      this.fallbackFromInlineInvalidation();
+    }
+  }
+
+  private commitComposer(row: number, establishTrust = false): void {
+    const l = this.layout;
+    if (this.arbiter.yielded || l === null || row <= MICRO_GAME_ROWS) return;
+    if (establishTrust) this.composerTrusted = true;
+    if (!this.composerTrusted) return;
+    this.abortComposerOperation();
     this.composerRow = row;
+    this.composerBaseline = { row, cols: l.cols, innerRows: l.innerRows, screen: this.composerScreen };
     if (this.inlinePlay && this.inlineTop !== null && row - MICRO_GAME_ROWS !== this.inlineTop) {
       setImmediate(() => {
         if (!this.inlinePlay || this.composerRow === null || this.inlineTop === this.composerRow - MICRO_GAME_ROWS) return;
         this.stopInlinePlay(); this.startInlinePlay();
       });
     }
-    if (this.focus === 'game' && !this.expanded && this.collapsed && !this.inlinePlay) {
+    if (this.focus === 'game' && !this.expanded && this.wantInline && !this.inlinePlay) {
       setImmediate(() => {
-        if (this.focus === 'game' && !this.expanded && this.collapsed && !this.inlinePlay && this.canUseComposerOverlay()) this.startInlinePlay();
+        if (this.focus === 'game' && !this.expanded && this.wantInline && !this.inlinePlay
+          && this.canUseComposerOverlay()) this.startInlinePlay();
       });
     }
   }
 
-  private invalidateComposerCandidate(): void { this.composerCandidate = null; }
-  private invalidateComposer(): void {
+  private invalidateComposerCandidate(): void {
+    this.abortComposerOperation();
+    this.composerGeneration++;
+  }
+
+  private resizePty(cols: number, rows: number): void {
+    const pty = this.pty;
+    if (pty === null || (pty.cols === cols && pty.rows === rows)) return;
+    if (this.arbiter.yielded) {
+      // Full-screen yield is not a split-layout repaint transaction. Keep the durable split
+      // baseline and reacquire only after onResume installs the new split geometry.
+      this.abortComposerOperation();
+      this.composerGeneration++;
+      this.composerRow = null;
+      this.inlineTop = null;
+      if (this.inlinePlay) {
+        this.inlinePlay = false;
+        this.target.invalidate();
+      }
+      pty.resize(cols, rows);
+      return;
+    }
+    this.beginComposerRepaint(false, cols, rows);
+    if (pty.resize(cols, rows) !== true) {
+      this.abortComposerOperation();
+      this.fallbackFromInlineInvalidation();
+    }
+  }
+
+  /** Arm a transaction before an operation that can redraw the composer. */
+  private beginComposerRepaint(preserveRow: boolean, cols?: number, innerRows?: number): void {
+    this.abortComposerOperation();
+    const l = this.layout;
+    const nextCols = cols ?? l?.cols;
+    const nextRows = innerRows ?? l?.innerRows;
+    const baseline = this.composerBaseline;
+    const row = this.composerRow ?? baseline?.row;
+    const generation = ++this.composerGeneration;
+    if (!preserveRow) {
+      this.composerRow = null;
+      this.inlineTop = null;
+      if (this.inlinePlay) {
+        this.inlinePlay = false;
+        this.target.invalidate();
+      }
+    }
+    if (!this.composerTrusted || baseline === null || nextCols === undefined || nextRows === undefined
+      || row === null || row === undefined) return;
+    const expected = clampRow(row + (nextRows - baseline.innerRows), nextRows);
+    const widthChanged = baseline.cols !== nextCols;
+    const radius = widthChanged ? Math.max(4, Math.min(12, Math.floor(nextRows / 3))) : 2;
+    const permit: ComposerPermit = {
+      generation,
+      screen: this.composerScreen,
+      mode: preserveRow ? 'repaint' : 'draft',
+      preserveRow,
+      cols: nextCols,
+      innerRows: nextRows,
+      expectedRow: expected,
+      minRow: Math.max(MICRO_GAME_ROWS + 1, expected - radius),
+      maxRow: Math.min(nextRows, expected + radius),
+      bestRow: null,
+      bestDistance: Number.POSITIVE_INFINITY,
+    };
+    this.composerPermit = permit;
+    this.scheduleComposerExpiry(permit);
+  }
+
+  private scheduleComposerSettle(permit: ComposerPermit): void {
+    if (this.composerSettleTimer !== null) clearTimeout(this.composerSettleTimer);
+    this.composerSettleTimer = setTimeout(() => {
+      this.composerSettleTimer = null;
+      if (this.finished || this.composerPermit !== permit || permit.generation !== this.composerGeneration
+        || permit.screen !== this.composerScreen) return;
+      this.resolveComposerPermit(permit);
+    }, COMPOSER_SETTLE_MS);
+    this.composerSettleTimer.unref();
+  }
+
+  private scheduleComposerExpiry(permit: ComposerPermit): void {
+    if (this.composerExpiryTimer !== null) clearTimeout(this.composerExpiryTimer);
+    this.composerExpiryTimer = setTimeout(() => {
+      this.composerExpiryTimer = null;
+      if (this.finished || this.composerPermit !== permit || permit.generation !== this.composerGeneration
+        || permit.screen !== this.composerScreen) return;
+      if (permit.bestRow !== null) {
+        this.resolveComposerPermit(permit);
+        return;
+      }
+      // A silent same-size refresh leaves a still-valid row; invalidating operations stay invalid.
+      this.abortComposerOperation();
+      if (!permit.preserveRow) this.fallbackFromInlineInvalidation();
+    }, COMPOSER_PERMIT_MS);
+    this.composerExpiryTimer.unref();
+  }
+
+  private abortComposerOperation(): void {
     this.composerCandidate = null;
-    this.composerRow = null;
-    this.inlineTop = null;
+    this.composerProposal = null;
+    this.composerPermit = null;
+    if (this.composerSettleTimer !== null) clearTimeout(this.composerSettleTimer);
+    if (this.composerExpiryTimer !== null) clearTimeout(this.composerExpiryTimer);
+    this.composerSettleTimer = null;
+    this.composerExpiryTimer = null;
+  }
+
+  private clearComposerTimers(): void {
+    this.abortComposerOperation();
+  }
+
+  private fallbackFromInlineInvalidation(): void {
+    if (this.focus !== 'game' || this.expanded || !this.wantInline || this.inlinePlay) return;
+    this.collapsed = false;
+    this.relayout();
   }
 
   private toggleSize(): void {
     if (this.focus !== 'game') return;
-    if (this.inlinePlay) this.stopInlinePlay();
+    if (this.inlinePlay) this.stopInlinePlay(false);
     this.expanded = !this.expanded;
-    // Expanded views use a protected bottom region. The PTY resize invalidates old composer rows.
-    this.invalidateComposer();
+    this.wantInline = !this.expanded;
     this.collapsed = false;
     this.relayout();
-    if (!this.expanded) {
-      // Allow Codex's resize repaint to supply a fresh anchor before moving back inline.
-      setTimeout(() => {
-        if (this.focus !== 'game' || this.expanded || this.inlinePlay || !this.canUseComposerOverlay()) return;
-        this.setCollapsed(true);
-        this.invalidateComposer();
-        this.pty?.refresh();
-      }, 80).unref();
-    }
   }
 
   private canUseComposerOverlay(): boolean {
-    return this.preferComposerOverlay && this.layout !== null && this.composerRow !== null
-      && this.composerRow > MICRO_GAME_ROWS;
+    return this.preferComposerOverlay && !this.arbiter.yielded && this.layout !== null
+      && this.composerRow !== null && this.composerRow > MICRO_GAME_ROWS;
   }
 
   private startInlinePlay(): void {
     const l = this.layout;
-    if (l === null || this.composerRow === null) return;
+    if (this.arbiter.yielded || l === null || this.composerRow === null) return;
+    this.wantInline = true;
     this.inlinePlay = true;
     this.inlineTop = this.composerRow - MICRO_GAME_ROWS;
     this.target.resize(fieldColsFor(l.cols), MICRO_GAME_ROWS);
@@ -1135,7 +1455,7 @@ class Shell {
     this.write(this.target.disposeSeq() + `\x1b[${l.gameTop};1H\x1b[2K` + this.vt.restoreSeq());
   }
 
-  private stopInlinePlay(): void {
+  private stopInlinePlay(refresh = true): void {
     const l = this.layout;
     const top = this.inlineTop;
     let seq = this.target.disposeSeq();
@@ -1145,8 +1465,12 @@ class Shell {
     this.target.invalidate();
     if (l !== null) seq += this.vt.restoreSeq();
     this.write(seq);
-    // 清行只能删掉游戏，真正属于 Codex 的内容交给它自己按当前状态重画。
-    this.pty?.refresh();
+    // 清行只能删掉游戏，真正属于 Codex 的内容交给它自己按当前状态重画。相同尺寸的
+    // SIGWINCH 可能一个字节都不产出，所以保留现有坐标；若有 ED/新 glyph 再原子替换。
+    if (refresh) {
+      this.beginComposerRepaint(true);
+      if (this.pty?.refresh() !== true) this.abortComposerOperation();
+    }
   }
 
   /* ── 收尾 ─────────────────────────────────────────────────────────── */
@@ -1188,6 +1512,10 @@ class Shell {
     try { fs.unlinkSync(this.events.file); } catch { /* 文件可能还没被 hook 创建 */ }
     try { fs.rmdirSync(path.dirname(this.events.file)); } catch { /* 其它会话还在用或目录不存在 */ }
   }
+}
+
+function clampRow(row: number, innerRows: number): number {
+  return Math.max(MICRO_GAME_ROWS + 1, Math.min(innerRows, row));
 }
 
 /**

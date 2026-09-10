@@ -4,7 +4,7 @@ import { Teardown } from "../shell/teardown.js";
 import { Arcade } from "./arcade.js";
 import { loadGameModules } from "./registry.js";
 import { PlaySurface } from "./surface.js";
-function oneLine(value) { return value.replace(/[\x00-\x1f\x7f]+/g, ' ').trim() || '未知错误'; }
+function oneLine(value) { return value.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim() || '未知错误'; }
 export function preparePlay(modules, id) {
     if (id !== undefined && !modules.some((m) => m.manifest.id === id))
         return { error: `找不到游戏 ${id}` };
