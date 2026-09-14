@@ -17,3 +17,6 @@ vendor/
 
 # 这台机器的权限允许列表，不是项目配置。
 .claude/settings.local.json
+
+# Claude/Codex 辅助代理创建的嵌套 worktree，不属于项目源码。
+.claude/worktrees/

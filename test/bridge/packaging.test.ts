@@ -14,6 +14,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as ts from 'typescript';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as Record<string, any>;
@@ -49,6 +50,15 @@ test('包目录本身在软链下面也要能跑（macOS 的 /tmp 就是 /privat
   assert.match(out, /^摸鱼/, '入口判断被软链骗了 —— 装完的包会静默什么都不做');
 });
 
+test('仓库入口只在 Node 支持类型剥离时运行 src，否则退回 dist', () => {
+  const launcher = fs.readFileSync(path.join(root, 'bin', 'moyu'), 'utf8');
+  assert.match(launcher, /node_major/);
+  assert.match(launcher, /node_minor/);
+  assert.match(launcher, /\[ "\$node_major" -gt 22 \]/);
+  assert.match(launcher, /\[ "\$node_major" -eq 22 \].*\[ "\$node_minor" -ge 6 \]/);
+  assert.ok(launcher.indexOf('src/app/main.ts') < launcher.indexOf('dist/app/main.js'));
+});
+
 test('bin 指的文件存在且可执行', () => {
   const bin = path.join(root, pkg.bin.moyu as string);
   assert.ok(fs.existsSync(bin));
@@ -56,10 +66,47 @@ test('bin 指的文件存在且可执行', () => {
   assert.match(fs.readFileSync(bin, 'utf8'), /^#!\/bin\/sh\n/, 'shebang 必须是 /bin/sh');
 });
 
-test('终端接管标记用 mktemp 原子创建，不用可预测的 $$ 路径', () => {
+test('终端还原由 supervisor 管，不依赖 launcher 临时标记', () => {
   const sh = fs.readFileSync(path.join(root, 'bin/moyu'), 'utf8');
-  assert.match(sh, /mktemp/);
-  assert.doesNotMatch(sh, /moyu-takeover\.\$\$/);
+  assert.doesNotMatch(sh, /mktemp/);
+  assert.doesNotMatch(sh, /MOYU_TAKEOVER_FLAG/);
+});
+
+function nodeShimOnlyPath(): { dir: string; path: string } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-node-path-'));
+  const shim = path.join(dir, process.platform === 'win32' ? 'node.exe' : 'node');
+  fs.symlinkSync(process.execPath, shim);
+  return { dir, path: dir };
+}
+
+test('PATH 只有 node、没有 mktemp 时 help/bench/无 TTY 外壳都能运行', () => {
+  const restricted = nodeShimOnlyPath();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-launch-home-'));
+  const launcher = path.join(root, 'bin', 'moyu');
+  const env: NodeJS.ProcessEnv = {
+    HOME: home,
+    LANG: process.env.LANG ?? 'C',
+    PATH: restricted.path,
+    TERM: 'dumb',
+  };
+  try {
+    const help = spawnSync(launcher, ['--help'], { cwd: root, env, encoding: 'utf8' });
+    assert.equal(help.status, 0, help.stderr);
+    assert.match(help.stdout, /^摸鱼/);
+
+    const bench = spawnSync(launcher, ['bench', '1'], { cwd: root, env, encoding: 'utf8' });
+    assert.equal(bench.status, 0, bench.stderr);
+    assert.match(bench.stdout, /1 帧/);
+
+    const bare = spawnSync(launcher, ['--', process.execPath, '-e', "process.stdout.write('bare-ok\\n')"], {
+      cwd: root, env, encoding: 'utf8',
+    });
+    assert.equal(bare.status, 0, bare.stderr);
+    assert.equal(bare.stdout, 'bare-ok\n');
+  } finally {
+    fs.rmSync(restricted.dir, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('无 TTY 退化路径保留真实信号退出码', () => {
@@ -142,6 +189,80 @@ test('脚本名一个都不许落在 pacote 的「要准备」名单上（这是
   assert.match(scripts.compile ?? '', /tsconfig\.build\.json/, 'compile 必须走会 emit 的那份 tsconfig');
 });
 
+function localJavaScriptSpecifiers(source: string, fileName = 'fixture.js'): string[] {
+  const unit = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const found: string[] = [];
+  const record = (node: ts.Expression | undefined): void => {
+    if (node !== undefined && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
+      && /^\.\.?\//.test(node.text) && node.text.endsWith('.js')) found.push(node.text);
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) record(node.moduleSpecifier);
+    else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) record(node.arguments[0]);
+    ts.forEachChild(node, visit);
+  };
+  visit(unit);
+  return found;
+}
+
+test('dist import 扫描覆盖所有 JS 模块加载语法且忽略非代码/包名/插值模板', () => {
+  const source = [
+    "import value from './bound.js';",
+    "import './effect.js';",
+    "export { value } from '../named.js';",
+    "export * from './star.js';",
+    "void import('./dynamic.js');",
+    'void import(`./literal.js`);',
+    "// import './comment.js';",
+    "/* export * from './block.js'; */",
+    "const text = \"import './string.js'\";",
+    "import pkg from 'package-name';",
+    "import './local.css';",
+    "void import('@scope/package');",
+    'void import(`./${name}.js`);',
+  ].join('\n');
+  assert.deepEqual(localJavaScriptSpecifiers(source), [
+    './bound.js', './effect.js', '../named.js', './star.js', './dynamic.js', './literal.js',
+  ]);
+});
+
+function assertTrackedDistImports(
+  tracked: string,
+  distDir = path.join(root, 'dist'),
+  prefix = 'dist',
+): void {
+  const trackedFiles = new Set(tracked.split('\n').filter(Boolean));
+  const imports = fs.readdirSync(distDir, { recursive: true, encoding: 'utf8' })
+    .filter((rel): rel is string => typeof rel === 'string' && rel.endsWith('.js'))
+    .flatMap((rel) => localJavaScriptSpecifiers(fs.readFileSync(path.join(distDir, rel), 'utf8'), rel)
+      .map((specifier) => path.normalize(path.join(path.dirname(rel), specifier))));
+  for (const rel of new Set(imports)) {
+    assert.ok(trackedFiles.has(`${prefix}/${rel}`), `${prefix}/${rel} 被已跟踪模块导入，却没有进版本库`);
+  }
+}
+
+test('dist import 跟踪守卫能从每种支持的加载语法发现漏发文件', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-import-scan-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'entry.js'), [
+      "import value from './bound.js';",
+      "import './effect.js';",
+      "export * from './star.js';",
+      "void import('./dynamic.js');",
+      'void import(`./literal.js`);',
+    ].join('\n'));
+    const tracked = ['fixture/entry.js', 'fixture/bound.js', 'fixture/effect.js', 'fixture/star.js',
+      'fixture/dynamic.js', 'fixture/literal.js'].join('\n');
+    assert.doesNotThrow(() => { assertTrackedDistImports(tracked, dir, 'fixture'); });
+    for (const missing of ['bound.js', 'effect.js', 'star.js', 'dynamic.js', 'literal.js']) {
+      assert.throws(
+        () => { assertTrackedDistImports(tracked.replace(`fixture/${missing}`, ''), dir, 'fixture'); },
+        new RegExp(missing.replace('.', '\\.')),
+      );
+    }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('dist/ 必须真的在版本库里（装的人拿到的就是它，没有第二次机会）', () => {
   assert.ok(fs.existsSync(path.join(root, 'dist', 'app', 'main.js')), 'dist/app/main.js 不在，bin/moyu 会直接报错退出');
   const gitignore = fs.readFileSync(path.join(root, '.gitignore'), 'utf8');
@@ -149,6 +270,7 @@ test('dist/ 必须真的在版本库里（装的人拿到的就是它，没有�
   if (!fs.existsSync(path.join(root, '.git'))) return; // 从 tarball 跑测试时没有 .git
   const tracked = execFileSync('git', ['ls-files', 'dist'], { cwd: root, encoding: 'utf8' }).trim();
   assert.ok(tracked.length > 0, 'dist/ 在本地但没提交 —— 克隆的人拿不到');
+  assertTrackedDistImports(tracked);
 });
 
 /**

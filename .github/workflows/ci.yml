@@ -3,13 +3,20 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    name: Node.js ${{ matrix.node }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -20,17 +27,25 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - if: matrix.node != '20'
+      - name: Install dependencies
+        run: npm ci
+      - name: Type-check source
+        run: npm run typecheck
+      - name: Check documentation links
+        run: npm run docs:check
+      - name: Run test suite
+        if: matrix.node != '20'
         run: npm test
-      - run: npm run compile
+      - name: Compile distribution
+        run: npm run compile
       - name: Verify committed dist is current
         run: git diff --exit-code -- dist
-      - name: Node 20 distribution smoke test
+      - name: Node 20 exact distribution startup smoke test
         if: matrix.node == '20'
-        env:
-          MOYU_DIST: '1'
-        run: ./bin/moyu --help
-      - if: matrix.node == '24'
+        run: node scripts/startup-smoke.mjs dist
+      - name: Node 24 exact source and distribution startup smoke test
+        if: matrix.node == '24'
+        run: npm run smoke
+      - name: Audit npm package contents
+        if: matrix.node == '24'
         run: npm pack --dry-run

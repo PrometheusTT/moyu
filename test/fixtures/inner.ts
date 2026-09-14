@@ -11,8 +11,35 @@
  * 会被当成命令字符，而 `t` 恰好就是"问尺寸"那条命令 —— 自己把自己喂成死循环。
  */
 import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
 
 const out = (s: string): void => { process.stdout.write(s); };
+const FLOOD_RECORDS = 256;
+const FLOOD_PAYLOAD = 4096;
+let flooding = false;
+
+const floodRecord = (index: number): string =>
+  `${index.toString().padStart(4, '0')}:`
+  + String.fromCharCode(65 + (index % 26)).repeat(FLOOD_PAYLOAD)
+  + '|';
+
+const pressureFlood = async (): Promise<void> => {
+  if (flooding) return;
+  flooding = true;
+  const write = async (value: string): Promise<void> => {
+    if (process.stdout.write(value)) return;
+    await new Promise<void>((resolve) => { process.stdout.once('drain', resolve); });
+  };
+  try {
+    await write('FLOOD-BEGIN|');
+    for (let i = 0; i < FLOOD_RECORDS; i++) await write(floodRecord(i));
+    await write('FLOOD-END|');
+    const flag = process.env.INNER_FLOOD_DONE_FILE;
+    if (flag !== undefined) fs.writeFileSync(flag, 'done\n', { mode: 0o600 });
+  } finally {
+    flooding = false;
+  }
+};
 
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
@@ -62,12 +89,21 @@ function command(ch: string): void {
       // 普通输出。跟一条 CPR 风格的自报位置，方便测试知道内层认为自己在哪。
       out('INNER-HELLO\r\n');
       break;
+    case 'P':
+      // 约 1 MiB、可逐字节核对的输出；主动尊重 drain，才能把压力一路传回外壳的 PTY 暂停点。
+      void pressureFlood();
+      break;
     case 's':
       // 自报 ioctl 尺寸。这是 TIOCSWINSZ 是否真的生效的唯一可信证据。
       out(`SIZE ${process.stdout.columns}x${process.stdout.rows}\r\n`);
       break;
     case 'e':
       out(`EVENTS ${process.env.MOYU_EVENTS ?? ''}\r\n`);
+      break;
+    case 'E':
+      out(`PRIVATE ${Object.keys(process.env).filter((key) => key.startsWith('MOYU_INTERNAL_')
+        || key === 'NODE_CHANNEL_FD' || key === 'NODE_CHANNEL_SERIALIZATION_MODE'
+        || key === 'MOYU_TAKEOVER_FLAG').sort().join(',')}\r\n`);
       break;
     case 'f':
       out(`REFRESH-PENDING ${composerRedrawPending ? 1 : 0}\r\n`);
@@ -211,6 +247,13 @@ function command(ch: string): void {
       // 真实程序问这个是为了排版和给图算尺寸 —— 答成整屏它就会溢进游戏区。
       out('\x1b[18t\x1b[16t\x1b[14t');
       break;
+    case 'T':
+      // 让首进程被真实信号终止；node-pty 把信号和 exitCode 分开报告。
+      process.kill(process.pid, 'SIGTERM');
+      break;
+    case '7':
+      // 数字 137 是普通退出码，不得被 supervisor 猜成 SIGKILL。
+      process.exit(137);
     case 'q':
       out('BYE\r\n');
       process.exit(7);
@@ -245,4 +288,7 @@ process.on('SIGWINCH', () => {
   redrawComposerLater();
 });
 
-out('INNER-READY\r\n');
+const privateEnv = Object.keys(process.env).filter((key) => key.startsWith('MOYU_INTERNAL_')
+  || key === 'NODE_CHANNEL_FD' || key === 'NODE_CHANNEL_SERIALIZATION_MODE'
+  || key === 'MOYU_TAKEOVER_FLAG').sort().join(',');
+out(`INNER-READY ${process.pid} ${process.ppid} PRIVATE=${privateEnv}\r\n`);

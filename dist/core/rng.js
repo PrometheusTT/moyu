@@ -8,8 +8,21 @@
 export class Rng {
     s;
     constructor(seed = 0x2545f491) {
+        this.s = 1;
+        this.reset(seed);
+    }
+    /** 从一个已知种子重新开始同一条随机序列。 */
+    reset(seed) {
         // 0 是 xorshift 的不动点，会永远返回 0。
         this.s = (seed | 0) === 0 ? 0x9e3779b9 : seed | 0;
+    }
+    /** 保存/恢复检查点时使用的原始 xorshift32 状态。 */
+    snapshot() { return this.s >>> 0; }
+    restore(state) {
+        if (!Number.isInteger(state) || state <= 0 || state > 0xffffffff) {
+            throw new RangeError(`随机状态无效：${state}`);
+        }
+        this.s = state | 0;
     }
     /** 下一个 32 位无符号数。 */
     next() {

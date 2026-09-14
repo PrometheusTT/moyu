@@ -345,3 +345,26 @@ test('doctor --gfx：档位判成 half 也照样送图，几何是出货那条',
   assert.ok(!plain.includes('\x1b_G'), '--caps 自己吐图了');
   assert.match(plain, /--gfx/, '--caps 要指路到 --gfx，否则没人知道有这条命令');
 });
+
+test('doctor --gfx 正常退出时保留诊断图，只在异常恢复时删除', async () => {
+  const { loadPty } = await import('../../src/shell/pty.ts');
+  const { fileURLToPath } = await import('node:url');
+  const path = await import('node:path');
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const { spawn } = await loadPty();
+  const p = spawn(path.join(root, 'bin/moyu'), ['doctor', '--gfx'], {
+    cols: 80,
+    rows: 24,
+    cwd: root,
+    encoding: null,
+    handleFlowControl: false,
+    env: { ...process.env, MOYU_TIER: 'half', TERM: 'xterm-256color' },
+  });
+  const chunks: Uint8Array[] = [];
+  p.onData((data) => { chunks.push(Buffer.from(data)); });
+  const exit = await new Promise<{ exitCode: number }>((resolve) => { p.onExit(resolve); });
+  const wire = Buffer.concat(chunks).toString('latin1');
+  assert.equal(exit.exitCode, 0);
+  assert.ok(wire.includes('\x1b_Ga=T,'), 'TTY 诊断没有上传图片');
+  assert.ok(!wire.includes('\x1b_Ga=d,d=I'), '正常完成后 supervisor 立刻删掉了诊断图片');
+});

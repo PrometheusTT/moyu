@@ -13,6 +13,7 @@ import { Passthrough } from "../shell/passthrough.js";
 import { VtCursor } from "../shell/vtcursor.js";
 import { PtyHost } from "../shell/pty.js";
 import { Teardown, doctorResetSeq, writeAllSync } from "../shell/teardown.js";
+import { completeSupervision, scrubInternalEnv } from "../shell/supervision.js";
 import { ScreenArbiter } from "../shell/altscreen.js";
 import { InputRouter, hotkeyHint } from "../shell/focus.js";
 import { Canvas } from "../render/canvas.js";
@@ -21,7 +22,6 @@ import { GraphicsTarget, deleteImageSeq } from "../render/graphics.js";
 import { probeCaps, knownGraphicsTerm, DEFAULT_CELL } from "../render/caps.js";
 import { stripPainter } from "../render/painter.js";
 import { paintWorld } from "../render/scene.js";
-import { fitRow } from "../render/text.js";
 import { PlaySurface } from "../platform/surface.js";
 import { paintScene, paintStress } from "./scene0.js";
 import { Arcade } from "../platform/arcade.js";
@@ -38,6 +38,7 @@ import { constants as osConstants } from 'node:os';
 import { fileURLToPath } from 'node:url';
 const FPS = 30;
 const FRAME_MS = 1000 / FPS;
+const HOST_EVENT_MS = 100;
 /**
  * stdout 积压超过这个字节数就跳过这一帧。
  *
@@ -45,16 +46,48 @@ const FRAME_MS = 1000 / FPS;
  * 卡在我们的队列后面则是不可接受的 —— 那时候用户正在看的就是 CLI。
  */
 const BACKPRESSURE = 48 * 1024;
-/**
- * HUD 和收起条共用的三套配色。
- *
- * 提出来是因为它们必须**一模一样** —— 收起条就是 HUD 塌成一行的样子，两处各写一份
- * 迟早会漂移成"收起之后颜色突然变了"。等待权限那档故意用刺眼的琥珀底：那是唯一一种
- * 你不看一眼就会一直卡着的状态。
- */
-// 候场行故意不用色块背景。它应该融进 coding CLI，只在用户主动看向右下角时被发现。
-const SGR_URGENT = '\x1b[38;2;226;190;96m\x1b[49m';
-const SGR_IDLE = '\x1b[38;2;112;118;134m\x1b[49m';
+export function resolveExecutable(file, env = process.env) {
+    const search = env.PATH === undefined ? '/usr/bin:/bin' : env.PATH;
+    const candidates = file.includes('/') ? [path.resolve(file)]
+        : search.split(path.delimiter).map(dir => path.join(dir || '.', file));
+    let unusable = null;
+    for (const candidate of candidates) {
+        try {
+            const stat = fs.statSync(candidate);
+            if (!stat.isFile()) {
+                unusable ??= { path: path.resolve(candidate), detail: '不是普通文件' };
+                continue;
+            }
+            try {
+                fs.accessSync(candidate, fs.constants.X_OK);
+                return { kind: 'executable', path: path.resolve(candidate) };
+            }
+            catch (error) {
+                unusable ??= { path: path.resolve(candidate), detail: diagnosticLine(error, '不可执行') };
+            }
+        }
+        catch (error) {
+            const code = error.code;
+            if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+                unusable ??= { path: path.resolve(candidate), detail: diagnosticLine(error, '无法访问') };
+            }
+        }
+    }
+    return unusable === null ? { kind: 'missing' }
+        : { kind: 'unusable', path: unusable.path, detail: unusable.detail };
+}
+function diagnosticLine(value, fallback) {
+    try {
+        const detail = value instanceof Error ? value.message : String(value);
+        return detail.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim() || fallback;
+    }
+    catch {
+        return fallback;
+    }
+}
+/** Standby uses one quiet foreground cell and no background block or ambient motion. */
+const SGR_STANDBY_EVENT = '\x1b[38;2;160;166;180m\x1b[49m';
+const SGR_STANDBY_IDLE = '\x1b[38;2;90;96;110m\x1b[49m';
 /**
  * 焦点切换的最小间隔。
  *
@@ -148,6 +181,16 @@ async function main() {
         return 2;
     }
     return cmdWrap(inner);
+}
+/** If an entry-point promise rejects after takeover, release every installed Teardown before exiting. */
+const activeTeardowns = new Set();
+function trackTeardown(teardown) {
+    activeTeardowns.add(teardown);
+    return teardown;
+}
+function releaseActiveTeardowns() {
+    for (const teardown of activeTeardowns)
+        teardown.run();
 }
 /* ── moyu install / moyu doctor ─────────────────────────────────────────
  *
@@ -393,85 +436,120 @@ function benchGame() {
 async function cmdCaps(gfx) {
     const tty = process.stdout.isTTY === true && process.stdin.isTTY === true;
     const t = termSize();
+    const wasRaw = process.stdin.isRaw;
+    let restoreOptions = { deleteImage: false };
+    const teardown = tty ? trackTeardown(new Teardown(() => restoreOptions)) : null;
+    if (teardown !== null) {
+        teardown.install();
+        teardown.onRestore(() => {
+            try {
+                process.stdin.setRawMode(wasRaw);
+            }
+            catch { /* 终端已经消失 */ }
+            process.stdin.pause();
+        });
+    }
     // 回复必须在 raw 下读：行缓冲会把它扣到用户按回车，那时候早超时了。
     let raw = false;
-    if (tty) {
+    if (teardown !== null) {
+        await teardown.acquire(restoreOptions);
         process.stdin.setRawMode(true);
         process.stdin.resume();
         raw = true;
     }
-    let caps;
     try {
-        caps = await probeCaps({
+        const caps = await probeCaps({
             stdin: process.stdin,
             write: (x) => { process.stdout.write(x); },
             env: process.env,
             cols: t.cols, rows: t.rows, tty,
         });
+        const envOr = (k) => {
+            const v = process.env[k];
+            return v === undefined || v === '' ? '（没设）' : v;
+        };
+        const known = knownGraphicsTerm(process.env);
+        const ssh = process.env.SSH_CONNECTION !== undefined && process.env.SSH_CONNECTION !== '';
+        const mux = process.env.TMUX !== undefined && process.env.TMUX !== '' ? 'tmux'
+            : process.env.STY !== undefined && process.env.STY !== '' ? 'screen' : null;
+        // 使用和 Ctrl+] 游戏条完全相同的两行几何，doctor 报出来的就是实际出货尺寸。
+        const l = computeLayout({
+            cols: t.cols,
+            rows: t.rows,
+            manualGameRows: MICRO_GAME_ROWS,
+        });
+        const cols = l.kind === 'split' ? l.layout.fieldCols : fieldColsFor(t.cols);
+        const rows = l.kind === 'split' ? l.layout.gameRows : MICRO_GAME_ROWS;
+        const target = caps.tier === 'graphics' ? new GraphicsTarget(cols, rows, caps.cellW, caps.cellH)
+            : caps.tier === 'braille' ? new BrailleTarget(cols, rows) : new Canvas(cols, rows);
+        if (gfx && teardown !== null) {
+            restoreOptions = { deleteImage: true };
+            await teardown.update(restoreOptions);
+        }
+        process.stdout.write([
+            `终端       ${t.cols}×${t.rows} 字符格${tty ? '' : '（不是 TTY —— 下面的探测结果没有意义）'}`,
+            `档位       ${caps.tier}`,
+            `理由       ${caps.why}`,
+            // 终端身份是"为什么没探到"最常见的答案，尤其在 SSH 上：ssh 默认只把 TERM 带过去，
+            // TERM_PROGRAM / GHOSTTY_RESOURCES_DIR / KITTY_WINDOW_ID 这些**本地**变量一个都不过来，
+            // 于是 env 兜底在远端天然失效。不打出来的话这件事从输出里完全看不见。
+            //
+            // 只打 TERM / TERM_PROGRAM 的**值**：SSH_CONNECTION 带客户端 IP、TMUX 带 socket 路径
+            // （里面有用户名），而这一页是会被贴到 issue 里的，所以那两个只报有没有。
+            `终端身份   TERM=${envOr('TERM')}，TERM_PROGRAM=${envOr('TERM_PROGRAM')}`
+                + `${known === null ? '（env 认不出是哪个终端）' : ` → 认得出是 ${known}`}`,
+            `连接       ${ssh ? 'SSH（所以 15fps；本地的 TERM_PROGRAM 之类传不过来）' : '本地'}`
+                + `${mux === null ? '' : `，在 ${mux} 里`}`,
+            caps.tier === 'graphics'
+                ? `终端格像素 ${caps.cellW}×${caps.cellH}`
+                    + `${caps.cellW === DEFAULT_CELL.w && caps.cellH === DEFAULT_CELL.h ? '（= 默认值）' : ''}`
+                : `字符密度   ${caps.tier === 'braille' ? '2×4' : '1×2'} 逻辑像素/格（不依赖设备像素查询）`,
+            `帧率       ${caps.fps}fps`,
+            `候场       ${t.cols}×1 字符格（静止状态栏）`,
+            `两行游戏条 ${cols}×${rows} 字符格 → ${target.pixelW}×${target.pixelH} 逻辑像素`,
+            '微型画布   80×8（为两行重新构图，不缩小完整场景）',
+            '角色绘制   文本档使用原生 8 像素高微型动作帧；图形档独立构图，E 展开更多细节',
+            caps.leftover.length > 0 ? `抢跑的输入 ${caps.leftover.length} 字节（已丢弃 —— 这个命令不转发给谁）` : '',
+            '',
+            caps.tier === 'braille'
+                ? '当前是通用文本档：每字符 2×4 逻辑像素，实际清晰度受字体影响。Termius、SSH、tmux/screen 得到这一档是正常结果。'
+                : caps.tier === 'half'
+                    ? '当前是最低兼容档；可用 MOYU_TIER=braille 检查终端字体是否支持 Unicode Braille。'
+                    : '当前终端完整支持 Kitty Graphics，已使用 RGB 像素增强档。',
+            '',
+            '环境变量：MOYU_TIER=braille|half 明确选文本档；MOYU_TIER=graphics 安全尝试图形档；MOYU_CELL=16x34 指定格像素。',
+            'MOYU_FORCE_GRAPHICS=1 会跳过保护严格强制，只应用于协议调试；在 Termius 上可能空白或乱码。',
+            gfx ? '' : '想单独验证 Kitty 图片链路：moyu doctor --gfx（不会改变日常自动选择）。',
+        ].filter((x) => x !== '').join('\n') + '\n');
+        // 协议自检刻意保持一条小图，避免 doctor 一次向 SSH 灌入整屏 RGB 数据。
+        if (gfx) {
+            drawGfxSelfTest(fieldColsFor(t.cols), 2, caps.cellW, caps.cellH);
+            // 正常完成时诊断图必须留给用户观察；只有绘图过程中异常/被杀才让 supervisor 删除。
+            if (teardown !== null) {
+                await teardown.snapshot({ deleteImage: false });
+                restoreOptions = { deleteImage: false };
+            }
+        }
+        return 0;
     }
     finally {
         if (raw) {
-            process.stdin.setRawMode(false);
+            try {
+                process.stdin.setRawMode(wasRaw);
+            }
+            catch { /* 终端已经消失 */ }
             process.stdin.pause();
         }
+        if (teardown !== null) {
+            teardown.run();
+            try {
+                await teardown.released();
+            }
+            finally {
+                activeTeardowns.delete(teardown);
+            }
+        }
     }
-    const envOr = (k) => {
-        const v = process.env[k];
-        return v === undefined || v === '' ? '（没设）' : v;
-    };
-    const known = knownGraphicsTerm(process.env);
-    const ssh = process.env.SSH_CONNECTION !== undefined && process.env.SSH_CONNECTION !== '';
-    const mux = process.env.TMUX !== undefined && process.env.TMUX !== '' ? 'tmux'
-        : process.env.STY !== undefined && process.env.STY !== '' ? 'screen' : null;
-    // 使用和 Ctrl+] 游戏条完全相同的两行几何，doctor 报出来的就是实际出货尺寸。
-    const l = computeLayout({
-        cols: t.cols,
-        rows: t.rows,
-        manualGameRows: MICRO_GAME_ROWS,
-    });
-    const cols = l.kind === 'split' ? l.layout.fieldCols : fieldColsFor(t.cols);
-    const rows = l.kind === 'split' ? l.layout.gameRows : MICRO_GAME_ROWS;
-    const target = caps.tier === 'graphics' ? new GraphicsTarget(cols, rows, caps.cellW, caps.cellH)
-        : caps.tier === 'braille' ? new BrailleTarget(cols, rows) : new Canvas(cols, rows);
-    process.stdout.write([
-        `终端       ${t.cols}×${t.rows} 字符格${tty ? '' : '（不是 TTY —— 下面的探测结果没有意义）'}`,
-        `档位       ${caps.tier}`,
-        `理由       ${caps.why}`,
-        // 终端身份是"为什么没探到"最常见的答案，尤其在 SSH 上：ssh 默认只把 TERM 带过去，
-        // TERM_PROGRAM / GHOSTTY_RESOURCES_DIR / KITTY_WINDOW_ID 这些**本地**变量一个都不过来，
-        // 于是 env 兜底在远端天然失效。不打出来的话这件事从输出里完全看不见。
-        //
-        // 只打 TERM / TERM_PROGRAM 的**值**：SSH_CONNECTION 带客户端 IP、TMUX 带 socket 路径
-        // （里面有用户名），而这一页是会被贴到 issue 里的，所以那两个只报有没有。
-        `终端身份   TERM=${envOr('TERM')}，TERM_PROGRAM=${envOr('TERM_PROGRAM')}`
-            + `${known === null ? '（env 认不出是哪个终端）' : ` → 认得出是 ${known}`}`,
-        `连接       ${ssh ? 'SSH（所以 15fps；本地的 TERM_PROGRAM 之类传不过来）' : '本地'}`
-            + `${mux === null ? '' : `，在 ${mux} 里`}`,
-        caps.tier === 'graphics'
-            ? `终端格像素 ${caps.cellW}×${caps.cellH}`
-                + `${caps.cellW === DEFAULT_CELL.w && caps.cellH === DEFAULT_CELL.h ? '（= 默认值）' : ''}`
-            : `字符密度   ${caps.tier === 'braille' ? '2×4' : '1×2'} 逻辑像素/格（不依赖设备像素查询）`,
-        `帧率       ${caps.fps}fps`,
-        `候场       ${t.cols}×1 字符格（静止状态栏）`,
-        `两行游戏条 ${cols}×${rows} 字符格 → ${target.pixelW}×${target.pixelH} 逻辑像素`,
-        '微型画布   80×8（为两行重新构图，不缩小完整场景）',
-        '角色绘制   文本档使用原生 8 像素高微型动作帧；图形档独立构图，E 展开更多细节',
-        caps.leftover.length > 0 ? `抢跑的输入 ${caps.leftover.length} 字节（已丢弃 —— 这个命令不转发给谁）` : '',
-        '',
-        caps.tier === 'braille'
-            ? '当前是通用文本档：每字符 2×4 逻辑像素，实际清晰度受字体影响。Termius、SSH、tmux/screen 得到这一档是正常结果。'
-            : caps.tier === 'half'
-                ? '当前是最低兼容档；可用 MOYU_TIER=braille 检查终端字体是否支持 Unicode Braille。'
-                : '当前终端完整支持 Kitty Graphics，已使用 RGB 像素增强档。',
-        '',
-        '环境变量：MOYU_TIER=braille|half 明确选文本档；MOYU_TIER=graphics 安全尝试图形档；MOYU_CELL=16x34 指定格像素。',
-        'MOYU_FORCE_GRAPHICS=1 会跳过保护严格强制，只应用于协议调试；在 Termius 上可能空白或乱码。',
-        gfx ? '' : '想单独验证 Kitty 图片链路：moyu doctor --gfx（不会改变日常自动选择）。',
-    ].filter((x) => x !== '').join('\n') + '\n');
-    // 协议自检刻意保持一条小图，避免 doctor 一次向 SSH 灌入整屏 RGB 数据。
-    if (gfx)
-        drawGfxSelfTest(fieldColsFor(t.cols), 2, caps.cellW, caps.cellH);
-    return 0;
 }
 /**
  * `--gfx` 的那张图：**绕开探测**，用真的 `GraphicsTarget` + 真的 `World` 画一帧出货尺寸
@@ -513,9 +591,19 @@ function drawGfxSelfTest(cols, rows, cellW, cellH) {
 async function cmdWrap(inner) {
     // 没有 TTY 就没有"分屏"可言（管道、CI、被别的程序调用）。这时候唯一正确的行为是
     // 完全退化成一层透明的转发 —— 装作外壳不存在，别把转义序列灌进人家的管道里。
+    const resolved = resolveExecutable(inner[0]);
+    if (resolved.kind === 'missing') {
+        process.stderr.write(`moyu: 找不到可执行命令 ${diagnosticLine(inner[0], '（空命令）')}\n`);
+        return 127;
+    }
+    if (resolved.kind === 'unusable') {
+        process.stderr.write(`moyu: 不能执行 ${diagnosticLine(inner[0], '（空命令）')}：${diagnosticLine(resolved.detail, '不可执行')}\n`);
+        return 126;
+    }
+    const argv = [resolved.path, ...inner.slice(1)];
     if (!process.stdout.isTTY || !process.stdin.isTTY)
-        return runBare(inner);
-    return new Shell(inner, shellEvents(), await loadGameModules()).run();
+        return runBare(argv);
+    return new Shell(argv, shellEvents(), await loadGameModules()).run();
 }
 /** 每个外壳一条事件文件，避免多个 Codex/Claude 窗口互相触发。显式 MOYU_EVENTS 仍然优先。 */
 function shellEvents() {
@@ -531,13 +619,37 @@ function shellEvents() {
 async function runBare(inner) {
     const { spawn } = await import('node:child_process');
     return new Promise((resolve) => {
-        const child = spawn(inner[0], inner.slice(1), { stdio: 'inherit' });
-        child.on('error', (e) => { process.stderr.write(`moyu: 起不来 ${inner[0]}：${e.message}\n`); resolve(127); });
+        let settled = false;
+        const settle = (code) => { if (!settled) {
+            settled = true;
+            resolve(code);
+        } };
+        let child;
+        try {
+            child = spawn(inner[0], inner.slice(1), {
+                stdio: 'inherit',
+                shell: false,
+                env: scrubInternalEnv(),
+            });
+        }
+        catch (error) {
+            process.stderr.write(`moyu: 起不来 ${diagnosticLine(inner[0], '（空命令）')}：${diagnosticLine(error, '启动失败')}\n`);
+            settle(invocationStatus(error));
+            return;
+        }
+        child.on('error', (error) => {
+            process.stderr.write(`moyu: 起不来 ${diagnosticLine(inner[0], '（空命令）')}：${diagnosticLine(error, '启动失败')}\n`);
+            settle(invocationStatus(error));
+        });
         child.on('exit', (code, signal) => {
             const signo = signal === null ? null : osConstants.signals[signal];
-            resolve(signo === null || signo === undefined ? (code ?? 0) : 128 + signo);
+            settle(signo === null || signo === undefined ? (code ?? 0) : 128 + signo);
         });
     });
+}
+function invocationStatus(error) {
+    const code = error?.code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 127 : 126;
 }
 /** 真实终端尺寸。拿不到就给一个保守的默认值，而不是崩。 */
 function termSize() {
@@ -570,7 +682,7 @@ class Shell {
     /** 用户缩回两行后，即使坐标要等重绘确认，也应继续回到 inline。 */
     wantInline = false;
     preferComposerOverlay;
-    /** 收起那一行上一次写出去的字节，用来做“没变就不发”。 */
+    /** Last one-cell standby paint, used to suppress unchanged writes. */
     lastBar = '';
     layout = null;
     arbiter;
@@ -588,6 +700,7 @@ class Shell {
     events;
     pty = null;
     timer = null;
+    hostTimer = null;
     tee = null;
     ptyPaused = false;
     /** 帧间隔。探测到 SSH 会把它翻倍（15fps），所以不能直接用 `FRAME_MS`。 */
@@ -596,7 +709,14 @@ class Shell {
     skipped = 0;
     lastToggle = 0;
     resolve = null;
+    outcome = null;
+    stopping = false;
     finished = false;
+    removePtyData = null;
+    removePtyExit = null;
+    stdinHandler = (chunk) => { this.onStdin(chunk); };
+    resizeHandler = () => { this.onResize(); };
+    drainHandler = null;
     constructor(argv, events, modules) {
         this.argv = argv;
         this.events = events;
@@ -630,7 +750,7 @@ class Shell {
         this.vt = new VtCursor({ cols: t.cols, rows: innerRows,
             onPrint: (cp, row, col) => { this.observeComposer(cp, row, col); } });
         this.target = new Canvas(t.cols, 1);
-        this.teardown = new Teardown(() => this.restoreState());
+        this.teardown = trackTeardown(new Teardown(() => this.restoreState()));
     }
     /** 退出时的还原参数。现场取值 —— 内层光标一直在动，安装时的快照到这会儿早过期了。 */
     restoreState() {
@@ -651,21 +771,21 @@ class Shell {
         // 终端在我们底下消失时 stdout 会 EPIPE。它不该变成一次 uncaughtException ——
         // 那条路径会去打印栈，而屏幕已经没了。
         process.stdout.on('error', () => { });
+        const rawBaseline = process.stdin.isRaw;
         this.teardown.install();
-        this.teardown.onRestore(() => { this.stopFrames(); });
-        this.teardown.onRestore(() => { this.clearComposerTimers(); });
-        this.teardown.onRestore(() => { try {
-            process.stdin.setRawMode(false);
-        }
-        catch { /* 已经不是 TTY 了 */ } });
+        this.teardown.onRestore(() => { this.quiesce(); });
+        this.teardown.onRestore(() => {
+            try {
+                process.stdin.setRawMode(rawBaseline);
+            }
+            catch { /* 已经不是 TTY 了 */ }
+        });
         this.teardown.onRestore(() => { this.pty?.killNow(); });
         this.teardown.onRestore(() => { this.closeTee(); });
         this.teardown.onRestore(() => { this.cleanupEvents(); });
-        // 最后一个：删掉 bin/moyu 的接管标记。放最后是因为它的语义是"还原真的做完了"——
-        // 前面的钩子抛异常会被 Teardown 吞掉，但还原字节在那之前就已经写出去了，所以
-        // 走到这一步屏幕一定是干净的。SIGKILL 时这行跑不到，标记留着，sh 的 trap 接手。
-        this.teardown.onRestore(() => { clearTakeover(); });
-        markTakeover();
+        await this.teardown.acquire(this.restoreState());
+        if (this.stopping)
+            return this.waitForOutcome();
         this.openTee();
         const t = termSize();
         // raw + resume 提到这里（探测之前）有两个硬理由：回复必须在 raw 下读 ——
@@ -679,10 +799,15 @@ class Shell {
             env: process.env,
             cols: t.cols, rows: t.rows, tty: true,
         });
+        if (this.stopping)
+            return this.waitForOutcome();
         this.frameMs = 1000 / caps.fps;
         // 回答内层 `CSI 14/16 t` 用的格像素：探测值优于默认值，两档都要（半块档也会被问）。
         this.pass.cell = { w: caps.cellW, h: caps.cellH };
         if (caps.tier === 'graphics') {
+            await this.teardown.update({ deleteImage: true });
+            if (this.stopping)
+                return this.waitForOutcome();
             // 尺寸随便给，下面 applyLayout 立刻按真实布局 resize 一次。
             this.target = new GraphicsTarget(t.cols, 1, caps.cellW, caps.cellH);
         }
@@ -709,27 +834,38 @@ class Shell {
                 args: this.argv.slice(1),
                 cols: t.cols,
                 rows: innerRows,
-                env: { ...process.env, MOYU_EVENTS: this.events.file },
+                env: { ...scrubInternalEnv(), MOYU_EVENTS: this.events.file },
             });
         }
         catch (e) {
+            if (this.stopping)
+                return this.waitForOutcome();
             this.teardown.run();
-            process.stderr.write(`moyu: ${e instanceof Error ? e.message : String(e)}\n`);
-            return 127;
+            await this.teardown.released();
+            process.stderr.write(`moyu: ${diagnosticLine(e, '内层命令启动失败')}\n`);
+            return invocationStatus(e);
         }
-        this.pty.onData((data) => { this.onPtyData(data); });
-        this.pty.onExit(({ exitCode }) => { this.finish(exitCode); });
+        if (this.stopping) {
+            this.pty.killNow();
+            return this.waitForOutcome();
+        }
+        this.removePtyData = this.pty.onData((data) => { this.onPtyData(data); });
+        this.removePtyExit = this.pty.onExit(({ exitCode, signal }) => {
+            void this.finish(signal ? 128 + signal : exitCode);
+        });
         // 探测那 150ms 里用户抢跑敲的键。攒到现在才喂 —— 那会儿 PTY 还不存在，
         // 转发给谁都没有；丢掉的话用户会觉得"开头几个字符吃了"。
         if (caps.leftover.length > 0)
             this.onStdin(caps.leftover);
-        process.stdin.on('data', (chunk) => { this.onStdin(chunk); });
+        process.stdin.on('data', this.stdinHandler);
         // 用 stdout 的 'resize' 而**不是** `process.on('SIGWINCH')`：SIGWINCH 的监听器顺序
         // 不保证排在 Node 自己刷新 `process.stdout.columns/rows` 之后，直接在信号里读尺寸
         // 会读到**上一次**的值。'resize' 是文档承诺"columns/rows 已经更新"之后才发的。
-        process.stdout.on('resize', () => { this.onResize(); });
-        this.startFrames();
-        return new Promise((resolve) => { this.resolve = resolve; });
+        process.stdout.on('resize', this.resizeHandler);
+        this.startHostEvents();
+        this.syncFrames();
+        this.paintStandby();
+        return this.waitForOutcome();
     }
     /* ── 布局 ─────────────────────────────────────────────────────────── */
     /**
@@ -793,12 +929,18 @@ class Shell {
             this.write(this.target.disposeSeq());
         else
             this.target.invalidate();
+        this.syncFrames();
         this.relayout();
+        if (v)
+            this.paintStandby();
     }
-    /** 让出整屏。两个原因（用户收起 / 太小）共用这一条路径。 */
+    /** 终端太小时让出整屏，并永久把这次游戏焦点交还给 CLI。 */
     onYield() {
         const t = termSize();
         const gameTop = Math.min(this.layout?.gameTop ?? t.rows, this.inlineTop ?? t.rows);
+        // 先归还输入；下面再按当前缓冲区撤滚动区和图片，不能让 resize 后重新吃游戏键。
+        this.returnToCli();
+        this.collapsed = true;
         // 先撤滚动区、擦掉游戏区，再把 PTY 调成整屏。反过来的话内层收到 SIGWINCH
         // 会立刻按整屏高度画，而滚动区还卡在上半屏，它画到底部时会被截断。
         // 让屏要顺手把终端里那张图删掉：擦文字擦不掉它（图是终端另存的一层），
@@ -809,12 +951,14 @@ class Shell {
             this.inlineTop = null;
             this.target.invalidate();
         }
+        this.lastBar = '';
         // Composer output at full-screen geometry must not mutate split-layout coordinates.
         // resizePty keeps the durable pre-yield baseline for the resume transaction.
         this.abortComposerOperation();
         this.composerGeneration++;
         this.composerRow = null;
         this.inlineTop = null;
+        this.syncFrames();
         this.pass.region = { top: 1, bottom: t.rows };
         this.pass.cols = t.cols;
         this.vt.resize(t.cols, t.rows);
@@ -836,6 +980,8 @@ class Shell {
             this.target.resize(fieldColsFor(t.cols), MICRO_GAME_ROWS);
             this.target.invalidate();
         }
+        this.syncFrames();
+        this.paintStandby();
     }
     /** 内层切换主屏/备用屏以后，在**新缓冲区**上重建外壳几何。 */
     onScreenSwap(_on) {
@@ -857,25 +1003,29 @@ class Shell {
                 this.lastBar = '';
                 this.write(removeImage + scrollRegionSeq(l)
                     + `\x1b[${l.gameTop};1H\x1b[2K` + this.vt.restoreSeq());
+                this.paintFirstFrame();
                 return;
             }
             if (this.collapsed) {
-                // Codex 启动时会切进备用屏。DECSTBM 与屏幕内容都不跨缓冲区：如果这里只
-                // 返回，新的屏幕既没有底栏，也没有保护游戏行的滚动区。清空缓存让下一帧
-                // 必定重画待机条，并先在当前（新）缓冲区重新建立一行布局。
+                // DECSTBM and screen contents are buffer-local. Rebuild the protected row, then repaint
+                // the one-cell marker immediately because no standby frame loop is running.
                 const removeImage = this.target.tier === 'graphics' ? deleteImageSeq() : '';
                 this.lastBar = '';
                 this.write(removeImage + scrollRegionSeq(l)
                     + `\x1b[${l.gameTop};1H\x1b[J` + this.vt.restoreSeq());
+                this.paintStandby();
                 return;
             }
             this.write(scrollRegionSeq(l) + `\x1b[${l.gameTop};1H\x1b[J` + this.vt.restoreSeq());
             // 新缓冲区上游戏区是空的（1049h 会清屏，也会清掉图），而画布只发变化 ——
             // 不 invalidate 就一直黑着。
             this.target.invalidate();
+            this.paintFirstFrame();
         });
     }
     onResize() {
+        if (this.stopping)
+            return;
         const t = termSize();
         const r = computeLayout({ cols: t.cols, rows: t.rows, manualGameRows: this.wantGameRows() });
         if (r.kind !== 'split') {
@@ -903,6 +1053,8 @@ class Shell {
             this.target.resize(fieldColsFor(t.cols), MICRO_GAME_ROWS);
             this.target.invalidate();
         }
+        this.syncFrames();
+        this.paintStandby();
     }
     relayout() {
         if (this.arbiter.yielded)
@@ -916,7 +1068,8 @@ class Shell {
     }
     /* ── 帧循环 ───────────────────────────────────────────────────────── */
     startFrames() {
-        if (this.timer !== null)
+        const visible = this.inlinePlay || !this.collapsed;
+        if (this.timer !== null || !visible || this.arbiter.yielded || this.focus !== 'game')
             return;
         this.timer = setInterval(() => { this.tick(); }, this.frameMs);
         // 帧定时器不该把进程钉在事件循环上 —— 内层退出后我们要能自然收尾。
@@ -927,6 +1080,41 @@ class Shell {
             return;
         clearInterval(this.timer);
         this.timer = null;
+    }
+    syncFrames() {
+        const visible = this.inlinePlay || !this.collapsed;
+        if (!this.finished && visible && !this.arbiter.yielded && this.focus === 'game')
+            this.startFrames();
+        else
+            this.stopFrames();
+    }
+    /** Entry paints now; the interval only schedules subsequent active frames. */
+    paintFirstFrame() {
+        this.syncFrames();
+        if (this.timer !== null)
+            this.tick();
+    }
+    startHostEvents() {
+        if (this.hostTimer !== null)
+            return;
+        this.hostTimer = setInterval(() => { this.pollHostEvents(); }, HOST_EVENT_MS);
+        this.hostTimer.unref();
+    }
+    stopHostEvents() {
+        if (this.hostTimer === null)
+            return;
+        clearInterval(this.hostTimer);
+        this.hostTimer = null;
+    }
+    pollHostEvents() {
+        if (this.finished)
+            return;
+        const before = this.game.status;
+        this.game.pollHostEvents(Date.now());
+        if (this.game.takeAction() === 'return-to-cli')
+            this.returnToCli();
+        if (this.game.status !== before)
+            this.paintStandby();
     }
     tick() {
         const l = this.layout;
@@ -941,30 +1129,21 @@ class Shell {
             this.tickInline(l);
             return;
         }
-        if (this.collapsed) {
-            this.tickCollapsed(l);
+        if (this.collapsed)
             return;
-        }
         this.game.setDisplay(l.gameRows, this.target.tier);
         this.game.advance(Date.now());
         const body = this.surface.render(this.game, this.target, l.gameTop, l.cols, l.gameRows);
         this.frames++;
-        // A task event is an empty sentinel: save and return focus without audible interruption.
-        const alert = this.game.takeAlert();
-        if (alert !== null && this.focus === 'game') {
-            this.toggleFocus();
-            return;
-        }
         // 必须是**一次** write：中间被内层的输出插进来会同时撕裂两边的画面。
         //
         // 画布最后一格恰好是屏幕右下角，写它会置上"延迟换行"标志，但紧跟着的
         // restoreSeq 以 SGR 开头 —— 控制序列不会消费那个标志，只有可打印字符会。所以不会滚屏。
-        // **没动就不发**：画布没变（`body === ''`）+ HUD 文本没变 + 没有横幅 = 整帧零字节。
-        // 任务完成后的暂停就是这个状态，而那正是用户在读横幅、最不该有带宽噪声的时候。
-        // 隐藏光标那一对也一起省掉 —— 没画东西就没有光标要藏。
-        if (body === '' && alert === null)
+        // **没动就不发**：画布没变时整帧零字节。任务事件由独立定时器处理，
+        // 不需要靠渲染循环夹带任何哨兵或横幅。
+        if (body === '')
             return;
-        this.write(`\x1b[?25l${alert ?? ''}${body}${this.vt.restoreSeq()}`);
+        this.write(`\x1b[?25l${body}${this.vt.restoreSeq()}`);
     }
     /** 在 Codex 输入提示正上方绘制两行，不改变内层 PTY 尺寸或滚动区。 */
     tickInline(l) {
@@ -981,34 +1160,24 @@ class Shell {
         this.game.advance(Date.now());
         const body = this.surface.render(this.game, this.target, top, l.cols, MICRO_GAME_ROWS);
         this.frames++;
-        const alert = this.game.takeAlert();
-        if (alert !== null && this.focus === 'game') {
-            this.toggleFocus();
+        if (body === '')
             return;
-        }
-        if (body === '' && alert === null)
-            return;
-        this.write(`\x1b[?25l${alert ?? ''}${body}${this.vt.restoreSeq()}`);
+        this.write(`\x1b[?25l${body}${this.vt.restoreSeq()}`);
     }
-    /**
-     * 收起状态下那一行。
-     *
-     * Simulation advances without painting, so task state is still observed while bandwidth stays quiet.
-     */
-    tickCollapsed(l) {
-        this.game.advance(Date.now());
-        const alert = this.game.takeAlert();
-        if (alert !== null && this.focus === 'game')
-            this.toggleFocus();
-        const h = this.game.hud();
-        const text = h.urgent ? `moyu · ${h.short} · Ctrl+] 开玩` : 'moyu  Ctrl+] 开玩';
-        // 最后一列留白：写屏幕右下角会置上延迟换行标志，见 hudSeq。
-        const seq = `${h.urgent ? SGR_URGENT : SGR_IDLE}`
-            + `\x1b[${l.gameTop};1H${fitRow('', text, Math.max(1, l.cols - 1))}\x1b[0m`;
-        if (seq === this.lastBar && alert === null)
+    /** Paint exactly one safe-edge cell; unchanged standby has no timer and emits no bytes. */
+    paintStandby() {
+        const l = this.layout;
+        if (l === null || this.finished || this.arbiter.yielded || !this.collapsed)
+            return;
+        const event = this.game.status !== 'idle';
+        // cols - 1 is deliberately not the bottom-right cell, which would arm delayed wrap.
+        const col = Math.max(1, l.cols - 1);
+        const seq = `${event ? SGR_STANDBY_EVENT : SGR_STANDBY_IDLE}`
+            + `\x1b[${l.gameTop};${col}H${event ? '•' : '·'}\x1b[0m`;
+        if (seq === this.lastBar)
             return;
         this.lastBar = seq;
-        this.write(`\x1b[?25l${alert ?? ''}${seq}${this.vt.restoreSeq()}`);
+        this.write(`\x1b[?25l${seq}${this.vt.restoreSeq()}`);
     }
     /* ── 数据流 ───────────────────────────────────────────────────────── */
     onPtyData(data) {
@@ -1032,6 +1201,7 @@ class Shell {
         }
         if (start < rewritten.length)
             this.vt.feed(rewritten.subarray(start));
+        const repaintStandby = this.ptyBoundaries.at(-1)?.kind === 'display-erase';
         this.activateComposerProposal();
         if (rewritten.length === 0)
             return;
@@ -1042,11 +1212,19 @@ class Shell {
         if (!ready && !this.ptyPaused) {
             this.ptyPaused = true;
             this.pty?.pause();
-            process.stdout.once('drain', () => {
+            this.drainHandler = () => {
+                this.drainHandler = null;
+                if (this.stopping)
+                    return;
                 this.ptyPaused = false;
                 this.pty?.resume();
-            });
+            };
+            process.stdout.once('drain', this.drainHandler);
         }
+        // ED 0 is written before the marker: painting at the boundary would be erased by the very
+        // bytes that caused it. Active play owns its next frame instead of exposing standby.
+        if (repaintStandby && this.focus === 'cli' && this.collapsed)
+            this.paintStandby();
     }
     applyPtyBoundary(boundary) {
         this.abortComposerOperation();
@@ -1061,6 +1239,7 @@ class Shell {
         this.beginComposerRepaint(false);
         this.target.invalidate();
         this.lastBar = '';
+        this.syncFrames();
         if (boundary.kind === 'alt-screen')
             this.onScreenSwap(boundary.on);
     }
@@ -1087,40 +1266,54 @@ class Shell {
     }
     toggleFocus() {
         const now = Date.now();
+        const entering = this.focus === 'cli';
         // 防止键盘自动重复在一次手势里立刻展开又收起。
-        if (this.focus === 'cli' && now - this.lastToggle < FOCUS_DEBOUNCE_MS)
+        if (entering && now - this.lastToggle < FOCUS_DEBOUNCE_MS)
             return;
         this.lastToggle = now;
-        const entering = this.focus === 'cli';
-        if (entering)
-            this.expanded = false;
-        this.focus = entering ? 'game' : 'cli';
-        // latch 里可能还压着一个方向键。不清掉的话焦点一离开游戏，角色会自己再走 150ms。
+        if (!entering) {
+            this.returnToCli();
+            return;
+        }
+        this.expanded = false;
+        this.focus = 'game';
         this.game.keys.clear();
-        // 路由器必须跟着变。漏了这一行的后果是 HUD 说"焦点在游戏"、按键却还在往内层跑，
-        // 而且是**静默**的分叉 —— M0 里两条路都通向内层，所以症状要到 M1 才会显形。
-        this.router.focus = this.focus;
-        if (entering)
-            this.wantInline = !this.expanded;
-        if (entering && this.canUseComposerOverlay())
+        this.router.focus = 'game';
+        this.wantInline = !this.expanded;
+        if (this.canUseComposerOverlay())
             this.startInlinePlay();
-        else if (!entering && this.inlinePlay) {
-            // A normal inline overlay still has one-row standby geometry and needs a same-size
-            // refresh to restore the covered composer. Returning from expanded play has two-row
-            // geometry, so collapsing it performs the resize/repaint instead.
+        else
+            this.setCollapsed(false);
+        this.game.enter();
+        this.game.resume();
+        this.ensurePlayableSurface();
+        this.lastBar = '';
+        this.paintFirstFrame();
+    }
+    /** Return keyboard and terminal ownership to the wrapped CLI without entry debounce. */
+    returnToCli() {
+        this.focus = 'cli';
+        this.router.focus = 'cli';
+        this.game.keys.clear();
+        this.game.pause();
+        this.wantInline = false;
+        this.stopFrames();
+        if (this.arbiter.yielded) {
+            // The yield path owns image deletion and terminal geometry after input is surrendered.
+            this.inlinePlay = false;
+            this.inlineTop = null;
+            this.target.invalidate();
+            this.lastBar = '';
+            return;
+        }
+        if (this.inlinePlay) {
             const needsResize = !this.collapsed;
             this.stopInlinePlay(!needsResize);
             this.setCollapsed(true);
         }
         else
-            this.setCollapsed(!entering);
-        if (!entering)
-            this.wantInline = false;
-        if (entering)
-            this.game.resume();
-        else
-            this.game.pause();
-        this.lastBar = '';
+            this.setCollapsed(true);
+        this.paintStandby();
     }
     observeComposer(cp, row, col) {
         if (!this.preferComposerOverlay || this.arbiter.yielded)
@@ -1435,6 +1628,7 @@ class Shell {
             return;
         this.collapsed = false;
         this.relayout();
+        this.paintFirstFrame();
     }
     toggleSize() {
         if (this.focus !== 'game')
@@ -1445,6 +1639,36 @@ class Shell {
         this.wantInline = !this.expanded;
         this.collapsed = false;
         this.relayout();
+        const l = this.layout;
+        if (l !== null)
+            this.game.setDisplay(l.gameRows, this.target.tier);
+        if (!this.game.playable()) {
+            this.returnToCli();
+            return;
+        }
+        this.paintFirstFrame();
+    }
+    ensurePlayableSurface() {
+        if (this.focus !== 'game' || this.game.playable())
+            return;
+        const l = this.layout;
+        if (l === null) {
+            this.returnToCli();
+            return;
+        }
+        this.expanded = true;
+        this.wantInline = false;
+        this.collapsed = false;
+        const t = termSize();
+        const r = computeLayout({ cols: t.cols, rows: t.rows, manualGameRows: this.wantGameRows() });
+        if (r.kind !== 'split') {
+            this.returnToCli();
+            return;
+        }
+        this.applyLayout(r.layout, 'resize');
+        this.game.setDisplay(r.layout.gameRows, this.target.tier);
+        if (!this.game.playable())
+            this.returnToCli();
     }
     canUseComposerOverlay() {
         return this.preferComposerOverlay && !this.arbiter.yielded && this.layout !== null
@@ -1460,6 +1684,7 @@ class Shell {
         this.target.resize(fieldColsFor(l.cols), MICRO_GAME_ROWS);
         this.target.invalidate();
         this.lastBar = '';
+        this.syncFrames();
         // 收掉最底部的候场提示；游戏本体只出现在输入框上方。
         this.write(this.target.disposeSeq() + `\x1b[${l.gameTop};1H\x1b[2K` + this.vt.restoreSeq());
     }
@@ -1473,6 +1698,7 @@ class Shell {
         this.inlinePlay = false;
         this.inlineTop = null;
         this.target.invalidate();
+        this.syncFrames();
         if (l !== null)
             seq += this.vt.restoreSeq();
         this.write(seq);
@@ -1485,12 +1711,47 @@ class Shell {
         }
     }
     /* ── 收尾 ─────────────────────────────────────────────────────────── */
-    finish(code) {
+    /** Stop every asynchronous producer before terminal restoration begins. */
+    quiesce() {
+        if (this.stopping)
+            return;
+        this.stopping = true;
+        this.stopFrames();
+        this.stopHostEvents();
+        this.clearComposerTimers();
+        process.stdin.off('data', this.stdinHandler);
+        process.stdin.pause();
+        process.stdout.off('resize', this.resizeHandler);
+        if (this.drainHandler !== null)
+            process.stdout.off('drain', this.drainHandler);
+        this.drainHandler = null;
+        this.ptyPaused = false;
+        this.removePtyData?.();
+        this.removePtyData = null;
+        this.removePtyExit?.();
+        this.removePtyExit = null;
+    }
+    /** Preserve an early PTY outcome until run() reaches its final await. */
+    waitForOutcome() {
+        if (this.outcome !== null)
+            return Promise.resolve(this.outcome);
+        return new Promise((resolve) => { this.resolve = resolve; });
+    }
+    async finish(code) {
         if (this.finished)
             return;
         this.finished = true;
-        this.stopFrames();
+        this.outcome = code;
+        try {
+            await this.teardown.snapshot(this.restoreState());
+        }
+        catch { /* supervisor 可能已经断开 */ }
         this.teardown.run();
+        try {
+            await this.teardown.released();
+        }
+        catch { /* 本地已同步还原 */ }
+        activeTeardowns.delete(this.teardown);
         const r = this.resolve;
         this.resolve = null;
         r?.(code);
@@ -1541,31 +1802,6 @@ class Shell {
 function clampRow(row, innerRows) {
     return Math.max(MICRO_GAME_ROWS + 1, Math.min(innerRows, row));
 }
-/**
- * `bin/moyu` 的接管标记。它的语义是"屏幕还欠一次还原"。
- *
- * 用标记文件而不是退出码，因为退出码分不清两件事：内层 CLI 自己退出码 130 是很正常的，
- * 不代表屏幕坏了。而重复还原有真实代价 —— `?1049l` 自带一次光标恢复，
- * 会把用户 shell 的光标搬到一个陈旧的位置去。
- */
-function markTakeover() {
-    const p = process.env.MOYU_TAKEOVER_FLAG;
-    if (p === undefined || p === '')
-        return;
-    try {
-        fs.writeFileSync(p, 'taken\n');
-    }
-    catch { /* 没标记只是少一层兜底，不该因此不启动 */ }
-}
-function clearTakeover() {
-    const p = process.env.MOYU_TAKEOVER_FLAG;
-    if (p === undefined || p === '')
-        return;
-    try {
-        fs.unlinkSync(p);
-    }
-    catch { /* 已经没了 */ }
-}
 export { main };
 /** argv[1] 指的是不是这个模块本身。两边都过一遍 realpath，软链才不会骗到我们。 */
 function isEntry(entry) {
@@ -1589,9 +1825,19 @@ function isEntry(entry) {
 // 实测踩到过：npm i -g --prefix /tmp/... 之后装出来的包就是这样。
 const entry = process.argv[1];
 if (entry !== undefined && isEntry(entry)) {
-    main().then((code) => { process.exit(code); }, (e) => {
-        // 到这里说明还原钩子已经跑过了（Teardown 挂了 uncaughtException），屏幕是干净的。
-        process.stderr.write(`moyu: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`);
-        process.exit(1);
+    main().then(async (code) => {
+        activeTeardowns.clear();
+        await completeSupervision();
+        process.exitCode = code;
+    }, async (e) => {
+        process.stderr.write(`moyu: ${diagnosticLine(e, '未处理异常')}\n`);
+        releaseActiveTeardowns();
+        await Promise.allSettled([...activeTeardowns].map((teardown) => teardown.released()));
+        activeTeardowns.clear();
+        try {
+            await completeSupervision();
+        }
+        catch { /* 原始异常决定退出状态 */ }
+        process.exitCode = 1;
     });
 }

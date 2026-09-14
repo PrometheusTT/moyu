@@ -1,117 +1,126 @@
 # Terminal compatibility and visual QA
 
-Moyu's portable target is a readable terminal game, not identical image resolution in every client.
-Two rows are the default micro view. E opens six protected rows (four if space is limited).
-Games that need a complete board show an expansion entry instead of running invisibly in two rows.
+Moyu targets a readable, safely owned terminal game rather than identical raster output in every client.
+The default micro view uses two game rows while standby reserves one row and paints one safe-edge cell.
+Games without a playable micro composition yield input to the wrapped CLI instead of running invisibly.
 
-## Evidence from this environment (2026-09-07)
+## Reference evidence (2026-09-11)
 
-### Native-pixel upgrade: phase 1
+### Native-pixel fixture
 
-The action cartridge now draws directly into the device framebuffer. It uses a height-driven
-camera, capsule distance coverage in linear light, and fixed-step motion interpolation. Existing
-text renderers and older cartridges keep their previous paths. Instructions remove the Kitty
-image instead of putting text beneath an opaque blank image.
+The reference run used Darwin arm64 on an Apple M4 (10 logical CPUs), Node v25.8.2. It exercised the
+production built-in Stick Slash cartridge and `GraphicsTarget`, using seed `0x1234abcd` for exactly 1,800
+fixed 60 Hz updates: one complete 30-second chapter. The checkpoint was 11 kills, best combo 3, score
+1,250, and RNG state 3,913,948,090.
 
-`moyu doctor --visual` probes Kitty support before showing the actual two-row scene. Tab switches
-old/new rendering of the same simulation; Space pauses, r restarts, e changes two/six rows,
-l changes the new renderer's palette, and Esc exits. It does not submit prompts or write saves.
-PTY checks cover negotiation, pause, switching, resizing the view, cleanup, and unsupported clients.
-They do not certify a native GUI terminal. This phase awaits user visual acceptance before
-iTerm2/Sixel, adaptive frame scheduling, and the sprite/tile API are implemented.
+Timing covers only `renderPixels()` and `GraphicsTarget.encode()`. Kitty parsing, Base64 decoding,
+inflation, hashing, PNG generation, and browser-preview work run after the timed boundary. Percentiles
+use nearest rank. Payload values are complete host-frame writes, including CUP and every Kitty APC chunk;
+zero-byte unchanged frames remain in the 1,800-frame distribution.
 
-Generate source-picture comparisons with:
+| Device pixels | Theme / motion | Combined p50 / p95 / p99 / max (ms) | Encode p95 (ms) | Average / peak bytes | Max APC chunks | Unchanged p50 / p95 / p99 / max (ms) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 320×34 | dark / normal | 0.163 / 0.229 / 0.265 / 1.497 | 0.127 | 1,510 / 2,612 | 1 | 0.030 / 0.031 / 0.034 / 0.036 |
+| 320×34 | dark / reduced | 0.157 / 0.213 / 0.241 / 0.298 | 0.127 | 1,481 / 2,612 | 1 | 0.029 / 0.030 / 0.030 / 0.035 |
+| 320×34 | light / normal | 0.159 / 0.221 / 0.252 / 0.299 | 0.126 | 1,535 / 2,608 | 1 | 0.029 / 0.030 / 0.030 / 0.037 |
+| 320×34 | light / reduced | 0.157 / 0.208 / 0.235 / 0.270 | 0.127 | 1,506 / 2,608 | 1 | 0.029 / 0.030 / 0.031 / 0.032 |
+| 640×68 | dark / normal | 0.523 / 0.752 / 0.855 / 1.012 | 0.393 | 3,354 / 6,049 | 2 | 0.099 / 0.118 / 0.122 / 0.127 |
+| 640×68 | dark / reduced | 0.533 / 0.731 / 0.805 / 0.899 | 0.398 | 3,291 / 6,049 | 2 | 0.099 / 0.119 / 0.124 / 0.127 |
+| 640×68 | light / normal | 0.543 / 0.757 / 0.850 / 0.930 | 0.397 | 3,498 / 6,193 | 2 | 0.098 / 0.118 / 0.121 / 0.121 |
+| 640×68 | light / reduced | 0.540 / 0.751 / 0.833 / 0.942 | 0.400 | 3,433 / 6,193 | 2 | 0.098 / 0.118 / 0.118 / 0.121 |
+
+This is the intentional full-chapter baseline. It is stricter than the earlier 180-frame focused sample:
+it includes sustained movement, four formation bands, stains, debris, effects, and the frozen result screen.
+A 640×68 frame can require two Kitty APC records; the host still delivers the complete frame in one write.
+Future comparable native fixtures gate p95 encode time and average/peak payload at no more than 15% above
+this baseline unless an intentional visual-quality change records a new reference.
+
+### Hide and resume
+
+The lifecycle fixture renders a live production frame, hides for 10 seconds, verifies that game state and the
+exact decoded RGB framebuffer do not change, deletes the owned Kitty image, then resumes without catch-up.
+
+| Device pixels | Delete bytes | First resumed frame | Immediate repeat |
+| --- | ---: | ---: | ---: |
+| 320×34 | 24 | 0.138 ms, 980 B, one APC | 0.065 ms, 0 B |
+| 640×68 | 24 | 0.333 ms, 2,136 B, one APC | 0.186 ms, 0 B |
+
+Both are below the 50 ms local and 100 ms SSH first-frame gates. Stable result frames and immediate repeats
+produce zero terminal bytes. These timings measure local rendering, not SSH transport latency.
+
+### Automated host evidence
+
+| Boundary | Automated evidence |
+| --- | --- |
+| Capability startup | Successful Kitty reply, DA-only unsupported response, silent timeout, known-terminal path, forced tier, tmux/screen and non-TTY skips |
+| Probe budget | 400 ms local and 1,200 ms SSH caps; delayed SSH and DA-before-graphics replies covered |
+| Standby | Exactly `·` or `•` at `cols - 1`; no branding and no periodic bytes while stable |
+| Input and focus | CLI owns hidden/yielded input; help, unsupported geometry, alternate screen, resize, and ordinary hide are covered in nested PTYs |
+| Host events | Active and yielded task events are polled independently and observed within the 150 ms test gate |
+| Graphics ownership | Kitty deletion precedes CLI handoff; no hidden APC frames; terminal regions and cursor are restored |
+| Character budget | Braille micro samples enforce less than 250 B/frame average and 600 B peak |
+| Backpressure | Inner CLI output is forwarded first; a false stdout write pauses the child PTY until drain, while active game frames above 48 KiB queued output are skipped |
+
+The host keeps a 30 fps local and 15 fps SSH cadence. Existing backpressure is not adaptive scheduling:
+it protects wrapped-CLI throughput and drops optional game work when output is congested. A stable standby has
+no game-render timer at all.
+
+## Generated artifacts
+
+Run:
 
 ```sh
-node --experimental-strip-types scripts/pixel-qa.mjs
+node --experimental-strip-types scripts/pixel-qa.mjs /tmp/moyu-pixel-qa
+node --experimental-strip-types scripts/visual-qa.mjs /tmp/moyu-visual-qa
 ```
 
-`/tmp/moyu-pixel-qa/preview.html` has a shared timeline, 15/30fps playback, 1:1 device-pixel view,
-Retina CSS-size view and magnification. PNGs are decoded from actual Kitty RGB payloads, not drawn
-again in the browser. Old frames deliberately preserve the old dark palette. `contact.png` has
-old frames on the left and new frames on the right. `metrics.json` records the export fixture.
-
-In this Linux environment, the 180-frame action sample measured about 1,273 / 2,521 / 2,549 /
-5,878 bytes per frame for 320×34 dark / 640×68 dark / 640×68 light / 640×204 dark. Peaks were
-1,696 / 3,308 / 3,344 / 8,307 bytes. Mean render + encode + test decode was approximately
-0.35 / 0.74 / 0.77 / 1.94 ms. These are local fixture measurements, not network latency or FPS
-guarantees. Production SSH cadence remains 15fps until the next scheduling phase.
-
-Native source PNGs were visually inspected for continuous contours and jump headroom. macOS
-Termius, Kitty, and other GUI terminals are unavailable here; their native acceptance remains open.
-
-| Check | Result | What this proves |
-| --- | --- | --- |
-| Linux PTY + Codex 0.153.4 | Passed automated smoke | Standby, instructions, play, expansion and composer reappearance after exit |
-| Controlled CLI in nested PTYs | Automated regression | Keyboard ownership, help, resizing, original-content repaint and teardown |
-| DejaVu Sans Mono SVG contact sheet | Visually inspected | Actual emitted glyphs at 16×34 character cells; coherent dot strokes for fighters and blocks for boards |
-| Firefox headless preview | Initial controls and dark/light gameplay visually inspected | Actual ANSI-derived glyphs and text; this is not native-terminal certification |
-
-A PTY has no font rasterizer. These checks do **not** certify the appearance of a terminal application.
-The portable weapon color has 4.60:1 contrast on the tested dark background and 3.50:1 on the light one;
-enemy color has 4.92:1 and 3.27:1 respectively. Primary text and player color inherit terminal foreground.
+`pixel-qa` writes `metrics.json`, decoded production Kitty PNG captures, and `preview.html` for the two sizes,
+two themes, normal/reduced motion, chapter bands, and result state. Browser scaling is for inspection only.
+`visual-qa` writes actual ANSI frames, `contact.svg`, and browser previews for character renderers. A browser
+or SVG font rasterizer does not certify a native terminal.
 
 ## Client matrix
 
-| Terminal | Client / OS / font tested | Native visual status |
-| --- | --- | --- |
-| Termius | Not available in this environment | Pending |
-| Windows Terminal | Not available in this environment | Pending |
-| macOS Terminal | Not available in this environment | Pending |
-| iTerm2 | Not available in this environment | Pending |
-| Kitty | Not available in this environment | Pending |
-| Ghostty | Not available in this environment | Pending |
-| WezTerm | Not available in this environment | Pending |
-| VS Code integrated terminal | Not available in this environment | Pending |
+No untested client is labeled certified. Protocol tests establish byte-level behavior, not font, line-height,
+image placement, theme contrast, or remote latency on a particular terminal.
 
-The protocol selection and 15fps input behavior are covered by tests. Real SSH latency, tmux
-rendering, client-specific line spacing and font fallback still need client verification.
-No untested terminal is labeled as certified. Kitty image encoding has protocol unit tests;
-native Kitty image placement remains a separate client check. Additional image protocols are not enabled.
+| Terminal / path | Automated coverage | Native visual status |
+| --- | --- | --- |
+| macOS Terminal | Character fallback selection and PTY ownership paths | Manual client check pending |
+| iTerm2 | Safe fallback; iTerm2 inline images are not implemented | Manual client check pending |
+| Kitty | Graphics negotiation, chunking, replacement, and deletion | Manual image placement check pending |
+| Ghostty | Kitty-protocol path and full-frame replacement | Manual image placement check pending |
+| WezTerm | Capability and fallback paths | Manual client check pending |
+| VS Code integrated terminal | Character fallback and PTY ownership paths | Manual client check pending |
+| Windows Terminal / WSL | Character fallback and Node/PTY platform target | Manual WSL check pending |
+| Termius / SSH | SSH 15 fps path, probe budget, and character fallback | Real remote latency/font check pending |
+| tmux | Graphics probing is skipped; character fallback remains | Manual pane/resize check pending |
+
+## Manual acceptance procedure
+
+Record terminal version, OS, font, size, line height, local/SSH/tmux path, theme, and selected backend. Then:
+
+- Confirm glyph continuity and two-row placement in dark and light themes.
+- Recognize player/enemy silhouettes, facing, jump, windup, slash, hurt, task wave, and result state.
+- Check `MOYU_REDUCE_MOTION=1`: action remains legible without shake or flash.
+- Enter, hide for 10 seconds, and return; state must not advance and the first frame must appear promptly.
+- Resize while hidden and visible; resize must never recapture game focus automatically.
+- Enter/leave alternate screen and force task done/notify; the image must be deleted before CLI handoff.
+- Stream CLI output during play and verify ordering, responsiveness, clean teardown, and composer repaint.
+- Check Ctrl+], F12, Esc, Ctrl+G, Ctrl+Space, Ctrl+C, arrows, paste, and terminal replies.
+- For Kitty graphics, inspect clipping, device-pixel scale, theme contrast, chunked frames, and image deletion.
 
 ## Reproduce
 
 ```sh
 npm run typecheck
-npm run compile
 npm test
-node --experimental-strip-types scripts/visual-qa.mjs
+node --experimental-strip-types scripts/pixel-qa.mjs /tmp/moyu-pixel-qa
+node --experimental-strip-types scripts/visual-qa.mjs /tmp/moyu-visual-qa
 node --experimental-strip-types scripts/codex-smoke.mjs
 MOYU_TIER=braille ./bin/moyu -- codex
 ```
 
-The preview generator prints its output directory, by default `/tmp/moyu-visual-qa`.
-Open `preview.html` in a browser for a frame slider, theme switch and local font choices.
-`frames.json` contains the actual ANSI output. `contact.svg` shows gameplay glyphs, without
-invented solid pixels between the font's dots. Optional development-only PNG export:
-
-```sh
-convert /tmp/moyu-visual-qa/contact.svg /tmp/moyu-visual-qa/contact.png
-```
-
-The Codex smoke test starts the installed Codex CLI without submitting a prompt. It uses a
-dedicated temporary Moyu state directory, responds to terminal capability queries, and closes
-the child after the checks. If startup needs manual interaction it reports the blocked stage.
-
-## Acceptance procedure on each client
-
-Record terminal version, OS, font, font size, line height, connection and selected backend.
-At normal zoom, check the following with both dark and light terminal themes:
-
-- Recognize the player's head, separate feet, facing direction and weapon.
-- Distinguish walking, airborne, windup, strike and hurt without relying on enlarged stills.
-- Read initial controls, use J to start, ? for help, E for size, Tab for cartridge, Esc to exit.
-- Watch the snake's direction and food; see the full falling-block board and landing ghost.
-- Hide for ten seconds and return: the simulation must not advance while hidden.
-- Resize and stream CLI output during play; verify clean exit and restored composer content.
-- Check that Ctrl+G, Ctrl+Space, Ctrl+C and paste retain their CLI behavior.
-
-## Runtime cost
-
-The visual scenario (64 frames per game at 15fps, including first help and scene transitions)
-measured approximately 149 / 272 / 98 / 48 bytes per frame for stick micro / stick expanded /
-snake expanded / blocks expanded. The largest frame in that sample was 1,135 bytes.
-These are fixture measurements, not bandwidth promises under continuous CLI repainting.
-
-The renderer adds no production dependency. Preview and smoke scripts are development tools
-and are not included in the published package.
+The Codex smoke submits no prompt and never approves a directory-trust chooser. If Codex requires trust or
+another interactive startup decision, the script records local ANSI diagnostics and reports a manual block.
+Preview and smoke scripts are development tools and are not included in the published package.

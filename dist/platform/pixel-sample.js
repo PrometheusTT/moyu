@@ -8,6 +8,7 @@ import { NativePixelCanvas } from "./pixel-canvas.js";
 export class PixelSample {
     world;
     previous = new Map();
+    scratch = new Map();
     legacy = new LogicalCanvas(180, 44);
     frame = 0;
     constructor() { this.world = this.makeWorld(); }
@@ -18,11 +19,13 @@ export class PixelSample {
         world.taskStart();
         return world;
     }
-    reset() { this.world = this.makeWorld(); this.previous = new Map(); this.frame = 0; }
+    reset() { this.world = this.makeWorld(); this.previous.clear(); this.scratch.clear(); this.frame = 0; }
     step() {
         if (this.frame >= 720)
             this.reset();
-        this.previous = snapshotFighters(this.world);
+        const previous = this.previous;
+        this.previous = snapshotFighters(this.world, this.scratch);
+        this.scratch = previous;
         const f = this.frame++;
         this.world.step(1 / 60, {
             move: f < 60 ? 0 : Math.floor((f - 60) / 90) % 2 === 0 ? 1 : -1,

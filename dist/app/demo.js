@@ -32,6 +32,7 @@ class Demo {
     game;
     canvas = new Canvas(80, 1);
     teardown;
+    rawBaseline;
     timer = null;
     resolve = null;
     finished = false;
@@ -39,6 +40,7 @@ class Demo {
     toldSmall = false;
     constructor(seed) {
         this.game = seed === undefined ? new Game() : new Game({ seed });
+        this.rawBaseline = process.stdin.isRaw;
         // 备用屏上退出：`?1049l` 自己会把主屏和光标恢复，所以不给 homeRow ——
         // 给了反而会在**主屏**上从光标处往下擦，那是用户的滚动历史。
         this.teardown = new Teardown(() => ({}));
@@ -47,10 +49,15 @@ class Demo {
         process.stdout.on('error', () => { });
         this.teardown.install();
         this.teardown.onRestore(() => { this.stop(); });
-        this.teardown.onRestore(() => { try {
-            process.stdin.setRawMode(false);
-        }
-        catch { /* 已经不是 TTY */ } });
+        this.teardown.onRestore(() => {
+            process.stdin.removeAllListeners('data');
+            try {
+                process.stdin.setRawMode(this.rawBaseline);
+            }
+            catch { /* 已经不是 TTY */ }
+            process.stdin.pause();
+        });
+        await this.teardown.acquire({});
         // 顺序：进备用屏 → 清屏 → 关自动换行 → 藏光标。
         // 关自动换行是必须的：画布最后一格就是屏幕右下角，开着 DECAWM 的话
         // 写它会置上延迟换行标志，下一个可打印字符就会把整屏顶上去一行。
@@ -113,8 +120,10 @@ class Demo {
         this.finished = true;
         this.stop();
         this.teardown.run();
-        const r = this.resolve;
-        this.resolve = null;
-        r?.(code);
+        void this.teardown.released().catch(() => { }).finally(() => {
+            const r = this.resolve;
+            this.resolve = null;
+            r?.(code);
+        });
     }
 }

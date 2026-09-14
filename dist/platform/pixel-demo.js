@@ -16,8 +16,15 @@ export async function cmdPixelDemo() {
     const wasRaw = process.stdin.isRaw;
     let graphicsStarted = false;
     const teardown = new Teardown(() => ({ deleteImage: graphicsStarted }));
-    teardown.onRestore(() => { process.stdin.setRawMode(wasRaw); process.stdin.pause(); });
+    teardown.onRestore(() => {
+        try {
+            process.stdin.setRawMode(wasRaw);
+        }
+        catch { /* terminal gone */ }
+        process.stdin.pause();
+    });
     teardown.install();
+    await teardown.acquire({ deleteImage: false });
     process.stdin.setRawMode(true);
     process.stdin.resume();
     let caps;
@@ -32,18 +39,35 @@ export async function cmdPixelDemo() {
     if (caps.tier !== 'graphics') {
         process.stderr.write(`本轮样片需要 Kitty Graphics，未启用：${caps.why}\n`
             + '请在支持 Kitty Graphics 的终端运行，或查看导出的浏览器像素预览。此命令不会强制发送不支持的图片。\n');
+        teardown.run();
+        try {
+            await teardown.released();
+        }
+        catch { /* 本地已经恢复 */ }
         return 2;
     }
     // An exit pressed during capability negotiation must not be lost.
-    if (caps.leftover.includes(3) || caps.leftover.includes(27) || caps.leftover.includes(113))
+    if (caps.leftover.includes(3) || caps.leftover.includes(27) || caps.leftover.includes(113)) {
+        teardown.run();
+        try {
+            await teardown.released();
+        }
+        catch { /* 本地已经恢复 */ }
         return 0;
+    }
     const sample = new PixelSample(), target = new GraphicsTarget(40, 2, caps.cellW, caps.cellH);
     let paused = false, legacy = false, expanded = false, theme = process.env.MOYU_THEME === 'light' ? 'light' : 'dark';
     let timer, done = false, blocked = false, dirty = true;
     let last = performance.now(), accumulator = 0;
+    await teardown.update({ deleteImage: true });
     return new Promise(resolve => {
-        const finish = () => { if (done)
-            return; done = true; teardown.run(); resolve(0); };
+        const finish = () => {
+            if (done)
+                return;
+            done = true;
+            teardown.run();
+            void teardown.released().catch(() => { }).finally(() => { resolve(0); });
+        };
         const onData = (bytes) => {
             if (bytes.includes(3) || bytes.includes(27) || bytes.includes(113)) {
                 finish();
@@ -82,7 +106,10 @@ export async function cmdPixelDemo() {
             process.stdin.off('data', onData);
             process.stdout.off('resize', onResize);
             process.stdout.off('drain', onDrain);
-            process.stdin.setRawMode(wasRaw);
+            try {
+                process.stdin.setRawMode(wasRaw);
+            }
+            catch { /* terminal gone */ }
             process.stdin.pause();
         });
         process.stdin.setRawMode(true);

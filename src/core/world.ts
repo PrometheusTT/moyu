@@ -90,6 +90,15 @@ export type Blood = { x: number; y: number; vx: number; vy: number; life: number
 /** 刀光：一段圆弧 + 剩余寿命。 */
 export type Slash = { x: number; y: number; r: number; a0: number; a1: number; life: number; max: number; big: boolean };
 
+export type SpawnSide = 'left' | 'right';
+export type SpawnFormation =
+  | { kind: 'single'; side: SpawnSide }
+  | { kind: 'pair'; side: SpawnSide }
+  | { kind: 'pincer' }
+  | { kind: 'fill'; side: SpawnSide };
+
+export type WorldOptions = { automaticSpawns?: boolean };
+
 const PLAYER_HP = 4;
 
 /** 落地压扁的持续时间。30fps 下约 3 帧 —— 少于这个数就一闪而过看不见（见 `poseLand`）。 */
@@ -131,6 +140,8 @@ export class World {
   taskKills = 0;
   combo = 0;
   bestCombo = 0;
+  /** 当前固定步里出现过的最高连击；导演用它避开同帧受击/超时清零。 */
+  stepComboPeak = 0;
   private comboT = 0;
   /** 玩家死了，重生倒计时。 */
   respawn = 0;
@@ -141,10 +152,14 @@ export class World {
   /** 宿主可限制实际参与战斗的敌人数，避免仅在渲染层隐藏敌人。 */
   enemyLimit = 11;
   private spawnT = 1.2;
+  private readonly automaticSpawns: boolean;
+  /** 清屏特效借用 gameplay RNG；任务恢复时回到清屏前，避免改变后续战斗。 */
+  private taskRngState: number | null = null;
   time = 0;
 
-  constructor(seed = 0x5eed1234) {
+  constructor(seed = 0x5eed1234, options: WorldOptions = {}) {
     this.rng = new Rng(seed);
+    this.automaticSpawns = options.automaticSpawns !== false;
     this.player = this.makePlayer();
   }
 
@@ -206,31 +221,58 @@ export class World {
   /** 任务跑完了：放清屏技，然后暂停等下一个任务。 */
   taskDone(): void {
     if (this.phase === 'clear') return;
+    this.taskRngState = this.rng.snapshot();
     this.phase = 'clear';
     this.waveR = 0;
     this.flash = 0.10;
     this.shake = 2.6;
   }
 
+  /** 一章重新布置战场；保留整轮累计战绩，不保留上一章的战斗瞬态。 */
+  beginChapter(): void {
+    this.resetBattle();
+  }
+
   /** 下一个任务开始了：把上一场的尸堆冲掉，继续出怪。 */
   taskStart(): void {
     if (this.phase === 'fight') return;
+    this.resetBattle();
+  }
+
+  private resetBattle(): void {
+    if (this.taskRngState !== null) {
+      this.rng.restore(this.taskRngState);
+      this.taskRngState = null;
+    }
     this.phase = 'fight';
     this.waveR = null;
     this.taskKills = 0;
     this.heat = 0;
     this.spawnT = 0.6;
+    this.enemies.length = 0;
     this.pieces.length = 0;
     this.blood.length = 0;
     this.stains.length = 0;
-    this.enemies.length = 0;
-    this.player.hp = PLAYER_HP;
+    this.slashes.length = 0;
+    this.hitstop = 0;
+    this.flash = 0;
+    this.shake = this.shakeX = this.shakeY = 0;
+    this.combo = 0;
+    this.stepComboPeak = 0;
+    this.comboT = 0;
+    this.respawn = 0;
+    this.player = this.makePlayer();
   }
 
   /* ── 主步进 ────────────────────────────────────────────────────── */
 
   /** 固定步长推进一帧。`dt` 恒为 1/60 —— 变步长会让物理在掉帧时抽风。 */
   step(dt: number, input: Intent): void {
+    this.stepComboPeak = this.combo;
+    if (this.phase === 'paused') {
+      if (input.slash) this.taskStart();
+      return;
+    }
     this.time += dt;
 
     // 震动和闪白**不**受顿帧影响：它们是冲击的表现，不是世界的一部分。
@@ -245,13 +287,6 @@ export class World {
 
     if (this.hitstop > 0) { this.hitstop -= dt; return; }
 
-    if (this.phase === 'paused') {
-      // 暂停时只留呼吸，好让画面不像死图。玩家想接着打就按砍键（不必等下一个任务）。
-      this.player.anim += dt;
-      this.player.pose = poseIdle(this.player.anim);
-      if (input.slash) this.taskStart();
-      return;
-    }
     if (this.phase === 'title' && (input.slash || input.move !== 0)) {
       this.phase = 'fight';
       this.spawnT = 0.35;
@@ -274,7 +309,7 @@ export class World {
     if (this.phase === 'clear') this.stepWave(dt);
     else if (this.phase === 'fight') {
       this.heat += dt;
-      this.spawn(dt);
+      if (this.automaticSpawns) this.spawn(dt);
     }
 
     if (this.comboT > 0) {
@@ -381,6 +416,7 @@ export class World {
       this.kills += hit;
       this.taskKills += hit;
       this.combo += hit;
+      this.stepComboPeak = Math.max(this.stepComboPeak, this.combo);
       this.comboT = 1.6;
       if (this.combo > this.bestCombo) this.bestCombo = this.combo;
       // 顿帧随连击轻微加长，但有上限 —— 太长会从"有力"变成"卡"。
@@ -391,6 +427,41 @@ export class World {
 
   /* ── 杂兵 ──────────────────────────────────────────────────────── */
 
+  /** 整队要么一起出现，要么一个都不出现；章节导演靠这个维持构图语义。 */
+  spawnFormation(formation: SpawnFormation): boolean {
+    const capacity = this.enemyLimit - this.enemies.length;
+    const sides: SpawnSide[] = formation.kind === 'single' ? [formation.side]
+      : formation.kind === 'pair' ? [formation.side, formation.side]
+        : formation.kind === 'pincer' ? ['left', 'right']
+          : Array.from({ length: Math.max(0, capacity) }, (_, i) => i % 2 === 0
+            ? formation.side : formation.side === 'left' ? 'right' : 'left');
+    if (sides.length === 0 || sides.length > capacity) return false;
+    const made = sides.map((side, index) => this.makeGrunt(side, index, sides.length));
+    if (formation.kind === 'pair') for (let i = 0; i < made.length; i++) {
+      const sign = formation.side === 'left' ? -1 : 1;
+      made[i]!.x = this.player.x + sign * this.fh * (0.62 + i * 0.18);
+      made[i]!.face = sign === 1 ? -1 : 1;
+    }
+    this.enemies.push(...made);
+    return true;
+  }
+
+  private makeGrunt(side: SpawnSide, index = 0, count = 1): Fighter {
+    const fromLeft = side === 'left';
+    const stacked = count > 1 ? (index - (count - 1) / 2) * this.fh * 0.24 : 0;
+    return {
+      kind: 'grunt',
+      x: fromLeft ? -this.fh * 0.5 - stacked : this.w + this.fh * 0.5 + stacked,
+      y: this.ground, vx: 0, vy: 0, h: Math.round(this.fh * this.rng.range(0.78, 1.0)),
+      face: fromLeft ? 1 : -1, onGround: true, hp: 1,
+      walk: this.rng.float(), anim: this.rng.float() * 3,
+      atk: -1, atkHit: false, atkQueued: false, hurt: 0, land: 0, invuln: 0,
+      windup: -1, cool: this.rng.range(0, 0.5),
+      speed: this.playerSpeed() * this.rng.range(0.35, 0.56),
+      pose: poseIdle(0), armed: false,
+    };
+  }
+
   private spawn(dt: number): void {
     this.spawnT -= dt;
     // 上限同时受场地宽度约束：一个人占 0.45×身高 的间距，40 像素宽塞 11 个就是一堵墙。
@@ -398,19 +469,8 @@ export class World {
     if (this.spawnT > 0 || this.enemies.length >= maxLive) return;
     this.spawnT = clamp(1.5 - this.heat * 0.045, 0.42, 1.5) * this.rng.range(0.7, 1.3);
 
-    const fromLeft = this.rng.chance(0.5);
-    const h = Math.round(this.fh * this.rng.range(0.78, 1.0));
-    this.enemies.push({
-      kind: 'grunt',
-      x: fromLeft ? -this.fh * 0.5 : this.w + this.fh * 0.5,
-      y: this.ground, vx: 0, vy: 0, h,
-      face: fromLeft ? 1 : -1, onGround: true, hp: 1,
-      walk: this.rng.float(), anim: this.rng.float() * 3,
-      atk: -1, atkHit: false, atkQueued: false, hurt: 0, land: 0, invuln: 0,
-      windup: -1, cool: this.rng.range(0, 0.5),
-      speed: this.playerSpeed() * this.rng.range(0.35, 0.56),
-      pose: poseIdle(0), armed: false,
-    });
+    const side: SpawnSide = this.rng.chance(0.5) ? 'left' : 'right';
+    this.enemies.push(this.makeGrunt(side));
   }
 
   private stepGrunt(dt: number, e: Fighter): void {

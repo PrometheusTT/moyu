@@ -1,0 +1,21 @@
+name: Private security channel request
+description: 仅在私密漏洞报告入口不可用时，请求建立私密沟通渠道
+title: "[Security contact] Request a private reporting channel"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **不要在此公开表单中填写漏洞类型、受影响组件、复现步骤、日志或利用细节。**
+
+        如果 Security 页面提供 **Report a vulnerability**，请关闭此表单并优先使用该私密入口。
+        否则，维护者会通过 draft security advisory 邀请你进入私密讨论。
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: 安全确认
+      options:
+        - label: 我没有在标题或正文中披露任何漏洞细节。
+          required: true
+        - label: 我愿意接受维护者发出的 draft security advisory 邀请。
+          required: true

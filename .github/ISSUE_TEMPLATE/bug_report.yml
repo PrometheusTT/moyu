@@ -1,0 +1,111 @@
+name: Bug report
+description: 报告可复现的功能、终端兼容或安装问题
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你帮助改进 Moyu。安全漏洞请不要填写此表单，请使用仓库的 Private vulnerability reporting。
+
+  - type: input
+    id: version
+    attributes:
+      label: Moyu 版本或 commit
+      description: 可填写 release tag、commit SHA 或安装日期。
+      placeholder: v0.2.0 / abc1234
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node.js 与 npm 版本
+      placeholder: Node.js 24.8.0, npm 11.6.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - macOS
+        - Linux
+        - Windows WSL
+        - Other / 其他
+    validations:
+      required: true
+
+  - type: input
+    id: terminal
+    attributes:
+      label: 终端与连接方式
+      description: 请包含终端版本、字体，以及本地/SSH/tmux/screen。
+      placeholder: Ghostty 1.x, local, JetBrains Mono, 100×40
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: 运行模式
+      options:
+        - moyu -- codex / wrapped CLI
+        - moyu play
+        - moyu doctor / diagnostics
+        - moyu setup / hooks
+        - moyu games / Cartridge
+        - Installation or packaging
+        - Other / 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 最小复现步骤
+      description: 请从一个已知初始状态开始，列出完整命令和按键。
+      placeholder: |
+        1. 运行 `MOYU_TIER=braille moyu -- codex`
+        2. 按 Ctrl+]
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 如有截图或录屏，请同时说明主题、尺寸和截图发生的时刻。
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断信息
+      description: 粘贴 `moyu doctor --caps` 的脱敏输出及相关日志。不要包含 token、prompt、IP 或私有路径。
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我搜索过现有 Issue，没有找到同一问题。
+          required: true
+        - label: 我已经移除凭据、prompt、IP、用户名和私有仓库信息。
+          required: true
+        - label: 这不是需要私密报告的安全漏洞。
+          required: true
+        - label: 我同意遵守项目行为准则。
+          required: true

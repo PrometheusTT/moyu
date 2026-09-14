@@ -14,27 +14,36 @@ stealing input, damaging terminal state, or making users wait through setup.
 
 ## Interaction contract
 
-- Standby is one non-animated row at the bottom of the terminal.
+- Standby reserves one non-animated row at the bottom of the terminal but paints exactly one safe-edge
+  cell: a low-contrast `·` while idle and `•` while a task event remains unacknowledged. It contains no
+  Moyu name or shortcut prose, and an unchanged standby performs no game render or terminal write.
 - `Ctrl+]` toggles play over local terminals and SSH without colliding with common IME shortcuts.
   F12 is a compatibility alias. `Ctrl+Space` is never owned by Moyu. `Esc` and `q` leave play.
 - `Ctrl+G` is never owned by Moyu. It is forwarded to Codex, Claude, or any other wrapped CLI.
 - In Codex, play occupies exactly two character rows immediately above the composer. The host
   discovers that anchor from Codex output without terminal-specific APIs or a screen daemon.
 - Two rows are the default, not a universal game resolution. E explicitly opens six protected
-  bottom rows (four when space is limited), and returns to micro mode. Esc always leaves play.
+  bottom rows (four when space is limited), and returns to micro mode only when the cartridge supports
+  it; an unsupported or too-small view hands input back to the wrapped CLI. Esc always leaves play.
 - First entry and cartridge switches show controls until a gameplay input; ? reopens help.
-  Hidden play, help, and unsupported display sizes pause simulation while host events keep polling.
+  Ordinary hide/resume returns directly to the preserved scene. Hidden play, help, and unsupported
+  display sizes pause simulation while host events keep polling.
 - If a wrapped CLI exposes no recognizable composer, play safely falls back to a two-row bottom
   strip while preserving at least ten rows for the coding CLI.
-- Task completion silently saves the game, returns focus to the CLI, and marks the standby row.
+- Task completion silently saves the game, returns focus to the CLI, and changes the standby cell to `•`.
+  The marker remains until explicit game entry acknowledges it.
+- Stick Slash persists only completed-chapter campaign boundaries, including the exact gameplay RNG state.
+  Transient physics after the latest checkpoint may roll back after restart; lifetime records never roll back.
+  Ten bounded 30-second chapters form one run, and live enemy count never exceeds three.
 - Paste, Ctrl+C, terminal replies, alternate screens, resize, and teardown favor the inner CLI.
 
 ## Rendering contract
 
 - Actual image rendering is the high-quality path. Text compatibility is playable fallback,
   not a promise of Kitty-like image quality. No companion client or mandatory font is required.
-- Phase 1 implements native-pixel Kitty rendering and deterministic visual acceptance samples.
-  iTerm2/Sixel and adaptive output scheduling follow only after native visual acceptance.
+- Native-pixel Kitty rendering and deterministic visual/performance acceptance fixtures are implemented.
+  iTerm2 inline images and Sixel are not implemented. Existing output backpressure always prioritizes the
+  wrapped CLI and may drop optional game frames; adaptive link-aware frame scheduling remains future work.
 - Unicode Braille with ANSI color is the normal portable renderer, including SSH and Termius.
 - Half-block output is the last-resort renderer for limited terminals.
 - Games draw into a logical framebuffer and never emit terminal escape sequences.
@@ -49,6 +58,11 @@ stealing input, damaging terminal state, or making users wait through setup.
 - Reduced-motion mode keeps gameplay state legible without shake, flash, or decorative animation.
 - Pixel themes are explicitly dark (default) or `MOYU_THEME=light` until reliable theme negotiation
   is implemented; do not claim the image automatically inherits the terminal background.
+- Reference QA uses one complete deterministic 1,800-step chapter across dark/light and normal/reduced
+  motion. Native p95 encode time and average/peak payload may grow at most 15% against a comparable
+  baseline unless an intentional visual change records a new baseline. The first resumed frame gates at
+  50 ms local / 100 ms SSH; hidden host events gate at 150 ms. Braille micro output gates below 250 B/frame
+  average and 600 B peak, and stable standby/result frames emit no repeated bytes.
 
 ## Platform contract
 
@@ -60,6 +74,7 @@ stealing input, damaging terminal state, or making users wait through setup.
 
 ## Visual system
 
-The standby row and console chrome use a restrained charcoal surface, quiet cool text, amber for
-attention, and red only for urgent state. Cartridges may declare a limited palette. Motion exists
-to explain input, impact, or state change; it is never ambient decoration in the host interface.
+The one-cell standby and console chrome use a restrained quiet-cool foreground, with a slightly brighter
+neutral dot for unacknowledged task attention; neither uses a background block. Cartridges may declare a
+limited palette. Motion exists to explain input, impact, or state change; it is never ambient decoration in
+the host interface.

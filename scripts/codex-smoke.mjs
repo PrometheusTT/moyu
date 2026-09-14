@@ -5,12 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-codex-smoke-'));
+const COLS = 100;
+const ROWS = 40;
+const STANDBY = `\x1b[${ROWS};${COLS - 1}H·`;
 const { spawn } = await loadPty();
 const child = spawn(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning',
   new URL('../src/app/main.ts', import.meta.url).pathname, '--', 'codex'],
-  { cols: 100, rows: 40, cwd: new URL('../', import.meta.url).pathname, encoding: null,
+  { cols: COLS, rows: ROWS, cwd: new URL('../', import.meta.url).pathname, encoding: null,
     env: { ...process.env, TERM: 'xterm-256color', MOYU_TIER: 'braille', MOYU_HOME: temp, MOYU_TAKEOVER_FLAG: '' } });
-const vt = new VtCursor({ cols: 100, rows: 40 });
+const vt = new VtCursor({ cols: COLS, rows: ROWS });
 let wire = '', exited = false;
 child.onData(bytes => {
   const text = Buffer.from(bytes).toString('utf8');
@@ -23,17 +26,41 @@ child.onData(bytes => {
   if (text.includes(']11;?')) child.write('\x1b]11;rgb:1616/1919/2323\x1b\\');
 });
 const exit = new Promise(resolve => child.onExit(() => { exited = true; resolve(); }));
+const TRUST_REVIEW = 'Doyoutrustthecontentsofthisdirectory?';
+function hasTrustReview(source) {
+  const text = source
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\s+/g, '');
+  return text.includes(TRUST_REVIEW)
+    && text.includes('Yes,continue')
+    && text.includes('Pressentertocontinue');
+}
+function assertNoTrustReview() {
+  if (hasTrustReview(wire)) {
+    throw new Error('Codex directory trust review requires manual interaction; no trust decision was sent');
+  }
+}
 async function wait(test, stage, timeout = 10000) {
   const deadline = Date.now() + timeout;
-  while (!test(wire)) {
+  while (true) {
+    assertNoTrustReview();
+    if (test(wire)) return;
     if (exited || Date.now() > deadline) throw new Error(stage + ' did not complete; startup screen requires manual inspection');
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+async function trustGrace(timeout = 2000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    assertNoTrustReview();
+    if (exited) throw new Error('Codex exited while checking restored composer ownership');
     await new Promise(resolve => setTimeout(resolve, 25));
   }
 }
 const results = {};
 try {
-  await wait(w => w.includes('Ctrl+] 开玩'), 'standby'); results.standby = true;
-  await wait(w => w.includes('›'), 'Codex composer'); results.composer = true;
+  await wait(w => w.includes(STANDBY), 'standby'); results.standby = true;
+  await wait(w => w.includes('›') && w.includes('Ask Codex to do anything'), 'Codex composer'); results.composer = true;
   let mark = wire.length;
   child.write('\x1d');
   await wait(w => w.slice(mark).includes('J 砍') && w.slice(mark).includes('Esc 返回'), 'help'); results.help = true;
@@ -42,10 +69,13 @@ try {
   mark = wire.length; child.write('e');
   await wait(w => w.slice(mark).includes('\x1b[1;34r'), 'expanded layout'); results.expanded = true;
   mark = wire.length; child.write('\x1b');
-  await wait(w => w.slice(mark).includes('Ctrl+] 开玩') && w.slice(mark).includes('›'), 'composer restored');
+  await wait(w => w.slice(mark).includes(STANDBY), 'standby restored');
+  await trustGrace();
   results.returned = true;
 } catch (error) {
-  results.blocked = error.message;
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.startsWith('Codex directory trust review')) results.interactive = message;
+  else results.blocked = message;
   // Preserve diagnostics locally; never print a user's Codex startup contents into CI output.
   fs.writeFileSync(path.join(temp, 'startup.ansi'), wire);
   results.diagnostics = path.join(temp, 'startup.ansi');
@@ -54,6 +84,6 @@ try {
   await Promise.race([exit, new Promise(resolve => setTimeout(resolve, 1500))]);
   if (!exited) { child.kill('SIGKILL'); await exit; }
   console.log(JSON.stringify(results, null, 2));
-  if (!results.blocked) fs.rmSync(temp, { recursive: true, force: true });
-  process.exitCode = results.blocked ? 1 : 0;
+  if (!results.blocked && !results.interactive) fs.rmSync(temp, { recursive: true, force: true });
+  process.exitCode = results.blocked ? 1 : results.interactive ? 2 : 0;
 }

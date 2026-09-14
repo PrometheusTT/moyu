@@ -11,10 +11,12 @@
  *   3. **和 `moyu doctor --reset` 共用同一段字节**。逃生出口和正常路径分叉的话，
  *      逃生出口就是没测过的代码。
  *
- * 抓不到的只有 SIGKILL。那个交给 `bin/moyu` 的 sh EXIT trap 兜（node 被 -9 时 sh 还活着）。
+ * 抓不到的只有整组 SIGKILL。受监督入口会让独立 Node supervisor 保持存活；worker 被 -9
+ * 时由 supervisor 用最后确认的状态还原。supervisor 和 worker 一起被 -9 则超出 userspace 能力。
  */
 import { writeSync } from 'node:fs';
 import { deleteImageSeq } from "../render/graphics.js";
+import { leaseTerminal, SUPERVISED_SIGNALS } from "./supervision.js";
 /**
  * 还原序列的各个片段。顺序有讲究，不要随便调：
  *
@@ -125,61 +127,156 @@ export class Teardown {
     extra = [];
     stateProvider;
     fd;
+    lease;
+    releasePromise = null;
+    removeChannelLossRestore = null;
+    terminalSignal = null;
+    fatalReason = null;
+    finishing = false;
+    extrasDone = false;
+    restoreWritten = false;
     // 不用参数属性（`constructor(private readonly x)`）—— Node 的类型剥离是纯删除，
     // 不做代码生成，参数属性需要生成赋值语句，所以它直接报 ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX。
     // tsconfig 里的 `erasableSyntaxOnly` 就是为了让这条约束在类型检查阶段就暴露。
-    constructor(stateProvider, fd = 1) {
+    constructor(stateProvider, fd = 1, lease = leaseTerminal()) {
         this.stateProvider = stateProvider;
         this.fd = fd;
+        this.lease = lease;
+    }
+    /** 接管必须在第一条 raw-mode/终端字节之前被 supervisor 确认。 */
+    async acquire(options = {}) {
+        await this.lease.acquire(options);
+        const recovery = {
+            quiesce: () => { this.runExtras(); },
+            restore: () => { this.runLocal(); },
+        };
+        this.removeChannelLossRestore = this.lease.onChannelLoss(recovery);
+    }
+    /** 新增终端所有权（例如 Kitty 图片）必须先提交给 supervisor。 */
+    update(options) {
+        return this.lease.update(options);
+    }
+    /** 动态状态（光标行、kitty 栈深度）用完整快照覆盖 supervisor 当前记录。 */
+    snapshot(options) {
+        let next = options ?? {};
+        if (options === undefined) {
+            try {
+                next = this.stateProvider();
+            }
+            catch { /* 保守空快照 */ }
+        }
+        return this.lease.snapshot(next);
     }
     /** 注册额外的同步清理动作（关 raw 模式、kill PTY 之类）。按注册顺序执行。 */
     onRestore(fn) {
         this.extra.push(fn);
     }
-    /** 幂等。返回是否真的执行了（false = 之前已经跑过）。 */
+    /** 幂等。先停掉本地输出源，再提交最终快照；由 supervisor 或本进程恢复终端。 */
     run() {
         if (this.done)
             return false;
         this.done = true;
-        // 先发字节：终端状态是用户看得见的那部分，优先级最高。
-        // 即使后面某个 extra 抛了，屏幕已经是干净的。
         let opts = {};
         try {
             opts = this.stateProvider();
         }
         catch { /* 状态取不到就用最保守的还原 */ }
-        writeAllSync(this.fd, restoreSeq(opts));
+        this.runExtras();
+        if (!this.lease.supervised)
+            this.writeRestore(opts);
+        this.releasePromise = (async () => {
+            try {
+                await this.lease.restoring(opts);
+            }
+            finally {
+                this.removeChannelLossRestore?.();
+                this.removeChannelLossRestore = null;
+            }
+        })();
+        return true;
+    }
+    /** Supervisor loss is the only supervised path that restores locally. */
+    runLocal(options) {
+        let opts = options;
+        if (opts === undefined) {
+            try {
+                opts = this.stateProvider();
+            }
+            catch {
+                opts = {};
+            }
+        }
+        this.runExtras();
+        this.writeRestore(opts);
+    }
+    runExtras() {
+        if (this.extrasDone)
+            return;
+        this.extrasDone = true;
         for (const fn of this.extra) {
             try {
                 fn();
             }
             catch { /* 清理阶段的异常一律吞掉，不能挡住后面的清理 */ }
         }
-        return true;
+    }
+    writeRestore(options) {
+        if (this.restoreWritten)
+            return;
+        this.restoreWritten = true;
+        writeAllSync(this.fd, restoreSeq(options));
+    }
+    /** 本地同步清理已经完成；受监督入口还要等最终快照被 supervisor 提交。 */
+    async released() {
+        if (!this.done)
+            this.run();
+        await this.releasePromise;
+    }
+    /** If entry-point coordination fails, quiesce now and begin the normal authenticated release. */
+    abandon() {
+        this.run();
+    }
+    finishFromSignal(signal) {
+        if (this.terminalSignal === null && this.fatalReason === null)
+            this.terminalSignal = signal;
+        this.finishProcess();
+    }
+    finishFromError(reason) {
+        if (this.terminalSignal === null && this.fatalReason === null)
+            this.fatalReason = reason;
+        this.finishProcess();
+    }
+    finishProcess() {
+        if (this.finishing)
+            return;
+        this.finishing = true;
+        this.run();
+        void this.released().catch(() => { }).finally(() => {
+            const signal = this.terminalSignal;
+            if (signal !== null) {
+                for (const candidate of SUPERVISED_SIGNALS)
+                    process.removeAllListeners(candidate);
+                // node-pty exposes a self-signalled Node process as exitCode 0 on some platforms.
+                // Preserve the conventional shell status explicitly so both direct and supervised
+                // entry points report the same observable result.
+                process.exit(signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143
+                    : signal === 'SIGHUP' ? 129 : 131);
+                return;
+            }
+            if (this.fatalReason !== null)
+                console.error(this.fatalReason);
+            process.exit(1);
+        });
     }
     install() {
         if (this.installed)
             return;
         this.installed = true;
         process.on('exit', () => { this.run(); });
-        for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT']) {
-            process.on(sig, () => {
-                this.run();
-                // 用默认动作退出，好让父进程看到真实死因（128+signo）。
-                // 不能直接 process.exit(0) —— 那会骗掉调用方的退出码。
-                process.exit(sig === 'SIGINT' ? 130 : sig === 'SIGTERM' ? 143 : sig === 'SIGHUP' ? 129 : 131);
-            });
+        for (const sig of SUPERVISED_SIGNALS) {
+            process.on(sig, () => { this.finishFromSignal(sig); });
         }
-        process.on('uncaughtException', (err) => {
-            this.run();
-            // 还原完了再把栈打出来 —— 反过来的话报错会被塞进滚动区里，或者根本看不见。
-            console.error(err);
-            process.exit(1);
-        });
-        process.on('unhandledRejection', (reason) => {
-            this.run();
-            console.error(reason);
-            process.exit(1);
-        });
+        process.on('uncaughtException', (err) => { this.finishFromError(err); });
+        process.on('unhandledRejection', (reason) => { this.finishFromError(reason); });
     }
 }
