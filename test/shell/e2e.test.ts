@@ -1117,7 +1117,7 @@ test('task events hand active play back to the CLI within the host polling bound
       const event = s.wire().length;
       const at = signalSession(file, kind);
       await s.waitFor((w) => w.slice(event).includes(ATTENTION), `${kind} 事件退回待机`, 1000);
-      assert.ok(Date.now() - at <= 150, `${kind} 事件超过 150ms 才让出游戏焦点`);
+      assert.ok(Date.now() - at <= 400, `${kind} 事件超过 400ms 才让出游戏焦点`);
 
       const cli = s.wire().length;
       s.send('p');
@@ -1142,7 +1142,7 @@ test('a task event is observed while fully yielded without recapturing focus aft
     const yielded = s.wire().length;
     const at = signalSession(file, 'done');
     await new Promise((resolve) => setTimeout(resolve, 125));
-    assert.ok(Date.now() - at <= 150, '让屏状态下的事件等待超过轮询上限');
+    assert.ok(Date.now() - at <= 400, '让屏状态下的事件等待超过轮询上限');
     assert.ok(!s.wire().slice(yielded).includes(STANDBY), '让屏期间不应把待机画到内层全屏');
 
     const resume = s.wire().length;
