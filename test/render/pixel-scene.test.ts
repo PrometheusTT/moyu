@@ -70,7 +70,7 @@ test('standing and airborne heads remain inside the two-row pixel canvas', () =>
 });
 
 test('native scene fills the strip and leaves state unchanged in both themes', () => {
-  const w = new World(1); w.resize(180, 44); w.player.pose = poseSlash(0.35);
+  const w = new World(1); w.resize(180, 44); w.player.pose = poseSlash(0.35); w.player.invuln = 0;
   const before = JSON.stringify(w), previous = snapshotFighters(w);
   for (const theme of ['dark', 'light'] as const) {
     const t = new GraphicsTarget(40, 2, 16, 34);
@@ -88,6 +88,75 @@ test('native scene fills the strip and leaves state unchanged in both themes', (
   assert.equal(JSON.stringify(w), before);
 });
 
+test('native effects retain semantic colors, clipping, and stable-frame suppression', () => {
+  const w = new World(1); w.resize(180, 44); w.taskStart(); w.player.invuln = 0;
+  w.shakeX = 2; w.shakeY = -1; w.flash = 0.08;
+  w.stains.push((w.ground - 4) * 4096 + 74);
+  w.pieces.push(
+    { x: 58, y: w.ground - 5, vx: 0, vy: 0, ang: 0.4, av: 0, half: 3, head: false, rest: false, mine: false },
+    { x: 66, y: w.ground - 1, vx: 0, vy: 0, ang: 0, av: 0, half: 2, head: true, rest: true, mine: false },
+  );
+  w.blood.push({ x: 82, y: w.ground - 6, vx: 0, vy: 0, life: 1 });
+  w.slashes.push({ x: 90, y: 23, r: 20, a0: -1.4, a1: 0.4, life: 0.14, max: 0.14, big: false });
+  w.waveR = 26;
+  const p = PIXEL_PALETTES.dark, t = new GraphicsTarget(40, 2, 16, 34);
+  paintPixelWorld(new NativePixelCanvas(t), w, { view: 'micro', theme: 'dark', interpolation: 1 });
+  const colors = new Set<number>();
+  for (let y = 0; y < t.pixelH; y++) for (let x = 0; x < t.pixelW; x++) colors.add(t.getPixel(x, y));
+  for (const color of [p.pieceAir, p.pieceDead, p.trail, p.blood, p.stain, p.wave]) {
+    assert.ok(colors.has(color), `missing native effect color ${color.toString(16)}`);
+  }
+  const first = t.encode(1);
+  assert.ok(first.length > 0);
+  paintPixelWorld(new NativePixelCanvas(t), w, { view: 'micro', theme: 'dark', interpolation: 1 });
+  assert.equal(t.encode(1), '');
+  assert.equal(t.lastBytes, 0);
+});
+
+test('native reduced motion removes shake and flash but retains combat state', () => {
+  const old = process.env.MOYU_REDUCE_MOTION;
+  try {
+    const w = new World(1); w.resize(180, 44); w.taskStart(); w.player.invuln = 0;
+    w.shakeX = 8; w.shakeY = -4; w.flash = 0.1;
+    w.blood.push({ x: 80, y: 24, vx: 0, vy: 0, life: 1 });
+    const render = (reduced: boolean): GraphicsTarget => {
+      if (reduced) process.env.MOYU_REDUCE_MOTION = '1';
+      else delete process.env.MOYU_REDUCE_MOTION;
+      const target = new GraphicsTarget(40, 2, 16, 34);
+      paintPixelWorld(new NativePixelCanvas(target), w, { view: 'micro', theme: 'dark', interpolation: 1 });
+      return target;
+    };
+    const moving = render(false), reduced = render(true), p = PIXEL_PALETTES.dark;
+    assert.notEqual(moving.getPixel(0, 0), p.bg, 'flash must lift the backdrop');
+    assert.equal(reduced.getPixel(0, 0), p.bg, 'reduced motion must suppress flash before another update');
+    let reducedBlood = 0;
+    for (let y = 0; y < 68; y++) for (let x = 0; x < 640; x++) {
+      if (reduced.getPixel(x, y) === p.blood) reducedBlood++;
+    }
+    assert.ok(reducedBlood > 0, 'reduced motion removed semantic blood feedback');
+    assert.notEqual(moving.encode(1), reduced.encode(1), 'shake/flash suppression did not change the frame');
+  } finally {
+    if (old === undefined) delete process.env.MOYU_REDUCE_MOTION;
+    else process.env.MOYU_REDUCE_MOTION = old;
+  }
+});
+
+test('paused and chapter-result native scenes dim without mutating the world', () => {
+  const w = new World(1); w.resize(180, 44); w.taskStart(); w.player.invuln = 0;
+  const render = (result: boolean): GraphicsTarget => {
+    const target = new GraphicsTarget(40, 2, 16, 34);
+    paintPixelWorld(new NativePixelCanvas(target), w,
+      { view: 'micro', theme: 'dark', interpolation: 1 }, undefined, result);
+    return target;
+  };
+  const ordinary = render(false), result = render(true);
+  assert.equal(ordinary.getPixel(0, 0), PIXEL_PALETTES.dark.bg);
+  assert.equal(result.getPixel(0, 0), 0x08090c);
+  w.phase = 'paused';
+  const paused = render(false);
+  assert.equal(paused.getPixel(0, 0), result.getPixel(0, 0));
+  assert.notEqual(ordinary.encode(1), result.encode(1));
+});
 test('deterministic A/B uses the same simulation and reset reproduces exact output', () => {
   const sample = new PixelSample(), t = new GraphicsTarget(40, 2, 8, 17);
   for (let i = 0; i < 80; i++) sample.step();

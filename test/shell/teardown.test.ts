@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { restoreSeq, doctorResetSeq } from '../../src/shell/teardown.ts';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { restoreSeq, doctorResetSeq, Teardown } from '../../src/shell/teardown.ts';
+import type { RestoreOptions } from '../../src/shell/teardown.ts';
+import type { TerminalLease } from '../../src/shell/supervision.ts';
 import { IMAGE_ID, deleteImageSeq } from '../../src/render/graphics.ts';
 
 /**
@@ -68,17 +73,60 @@ test('doctor --reset 只删我们自己那个 id，绝不 d=a / d=A', () => {
   assert.ok(!s.includes('\x1b[1;1H'), 'doctor 不知道屏幕上有什么，不该动光标、不该擦');
 });
 
-test('bin/moyu 的手写兜底和 IMAGE_ID 没有漂移', () => {
-  // sh 那一行是**另一份**手写的还原字节（node 连 doctor 都跑不起来时才走）。
-  // 它抄了 i=19801，所以常数改了这里必须跟着改 —— 这条测试就是那个提醒。
-  const sh = readFileSync(new URL('../../bin/moyu', import.meta.url), 'utf8');
-  const line = sh.split('\n').find((l) => l.includes('a=d,d=I'));
-  assert.ok(line !== undefined, 'sh 兜底里没有删图 —— SIGKILL 之后那张图就没人收了');
-  assert.ok(line.includes(`i=${IMAGE_ID},q=2`), `sh 兜底里的 id 和 IMAGE_ID(${IMAGE_ID}) 不一致：${line}`);
-  const printf = sh.split('\n').find((l) => l.includes('printf') && l.includes('?1049l'));
-  assert.ok(printf !== undefined, 'sh 兜底里没有撤备用屏');
-  const [a, b] = [printf.indexOf('%b'), printf.lastIndexOf('%b')];
-  assert.ok(a >= 0 && b > a, 'sh 兜底里的删图应该出现两次（用 %b 插两遍）');
-  assert.ok(a < printf.indexOf('\\033[?1049l') && b > printf.indexOf('\\033[?47l'),
-    '两遍删图要夹住撤备用屏的三条，理由同 restoreSeq()');
+test('supervised teardown quiesces before supervisor restore commit and does not write locally', async () => {
+  const calls: string[] = [];
+  const lease: TerminalLease = {
+    supervised: true,
+    acquire: async () => {}, update: async () => {}, snapshot: async () => {},
+    restoring: async (options: RestoreOptions) => { calls.push(`restore:${options.homeRow}`); },
+    complete: async () => {}, onChannelLoss: () => () => {},
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-teardown-'));
+  const output = path.join(dir, 'restore.bin');
+  const fd = fs.openSync(output, 'w');
+  try {
+    const teardown = new Teardown(() => ({ homeRow: 12 }), fd, lease);
+    teardown.onRestore(() => { calls.push('quiesce'); });
+    teardown.run();
+    await teardown.released();
+    assert.deepEqual(calls, ['quiesce', 'restore:12']);
+    assert.equal(fs.readFileSync(output).length, 0);
+  } finally {
+    fs.closeSync(fd); fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('direct teardown keeps synchronous canonical restore behavior', async () => {
+  const lease: TerminalLease = {
+    supervised: false,
+    acquire: async () => {}, update: async () => {}, snapshot: async () => {},
+    restoring: async () => {}, complete: async () => {}, onChannelLoss: () => () => {},
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-teardown-'));
+  const output = path.join(dir, 'restore.bin');
+  const fd = fs.openSync(output, 'w');
+  try {
+    const teardown = new Teardown(() => ({ homeRow: 7 }), fd, lease);
+    teardown.run();
+    assert.equal(fs.readFileSync(output, 'utf8'), restoreSeq({ homeRow: 7 }),
+      'run() 返回之前必须已经同步写完，exit 钩子不会等 Promise continuation');
+    await teardown.released();
+    assert.equal(fs.readFileSync(output, 'utf8'), restoreSeq({ homeRow: 7 }),
+      '等待 lease 完成不能再写第二遍');
+  } finally {
+    fs.closeSync(fd); fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('launcher 不手写还原字节，supervisor 复用 teardown 的唯一实现', () => {
+  const launcher = readFileSync(new URL('../../bin/moyu', import.meta.url), 'utf8');
+  assert.ok(!launcher.includes('a=d,d=I'), 'launcher 不应复制 Kitty 删图协议');
+  assert.ok(!launcher.includes('?1049l'), 'launcher 不应复制备用屏还原协议');
+  assert.ok(!launcher.includes('MOYU_TAKEOVER_FLAG'), 'launcher 不应再持有文件标记恢复权限');
+
+  const supervisor = readFileSync(new URL('../../src/app/supervisor.ts', import.meta.url), 'utf8');
+  assert.match(supervisor, /import \{ restoreSeq, writeAllSync,/,
+    'supervisor 必须复用 teardown 的标准还原序列与同步写实现');
+  assert.ok(!supervisor.includes('a=d,d=I'), 'supervisor 不应另抄一份 Kitty 协议字节');
+  assert.ok(!supervisor.includes('?1049l'), 'supervisor 不应另抄一份备用屏还原字节');
 });

@@ -2,7 +2,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { homedir } from 'node:os';
 import { SignalTail } from "../bridge/signal.js";
+import { Rng } from "../core/rng.js";
 import { World } from "../core/world.js";
+import { CHAPTER_COUNT, ChapterDirector, parseChapterCheckpoint } from "../core/chapter.js";
 import { segments } from "../core/stick.js";
 import { paintWorld } from "../render/scene.js";
 import { stripPainter } from "../render/painter.js";
@@ -12,6 +14,9 @@ import { NativePixelCanvas } from "./pixel-canvas.js";
 import { paintPixelWorld, snapshotFighters } from "../render/pixel-scene.js";
 const EMPTY_INPUT = { left: false, right: false, up: false, down: false, jump: false, primary: false, secondary: false };
 const BG = 0x090a0e, GRID = 0x151722, INK = 0xecf0f8, ACCENT = 0xe43834, AMBER = 0xa67c00;
+const HOST_POLL_MS = 100;
+const FIRST_DIRECTION_MS = 340;
+const REPEAT_DIRECTION_MS = 150;
 class InputLatch {
     leftUntil = 0;
     rightUntil = 0;
@@ -21,6 +26,9 @@ class InputLatch {
     jump = false;
     primary = false;
     secondary = false;
+    hold(until, now) {
+        return now + (now < until ? REPEAT_DIRECTION_MS : FIRST_DIRECTION_MS);
+    }
     feed(bytes, now) {
         let played = false;
         for (let i = 0; i < bytes.length; i++) {
@@ -43,28 +51,28 @@ class InputLatch {
                 if (f === 0x41)
                     this.up = true;
                 else if (f === 0x42)
-                    this.downUntil = now + 150;
+                    this.downUntil = this.hold(this.downUntil, now);
                 else if (f === 0x43) {
-                    this.rightUntil = now + 150;
+                    this.rightUntil = this.hold(this.rightUntil, now);
                     this.lastHorizontal = 1;
                 }
                 else if (f === 0x44) {
-                    this.leftUntil = now + 150;
+                    this.leftUntil = this.hold(this.leftUntil, now);
                     this.lastHorizontal = -1;
                 }
                 i = j;
                 continue;
             }
             if (b === 0x61 || b === 0x68) {
-                this.leftUntil = now + 180;
+                this.leftUntil = this.hold(this.leftUntil, now);
                 this.lastHorizontal = -1;
             }
             else if (b === 0x64 || b === 0x6c) {
-                this.rightUntil = now + 180;
+                this.rightUntil = this.hold(this.rightUntil, now);
                 this.lastHorizontal = 1;
             }
             else if (b === 0x73)
-                this.downUntil = now + 180;
+                this.downUntil = this.hold(this.downUntil, now);
             else if (b === 0x77 || b === 0x6b)
                 this.up = true;
             else if (b === 0x20)
@@ -96,14 +104,32 @@ class InputLatch {
     }
 }
 class StickGame {
-    world = new World(0x5eed);
+    world;
+    director;
     previous = new Map();
-    constructor() { this.world.resize(180, 44); this.world.enemyLimit = 3; }
+    scratch = new Map();
+    constructor(seed) {
+        this.world = new World(seed, { automaticSpawns: false });
+        this.world.resize(180, 44);
+        this.world.enemyLimit = 3;
+        this.director = new ChapterDirector(seed);
+        this.director.start(this.world);
+    }
     update(dt, input) {
-        this.previous = snapshotFighters(this.world);
+        const previous = this.previous;
+        this.previous = snapshotFighters(this.world, this.scratch);
+        this.scratch = previous;
         const intent = { move: input.left === input.right ? 0 : input.left ? -1 : 1,
             jump: input.jump || input.up, slash: input.primary };
-        this.world.step(dt, intent);
+        if (this.director.result !== null && input.primary
+            && this.director.nextChapter(this.world)) {
+            this.reduceMotion();
+            return;
+        }
+        this.director.step(this.world, dt, intent);
+        this.reduceMotion();
+    }
+    reduceMotion() {
         if (process.env.MOYU_REDUCE_MOTION === '1') {
             this.world.shake = 0;
             this.world.shakeX = 0;
@@ -117,7 +143,7 @@ class StickGame {
         paintWorld(stripPainter(canvas), this.world);
     }
     renderPixels(canvas, context) {
-        paintPixelWorld(canvas, this.world, context, this.previous);
+        paintPixelWorld(canvas, this.world, context, this.previous, this.director.result !== null);
     }
     renderMicro(c) {
         c.clear(BG);
@@ -144,11 +170,12 @@ class StickGame {
         }
     }
     onHostEvent(event) {
-        if (event === 'task-start')
+        if (event === 'task-start' && this.world.phase !== 'fight')
             this.world.taskStart();
         else if (event === 'task-done')
             this.world.taskDone();
-        this.previous = new Map();
+        this.previous.clear();
+        this.scratch.clear();
     }
     renderExpanded(c) {
         c.clear(BG);
@@ -172,17 +199,64 @@ class StickGame {
             c.line(x, ground - 8, x, ground - 6, ACCENT);
         }
     }
-    serialize() { return { kills: this.world.kills, bestCombo: this.world.bestCombo }; }
+    serialize() {
+        return { version: 1, kills: this.world.kills, bestCombo: this.world.bestCombo,
+            checkpoint: this.director.checkpoint() };
+    }
     restore(state) {
-        if (typeof state !== 'object' || state === null)
+        if (typeof state !== 'object' || state === null || Array.isArray(state))
             return;
         const s = state;
-        if (typeof s.kills === 'number')
-            this.world.kills = s.kills;
-        if (typeof s.bestCombo === 'number')
-            this.world.bestCombo = s.bestCombo;
+        const kills = savedCount(s.kills);
+        const bestCombo = savedCount(s.bestCombo);
+        if (s.version === 1) {
+            if (kills === null || bestCombo === null)
+                return;
+            if (s.checkpoint === null) {
+                if (bestCombo > kills)
+                    return;
+                this.world.rng.reset(this.director.runSeed);
+                this.world.kills = kills;
+                this.world.bestCombo = bestCombo;
+                this.director.start(this.world);
+                return;
+            }
+            const checkpoint = parseChapterCheckpoint(s.checkpoint);
+            if (checkpoint === null || kills < checkpoint.kills || bestCombo < checkpoint.bestCombo
+                || bestCombo > kills)
+                return;
+            if (!this.director.restore(this.world, checkpoint))
+                return;
+            this.world.kills = kills;
+            this.world.bestCombo = bestCombo;
+            return;
+        }
+        if (s.version !== undefined)
+            return;
+        // 旧版只保存累计战绩；继续接受它，坏字段则整份忽略。
+        if (kills === null || bestCombo === null || bestCombo > kills)
+            return;
+        this.world.rng.reset(this.director.runSeed);
+        this.world.kills = kills;
+        this.world.bestCombo = bestCombo;
+        this.director.start(this.world);
     }
-    hud() { return `火柴快斩 ${this.world.kills}击破 ${this.world.respawn > 0 ? '重生中' : `血${this.world.player.hp}/4`}`; }
+    hud() {
+        const result = this.director.result;
+        if (result !== null) {
+            const checkpoint = this.director.checkpoint();
+            if (result.chapter >= CHAPTER_COUNT && this.world.phase === 'fight' && checkpoint !== null) {
+                return `五分钟完成 · ${checkpoint.score}分 · ${checkpoint.kills}击破 · 连击${checkpoint.bestCombo}`;
+            }
+            return this.world.phase === 'fight'
+                ? `第${result.chapter}章完成 · ${result.score}分 · J 下一章`
+                : `第${result.chapter}章完成 · ${result.score}分 · 等待下个任务`;
+        }
+        return `火柴快斩 ${this.director.chapter}/${CHAPTER_COUNT} · ${this.world.kills}击破 · ${this.world.respawn > 0 ? '重生中' : `血${this.world.player.hp}/4`}`;
+    }
+}
+function savedCount(value) {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 class SnakeGame {
     // 微型屏上直接玩的 24×8 棋盘。旧版内部是 24×16 再压到 7 行，转弯时相邻
@@ -198,13 +272,13 @@ class SnakeGame {
     rand() { this.seed = (this.seed * 1664525 + 1013904223) >>> 0; return this.seed / 0x100000000; }
     update(dt, input) {
         if (this.pendingDir === null) {
-            if ((input.up || input.jump) && this.dir[1] !== 1)
+            if ((input.up || input.jump) && this.dir[0] !== 0)
                 this.pendingDir = [0, -1];
-            else if (input.down && this.dir[1] !== -1)
+            else if (input.down && this.dir[0] !== 0)
                 this.pendingDir = [0, 1];
-            else if (input.left && this.dir[0] !== 1)
+            else if (input.left && this.dir[1] !== 0)
                 this.pendingDir = [-1, 0];
-            else if (input.right && this.dir[0] !== -1)
+            else if (input.right && this.dir[1] !== 0)
                 this.pendingDir = [1, 0];
         }
         this.acc += dt;
@@ -429,7 +503,7 @@ function manifest(id, name, description, viewport) {
                 : [{ action: 'move', label: '移动', keys: ['A/D'] }, { action: 'primary', label: '旋转', keys: ['J'] }, { action: 'down', label: '下落', keys: ['S'] }, { action: 'jump', label: '直落', keys: ['空格'] }] };
 }
 export const BUILTIN_GAMES = [
-    { manifest: manifest('stick-slash', '火柴快斩', '连续动作与打击反馈', { width: 180, height: 44 }), create: () => new StickGame() },
+    { manifest: manifest('stick-slash', '火柴快斩', '连续动作与打击反馈', { width: 180, height: 44 }), create: context => new StickGame(context.seed) },
     { manifest: manifest('snake', '贪吃蛇', '格子移动与成长', { width: 64, height: 40 }), create: () => new SnakeGame() },
     { manifest: manifest('blocks', '落块', '旋转、下落与消行', { width: 64, height: 40 }), create: () => new BlocksGame() },
 ];
@@ -445,7 +519,8 @@ function gameInstance(value) {
         throw new Error('create 不能返回 Promise 或 thenable');
     }
     const candidate = value;
-    if (candidate.then !== undefined)
+    const then = candidate.then;
+    if (typeof then === 'function')
         throw new Error('create 不能返回 Promise 或 thenable');
     const required = (name) => {
         const method = candidate[name];
@@ -470,9 +545,8 @@ function gameInstance(value) {
 }
 function failureMessage(value) {
     try {
-        if (value instanceof Error)
-            return value.message || value.name;
-        return String(value);
+        const detail = value instanceof Error ? value.message || value.name : value;
+        return String(detail) || '未知错误';
     }
     catch {
         return '未知错误';
@@ -487,20 +561,20 @@ export class Arcade {
     active = 0;
     lastMs = 0;
     acc = 0;
-    poll = 0;
+    lastHostPoll = Number.NEGATIVE_INFINITY;
     stepped = false;
     paused = false;
     instructions = true;
     viewToggle = false;
     displayRows = 24;
     displayTier = 'braille';
-    alert = null;
-    urgent = false;
-    notice = null;
-    constructor(eventsFile, modules = BUILTIN_GAMES, startId) {
+    statusValue = 'idle';
+    pendingAction = null;
+    constructor(eventsFile, modules = BUILTIN_GAMES, startId, contextSeed = Date.now() & 0x7fffffff) {
         for (const module of modules)
             try {
-                const context = Object.freeze({ seed: Date.now() & 0x7fffffff, random: () => Math.random() });
+                const source = new Rng(contextSeed);
+                const context = Object.freeze({ seed: contextSeed >>> 0, random: () => source.float() });
                 const instance = gameInstance(module.create(context));
                 const micro = module.manifest.microViewport ?? { width: 80, height: 8 };
                 this.slots.push({
@@ -528,7 +602,10 @@ export class Arcade {
         if (command === 'leave')
             return true;
         if (command === 'next' && this.slots.length > 0) {
-            this.slots[this.active].instance.onHostEvent?.('pause');
+            try {
+                this.slots[this.active].instance.onHostEvent?.('pause');
+            }
+            catch { /* isolate cartridges */ }
             this.save(this.active);
             this.active = (this.active + 1) % this.slots.length;
             this.resetClock();
@@ -545,6 +622,59 @@ export class Arcade {
         if (command === 'play' && this.playable())
             this.instructions = false;
         return false;
+    }
+    enter() {
+        this.statusValue = 'idle';
+        this.pendingAction = null;
+    }
+    get status() { return this.statusValue; }
+    takeAction() {
+        const action = this.pendingAction;
+        this.pendingAction = null;
+        return action;
+    }
+    pollHostEvents(now = Date.now()) {
+        if (now < this.lastHostPoll)
+            this.lastHostPoll = now - HOST_POLL_MS;
+        if (now - this.lastHostPoll < HOST_POLL_MS)
+            return;
+        this.lastHostPoll = now;
+        const events = this.tail.poll();
+        if (events.length === 0)
+            return;
+        let sawStart = false;
+        let sawDone = false;
+        let sawNotify = false;
+        for (const event of events) {
+            const e = event === 'start' ? 'task-start' : event === 'notify' ? 'task-notify' : 'task-done';
+            for (const slot of this.slots)
+                try {
+                    slot.instance.onHostEvent?.(e);
+                }
+                catch { /* isolate cartridges */ }
+            if (e === 'task-start')
+                sawStart = true;
+            else if (e === 'task-done')
+                sawDone = true;
+            else
+                sawNotify = true;
+        }
+        if (this.statusValue !== 'task-done') {
+            if (sawDone)
+                this.statusValue = 'task-done';
+            else if (sawNotify)
+                this.statusValue = 'needs-input';
+            else if (sawStart && this.statusValue === 'needs-input')
+                this.statusValue = 'idle';
+        }
+        if (!sawDone && !sawNotify)
+            return;
+        this.pendingAction = 'return-to-cli';
+        this.input.clear();
+        if (this.paused)
+            this.save(this.active);
+        else
+            this.pause();
     }
     takeViewToggle() { const value = this.viewToggle; this.viewToggle = false; return value; }
     setDisplay(rows, tier) {
@@ -587,28 +717,6 @@ export class Arcade {
     advance(now) {
         const elapsed = this.lastMs === 0 ? 0 : Math.max(0, Math.min(0.25, (now - this.lastMs) / 1000));
         this.lastMs = now;
-        if (++this.poll >= 8) {
-            this.poll = 0;
-            for (const event of this.tail.poll()) {
-                const e = event === 'start' ? 'task-start' : event === 'notify' ? 'task-notify' : 'task-done';
-                for (const slot of this.slots)
-                    slot.instance.onHostEvent?.(e);
-                if (e === 'task-done') {
-                    this.alert = '';
-                    this.urgent = true;
-                    this.notice = '任务完成';
-                }
-                else if (e === 'task-notify') {
-                    this.alert = '';
-                    this.urgent = true;
-                    this.notice = '需要你确认';
-                }
-                else {
-                    this.urgent = false;
-                    this.notice = null;
-                }
-            }
-        }
         if (this.paused || this.instructions || !this.playable()) {
             this.acc = 0;
             return;
@@ -663,36 +771,43 @@ export class Arcade {
             game.render(canvas);
         canvas.blit(target);
     }
-    takeAlert() { const a = this.alert; this.alert = null; if (a !== null)
-        this.save(this.active); return a; }
     hud() {
+        const notice = this.statusValue === 'task-done' ? '任务完成'
+            : this.statusValue === 'needs-input' ? '需要你确认' : null;
         const slot = this.slots[this.active];
         if (slot === undefined) {
-            const short = this.notice ?? '没有可用游戏';
-            return { left: short, right: 'Ctrl+] / Esc 返回', short, urgent: this.urgent };
+            const short = notice ?? '没有可用游戏';
+            return { left: short, right: 'Ctrl+] / Esc 返回', short, urgent: notice !== null };
         }
         const game = slot.instance, name = slot.module.manifest.name;
         const line = game.hud?.() ?? `${name} · Tab 换游戏`;
-        const short = this.notice === null ? line : `${this.notice} · ${name}`;
-        return { left: short, right: 'Ctrl+] / Esc 返回', short, urgent: this.urgent };
+        const short = notice === null ? line : `${notice} · ${name}`;
+        return { left: short, right: 'Ctrl+] / Esc 返回', short, urgent: notice !== null };
     }
     stateFile(index) { return path.join(process.env.MOYU_HOME ?? path.join(homedir(), '.moyu'), 'state', `${this.slots[index].module.manifest.id}.json`); }
     pause() {
+        if (this.paused)
+            return;
         this.paused = true;
         this.resetClock();
         const game = this.slots[this.active]?.instance;
         if (game !== undefined) {
+            try {
+                game.onHostEvent?.('pause');
+            }
+            catch { /* isolate cartridges */ }
             this.save(this.active);
-            game.onHostEvent?.('pause');
         }
     }
     resume() {
+        if (!this.paused)
+            return;
         this.paused = false;
         this.resetClock();
-        this.instructions = true;
-        this.urgent = false;
-        this.notice = null;
-        this.slots[this.active]?.instance.onHostEvent?.('resume');
+        try {
+            this.slots[this.active]?.instance.onHostEvent?.('resume');
+        }
+        catch { /* isolate cartridges */ }
     }
     loadAll() {
         for (let i = 0; i < this.slots.length; i++)

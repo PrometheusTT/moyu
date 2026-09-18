@@ -1,85 +1,359 @@
-// Development-only export of the actual encoded Kitty RGB frames. No image library required.
+// Development-only QA for production Kitty render/encode work and decoded visual captures.
 // node --experimental-strip-types scripts/pixel-qa.mjs [output-directory]
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { deflateSync, inflateSync } from 'node:zlib';
-import { PixelSample } from '../src/platform/pixel-sample.ts';
-import { GraphicsTarget } from '../src/render/graphics.ts';
-import { PIXEL_PALETTES } from '../src/render/pixel-scene.ts';
-const out = path.resolve(process.argv[2] ?? '/tmp/moyu-pixel-qa');
-fs.mkdirSync(out, { recursive: true });
+import { Arcade, BUILTIN_GAMES } from '../src/platform/arcade.ts';
+import { NativePixelCanvas } from '../src/platform/pixel-canvas.ts';
+import { GraphicsTarget, IMAGE_ID, deleteImageSeq } from '../src/render/graphics.ts';
 
-function crc32(bytes) {
-  let crc = 0xffffffff;
-  for (const b of bytes) { crc ^= b; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0); }
-  return (crc ^ 0xffffffff) >>> 0;
+const out = path.resolve(process.argv[2] ?? '/tmp/moyu-pixel-qa');
+const capturesDir = path.join(out, 'captures');
+fs.mkdirSync(capturesDir, { recursive: true });
+const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-pixel-qa-state-'));
+const priorHome = process.env.MOYU_HOME;
+const priorTheme = process.env.MOYU_THEME;
+const priorReduce = process.env.MOYU_REDUCE_MOTION;
+process.env.MOYU_HOME = stateDir;
+
+const ESC = '\x1b';
+const KEYS_FIRST = new Set(['a', 'f', 's', 'v', 'o', 'i', 'p', 'c', 'r', 'q', 'C', 'm']);
+const SEED = 0x1234abcd;
+const EMPTY = Object.freeze({ left: false, right: false, up: false, down: false,
+  jump: false, primary: false, secondary: false });
+const stick = BUILTIN_GAMES.find(module => module.manifest.id === 'stick-slash');
+assert.ok(stick, 'built-in stick-slash cartridge is missing');
+
+function ns(fn) {
+  const start = process.hrtime.bigint();
+  const value = fn();
+  return { value, ns: Number(process.hrtime.bigint() - start) };
 }
-function chunk(name, data) {
-  const type = Buffer.from(name), head = Buffer.alloc(4), tail = Buffer.alloc(4);
-  head.writeUInt32BE(data.length); tail.writeUInt32BE(crc32(Buffer.concat([type, data])));
-  return Buffer.concat([head, type, data, tail]);
+function parseKeys(source, first) {
+  const keys = new Map();
+  if (source === '') return keys;
+  for (const pair of source.split(',')) {
+    const at = pair.indexOf('=');
+    assert.ok(at > 0, `invalid Kitty key/value ${JSON.stringify(pair)}`);
+    const key = pair.slice(0, at);
+    assert.ok(KEYS_FIRST.has(key), `unexpected Kitty key ${JSON.stringify(key)}`);
+    if (!first) assert.equal(key, 'm', `continuation chunk contains ${key}=`);
+    assert.ok(!keys.has(key), `duplicate Kitty key ${key}`);
+    keys.set(key, pair.slice(at + 1));
+  }
+  return keys;
 }
-function png(width, height, rgb) {
-  const header = Buffer.alloc(13); header.writeUInt32BE(width); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 2;
-  const scan = Buffer.alloc((width * 3 + 1) * height);
-  for (let y = 0; y < height; y++) rgb.copy(scan, y * (width * 3 + 1) + 1, y * width * 3, (y + 1) * width * 3);
-  return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk('IHDR', header), chunk('IDAT', deflateSync(scan)), chunk('IEND', Buffer.alloc(0))]);
-}
-function decoded(target) {
-  target.invalidate();
-  const encoded = target.encode(1);
-  const chunks = [...encoded.matchAll(/\x1b_G([^;]*);([^\x1b]*)\x1b\\/g)];
-  if (!chunks.length) throw new Error('Missing Kitty frame');
-  const rgb = inflateSync(Buffer.from(chunks.map(c => c[2]).join(''), 'base64'));
-  if (rgb.length !== target.pixelW * target.pixelH * 3) throw new Error('Invalid RGB payload');
-  return { rgb, bytes: Buffer.byteLength(encoded) };
-}
-const scenarios = [
-  { cw: 8, ch: 17, rows: 2, theme: 'dark' },
-  { cw: 16, ch: 34, rows: 2, theme: 'dark' },
-  { cw: 16, ch: 34, rows: 2, theme: 'light' },
-  { cw: 16, ch: 34, rows: 6, theme: 'dark' },
-];
-const all = [], measurements = [], captures = [];
-for (const s of scenarios) {
-  const sample = new PixelSample(), oldTarget = new GraphicsTarget(40, s.rows, s.cw, s.ch), newTarget = new GraphicsTarget(40, s.rows, s.cw, s.ch);
-  const frames = []; let bytes = 0, peak = 0, ms = 0;
-  for (let f = 0; f < 180; f++) {
-    sample.step(); sample.step();
-    sample.render(oldTarget, true, s.theme);
-    const start = performance.now(); sample.render(newTarget, false, s.theme); const current = decoded(newTarget); ms += performance.now() - start;
-    const previous = decoded(oldTarget); bytes += current.bytes; peak = Math.max(peak, current.bytes);
-    const oldPng = png(oldTarget.pixelW, oldTarget.pixelH, previous.rgb), newPng = png(newTarget.pixelW, newTarget.pixelH, current.rgb);
-    frames.push([oldPng.toString('base64'), newPng.toString('base64')]);
-    if ([0, 33, 47, 78, 128].includes(f)) {
-      const name = `${newTarget.pixelW}x${newTarget.pixelH}-${s.theme}-f${f}`;
-      fs.writeFileSync(path.join(out, `${name}-before.png`), oldPng);
-      fs.writeFileSync(path.join(out, `${name}-after.png`), newPng);
-      captures.push({ name, width: newTarget.pixelW, height: newTarget.pixelH, before: previous.rgb, after: current.rgb });
+function decodeFrame(encoded, target) {
+  const cup = /^\x1b\[(\d+);(\d+)H/.exec(encoded);
+  assert.ok(cup, `frame must begin with CUP: ${JSON.stringify(encoded.slice(0, 16))}`);
+  assert.equal(cup[2], '1', 'Kitty image must start in column one');
+  let at = cup[0].length;
+  const chunks = [];
+  while (at < encoded.length) {
+    assert.equal(encoded.slice(at, at + 3), `${ESC}_G`, `chunk ${chunks.length + 1} lacks APC`);
+    const end = encoded.indexOf(`${ESC}\\`, at + 3);
+    assert.ok(end >= 0, `chunk ${chunks.length + 1} lacks ST`);
+    const body = encoded.slice(at + 3, end);
+    const semi = body.indexOf(';');
+    assert.ok(semi >= 0, 'Kitty chunk lacks key/payload separator');
+    const payload = body.slice(semi + 1);
+    assert.ok(payload.length <= 4096, `Kitty payload chunk is ${payload.length} bytes`);
+    assert.match(payload, /^[A-Za-z0-9+/=]*$/, 'Kitty payload is not Base64');
+    chunks.push({ keys: parseKeys(body.slice(0, semi), chunks.length === 0), payload });
+    at = end + 2;
+  }
+  assert.ok(chunks.length > 0, 'frame contains no Kitty APC');
+  const first = chunks[0].keys;
+  const expected = {
+    a: 'T', f: '24', s: String(target.pixelW), v: String(target.pixelH), o: 'z',
+    i: String(IMAGE_ID), p: '1', c: String(target.cols), r: String(target.rows), q: '2', C: '1',
+  };
+  for (const [key, value] of Object.entries(expected)) assert.equal(first.get(key), value, `${key}= mismatch`);
+  assert.equal(first.size, Object.keys(expected).length + (chunks.length > 1 ? 1 : 0),
+    'first Kitty chunk has missing or extra keys');
+  for (let i = 0; i < chunks.length; i++) {
+    const keys = chunks[i].keys;
+    if (chunks.length === 1) assert.equal(keys.has('m'), false, 'single chunk must omit m=');
+    else {
+      assert.equal(keys.get('m'), i + 1 < chunks.length ? '1' : '0', `chunk ${i + 1} has wrong m=`);
+      if (i > 0) assert.equal(keys.size, 1, `continuation chunk ${i + 1} has extra keys`);
     }
   }
-  const width = newTarget.pixelW, height = newTarget.pixelH;
-  all.push({ ...s, width, height, frames });
-  measurements.push({ width, height, theme: s.theme, fps: 30, averageBytes: Math.round(bytes / 180), peakBytes: peak, meanRenderEncodeMs: +(ms / 180).toFixed(3) });
+  const compressed = Buffer.from(chunks.map(chunk => chunk.payload).join(''), 'base64');
+  const rgb = inflateSync(compressed);
+  assert.equal(rgb.length, target.pixelW * target.pixelH * 3, 'inflated RGB length mismatch');
+  return { row: Number(cup[1]), rgb, compressedBytes: compressed.length, chunks: chunks.length };
 }
-fs.writeFileSync(path.join(out, 'metrics.json'), JSON.stringify(measurements, null, 2));
-const data = JSON.stringify(all).replaceAll('<', '\\u003c');
-const html = `<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Moyu 原生像素 A/B</title>
-<style>body{margin:24px;background:#101218;color:#eff2f6;font:15px/1.6 system-ui}h1{font-size:24px}h2{font-size:16px;margin:20px 0 8px}p{max-width:75ch}button,select,input{font:inherit;margin:4px;padding:5px}section{margin:24px 0}.pair{display:flex;flex-wrap:wrap;gap:20px}.label{color:#b6bfce;margin-bottom:5px}img{display:block;image-rendering:pixelated}#samples{overflow:auto}small{color:#b6bfce}</style>
-<h1>Moyu · 原生像素对比</h1><p>左为旧版 180×44 中转，右为直接像素绘制。图像从实际 Kitty 载荷解码，同一物理状态；旧版保持原有暗色。这里只验证源画面，原生终端清除与显示效果仍需实测。</p>
-<button id="play">暂停</button><button id="reset">重播</button><label>速度 <select id="fps"><option>30</option><option>15</option></select> fps</label><label>显示 <select id="zoom"><option value="1">原始设备像素 1:1</option><option value="0.5">Retina 2× 对应 CSS 大小</option><option value="2">放大 2 倍检查</option></select></label>
-<input id="frame" type="range" min="0" max="179" value="0"><span id="count"></span><div id="samples"></div>
-<script>const data=${data};let f=0,playing=true,last=0;const host=document.getElementById('samples');data.forEach((s,i)=>{host.insertAdjacentHTML('beforeend','<section><h2>'+s.width+'×'+s.height+' · '+s.rows+' 行 · '+s.theme+'</h2><div class="pair"><div><div class="label">旧版</div><img id="old'+i+'" alt="旧版像素帧"></div><div><div class="label">原生像素</div><img id="new'+i+'" alt="新版像素帧"></div></div></section>')});function draw(){data.forEach((s,i)=>{['old','new'].forEach((name,j)=>{const img=document.getElementById(name+i);img.src='data:image/png;base64,'+s.frames[f][j];img.style.width=s.width*Number(document.getElementById('zoom').value)+'px';img.style.height=s.height*Number(document.getElementById('zoom').value)+'px'})});document.getElementById('frame').value=f;document.getElementById('count').textContent=f+'/179'}function tick(now){const fps=Number(document.getElementById('fps').value);if(playing&&now-last>=1000/fps){f=(f+(fps===15?2:1))%180;last=now;draw()}requestAnimationFrame(tick)}document.getElementById('play').onclick=()=>{playing=!playing;document.getElementById('play').textContent=playing?'暂停':'播放'};document.getElementById('reset').onclick=()=>{f=0;draw()};document.getElementById('frame').oninput=e=>{playing=false;f=Number(e.target.value);document.getElementById('play').textContent='播放';draw()};document.getElementById('zoom').onchange=draw;draw();requestAnimationFrame(tick);</script></html>`;
-fs.writeFileSync(path.join(out, 'preview.html'), html);
-fs.writeFileSync(path.join(out, 'still.html'), html.replace('let f=0,playing=true', 'let f=33,playing=false'));
-// Contact sheet is raw RGB copying, not a synthetic reconstruction of dots or glyphs.
-const selected = captures.filter(c => c.name.startsWith('640x68-dark'));
-const sheetW = 1280, sheetH = selected.length * 88;
-const sheet = Buffer.alloc(sheetW * sheetH * 3);
-const bg = PIXEL_PALETTES.dark.bg;
-for (let i = 0; i < sheet.length; i += 3) { sheet[i] = bg >> 16; sheet[i + 1] = (bg >> 8) & 255; sheet[i + 2] = bg & 255; }
-selected.forEach((shot, n) => [shot.before, shot.after].forEach((rgb, side) => {
-  for (let y = 0; y < shot.height; y++) rgb.copy(sheet, ((n * 88 + y) * sheetW + side * 640) * 3, y * 640 * 3, (y + 1) * 640 * 3);
-}));
-fs.writeFileSync(path.join(out, 'contact.png'), png(sheetW, sheetH, sheet));
-console.log(JSON.stringify({ output: out, measurements }, null, 2));
+
+function percentile(values, fraction) {
+  assert.ok(values.length > 0);
+  const sorted = values.toSorted((a, b) => a - b);
+  return sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)];
+}
+function timing(values) {
+  const ms = value => +(value / 1e6).toFixed(3);
+  return {
+    p50Ms: ms(percentile(values, 0.50)),
+    p95Ms: ms(percentile(values, 0.95)),
+    p99Ms: ms(percentile(values, 0.99)),
+    maxMs: ms(Math.max(...values)),
+  };
+}
+function payload(values, chunks) {
+  return {
+    averageBytes: Math.round(values.reduce((sum, value) => sum + value, 0) / values.length),
+    peakBytes: Math.max(...values),
+    maxApcChunks: Math.max(...chunks),
+  };
+}
+function sha(rgb) { return crypto.createHash('sha256').update(rgb).digest('hex'); }
+function pngChunk(type, data) {
+  const name = Buffer.from(type);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([name, data])) >>> 0);
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  return Buffer.concat([length, name, data, crc]);
+}
+function crc32(data) {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function writePng(file, width, height, rgb) {
+  const scanlines = Buffer.alloc((width * 3 + 1) * height);
+  for (let y = 0; y < height; y++) rgb.copy(scanlines, y * (width * 3 + 1) + 1, y * width * 3, (y + 1) * width * 3);
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4);
+  header[8] = 8; header[9] = 2;
+  fs.writeFileSync(file, Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', header), pngChunk('IDAT', deflateSync(scanlines, { level: 9 })), pngChunk('IEND', Buffer.alloc(0)),
+  ]));
+}
+function createGame(seed) {
+  let source = seed >>> 0;
+  const random = () => {
+    source ^= source << 13; source ^= source >>> 17; source ^= source << 5;
+    source >>>= 0; return source / 0x100000000;
+  };
+  return stick.create(Object.freeze({ seed: seed >>> 0, random }));
+}
+function scriptedInput(step) {
+  return {
+    ...EMPTY,
+    left: Math.floor(step / 241) % 2 === 1,
+    right: Math.floor(step / 241) % 2 === 0,
+    jump: step % 317 === 71,
+    primary: step % 37 === 0,
+  };
+}
+function paint(game, canvas, theme) {
+  assert.ok(game.renderPixels, 'stick-slash must expose renderPixels()');
+  game.renderPixels(canvas, { view: 'micro', interpolation: 1, theme });
+}
+function runScenario({ width, height, theme, reduced }) {
+  process.env.MOYU_THEME = theme;
+  process.env.MOYU_REDUCE_MOTION = reduced ? '1' : '0';
+  const target = new GraphicsTarget(40, 2, width / 40, height / 2);
+  assert.equal(target.pixelW, width); assert.equal(target.pixelH, height);
+  const canvas = new NativePixelCanvas(target);
+  const game = createGame(SEED);
+  const renderNs = [], encodeNs = [], combinedNs = [], bytes = [], chunkCounts = [];
+  const captures = [];
+  let currentRgb = null;
+  const captureSteps = new Set([0, 179, 719, 1319, 1799]);
+  for (let step = 0; step < 1800; step++) {
+    game.update(1 / 60, scriptedInput(step));
+    const started = process.hrtime.bigint();
+    paint(game, canvas, theme);
+    const rendered = process.hrtime.bigint();
+    const encoded = target.encode(1);
+    const finished = process.hrtime.bigint();
+    renderNs.push(Number(rendered - started));
+    encodeNs.push(Number(finished - rendered));
+    combinedNs.push(Number(finished - started));
+    bytes.push(Buffer.byteLength(encoded));
+    let decoded = null;
+    if (encoded !== '') {
+      decoded = decodeFrame(encoded, target);
+      chunkCounts.push(decoded.chunks);
+      currentRgb = decoded.rgb;
+    } else {
+      assert.equal(target.lastBytes, 0);
+      chunkCounts.push(0);
+    }
+    assert.ok(currentRgb, `frame ${step} has no RGB source`);
+    if (captureSteps.has(step)) {
+      const rgb = Buffer.from(currentRgb);
+      captures.push({ step, rgb, hash: sha(rgb) });
+    }
+  }
+  const checkpoint = game.serialize?.().checkpoint;
+  assert.ok(checkpoint && checkpoint.completed === 1, 'full chapter did not produce checkpoint 1');
+  assert.equal(game.hud?.().includes('第1章完成'), true, 'chapter result HUD is missing');
+  paint(game, canvas, theme);
+  const frozen = target.encode(1);
+  assert.equal(frozen, '', 'stable result frame emitted bytes');
+  assert.equal(target.lastBytes, 0, 'stable result frame did not reset lastBytes');
+  const unchangedNs = [];
+  for (let i = 0; i < 200; i++) {
+    paint(game, canvas, theme);
+    const encoded = ns(() => target.encode(1));
+    assert.equal(encoded.value, ''); assert.equal(target.lastBytes, 0);
+    unchangedNs.push(encoded.ns);
+  }
+  const resultRgb = Buffer.from(currentRgb);
+  captures.push({ step: 'result', rgb: resultRgb, hash: sha(resultRgb) });
+  return {
+    target, game, checkpoint, resultHash: sha(resultRgb), captures,
+    metrics: {
+      width, height, theme, reducedMotion: reduced, frames: bytes.length,
+      render: timing(renderNs), encode: timing(encodeNs), combined: timing(combinedNs),
+      payload: payload(bytes, chunkCounts), unchangedEncode: timing(unchangedNs),
+    },
+  };
+}
+function lifecycle(width, height) {
+  process.env.MOYU_THEME = 'dark'; process.env.MOYU_REDUCE_MOTION = '0';
+  const events = path.join(stateDir, 'lifecycle-events.log');
+  const arcade = new Arcade(events, [stick], 'stick-slash', SEED);
+  const target = new GraphicsTarget(40, 2, width / 40, height / 2);
+  arcade.setDisplay(2, 'graphics'); arcade.enter();
+  arcade.feed(Buffer.from('j'), 1000);
+  let now = 1000;
+  for (let i = 0; i < 120; i++) { now += 1000 / 60; arcade.advance(now); }
+  arcade.render(target, 'micro');
+  const active = target.encode(1);
+  assert.notEqual(active, '');
+  const activeDecoded = decodeFrame(active, target);
+  arcade.pause();
+  const disposal = target.disposeSeq();
+  assert.equal(disposal, deleteImageSeq(), 'hide did not delete owned Kitty image');
+  const before = arcade.hud().left;
+  const hidden = now + 10_000;
+  arcade.advance(hidden);
+  assert.equal(arcade.hud().left, before, 'hidden advance changed game state');
+  const hiddenTarget = new GraphicsTarget(40, 2, width / 40, height / 2);
+  arcade.render(hiddenTarget, 'micro');
+  const hiddenFrame = hiddenTarget.encode(1);
+  assert.equal(sha(decodeFrame(hiddenFrame, hiddenTarget).rgb), sha(activeDecoded.rgb),
+    'hidden advance changed the framebuffer');
+  arcade.resume(); arcade.advance(hidden);
+  target.invalidate();
+  const first = ns(() => {
+    arcade.render(target, 'micro');
+    return target.encode(1);
+  });
+  assert.notEqual(first.value, '');
+  const decoded = decodeFrame(first.value, target);
+  const repeat = ns(() => {
+    arcade.render(target, 'micro');
+    return target.encode(1);
+  });
+  assert.equal(repeat.value, ''); assert.equal(target.lastBytes, 0);
+  return {
+    hiddenMs: 10_000,
+    statePreserved: true,
+    deleteBytes: Buffer.byteLength(disposal),
+    firstResumedFrameMs: +(first.ns / 1e6).toFixed(3),
+    firstResumedBytes: Buffer.byteLength(first.value),
+    firstResumedChunks: decoded.chunks,
+    immediateRepeatMs: +(repeat.ns / 1e6).toFixed(3),
+    immediateRepeatBytes: 0,
+  };
+}
+function captureName(width, height, theme, reduced, step) {
+  return `${width}x${height}-${theme}-${reduced ? 'reduced' : 'normal'}-${step}.png`;
+}
+function writePreview(entries) {
+  const cards = entries.flatMap(entry => entry.captures.map(capture => ({
+    label: `${entry.metrics.width}×${entry.metrics.height} · ${entry.metrics.theme} · ${entry.metrics.reducedMotion ? 'reduced' : 'normal'} · ${capture.step}`,
+    file: `captures/${captureName(entry.metrics.width, entry.metrics.height, entry.metrics.theme,
+      entry.metrics.reducedMotion, capture.step)}`,
+  })));
+  const html = `<!doctype html><meta charset="utf-8"><title>Moyu pixel QA</title>
+<style>body{margin:24px;background:#15171d;color:#eef1f5;font:14px system-ui}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(680px,1fr));gap:18px}figure{margin:0;padding:12px;background:#222630;border-radius:8px}img{width:100%;height:auto;image-rendering:pixelated;background:#0d0f13}figcaption{margin-top:8px;color:#b6bdca}</style>
+<h1>Moyu native-pixel QA</h1><p>Images are inflated from actual timed Kitty RGB frames. Browser scaling is for inspection, not terminal certification.</p><main>${cards.map(card => `<figure><img src="${card.file}"><figcaption>${card.label}</figcaption></figure>`).join('')}</main>`;
+  fs.writeFileSync(path.join(out, 'preview.html'), html);
+}
+const runs = [];
+try {
+  for (const [width, height] of [[320, 34], [640, 68]]) {
+    for (const theme of ['dark', 'light']) for (const reduced of [false, true]) {
+      const run = runScenario({ width, height, theme, reduced });
+      runs.push(run);
+      for (const capture of run.captures) {
+        writePng(path.join(capturesDir, captureName(width, height, theme, reduced, capture.step)),
+          width, height, capture.rgb);
+      }
+    }
+  }
+  for (const [width, height] of [[320, 34], [640, 68]]) {
+    const comparable = runs.filter(run => run.metrics.width === width);
+    const checkpoints = comparable.map(run => JSON.stringify(run.checkpoint));
+    assert.equal(new Set(checkpoints).size, 1, `${width} theme/motion changed deterministic checkpoint`);
+    const normalDark = comparable.find(run => run.metrics.theme === 'dark' && !run.metrics.reducedMotion);
+    const reducedDark = comparable.find(run => run.metrics.theme === 'dark' && run.metrics.reducedMotion);
+    assert.equal(normalDark.checkpoint.completed, 1);
+    assert.equal(reducedDark.checkpoint.completed, 1);
+  }
+  const baselines = new Map([
+    ['320x34:dark:false', [0.127, 1510, 2612]],
+    ['320x34:dark:true', [0.127, 1481, 2612]],
+    ['320x34:light:false', [0.126, 1535, 2608]],
+    ['320x34:light:true', [0.127, 1506, 2608]],
+    ['640x68:dark:false', [0.393, 3354, 6049]],
+    ['640x68:dark:true', [0.398, 3291, 6049]],
+    ['640x68:light:false', [0.397, 3498, 6193]],
+    ['640x68:light:true', [0.400, 3433, 6193]],
+  ]);
+  for (const run of runs) {
+    const key = `${run.metrics.width}x${run.metrics.height}:${run.metrics.theme}:${run.metrics.reducedMotion}`;
+    const baseline = baselines.get(key);
+    assert.ok(baseline, `missing native baseline for ${key}`);
+    const [encodeP95, averageBytes, peakBytes] = baseline;
+    assert.ok(run.metrics.encode.p95Ms <= encodeP95 * 1.15,
+      `${key} encode p95 ${run.metrics.encode.p95Ms} ms exceeds 15% gate`);
+    assert.ok(run.metrics.payload.averageBytes <= averageBytes * 1.15,
+      `${key} average ${run.metrics.payload.averageBytes} B exceeds 15% gate`);
+    assert.ok(run.metrics.payload.peakBytes <= peakBytes * 1.15,
+      `${key} peak ${run.metrics.payload.peakBytes} B exceeds 15% gate`);
+  }
+  const lifecycleRuns = [[320, 34], [640, 68]]
+    .map(([width, height]) => ({ width, height, ...lifecycle(width, height) }));
+  const resumeGateMs = process.env.SSH_CONNECTION || process.env.SSH_TTY ? 100 : 50;
+  for (const run of lifecycleRuns) assert.ok(run.firstResumedFrameMs <= resumeGateMs,
+    `${run.width}x${run.height} resumed in ${run.firstResumedFrameMs} ms; gate is ${resumeGateMs} ms`);
+  const report = {
+    generatedAt: new Date().toISOString(),
+    environment: { platform: process.platform, arch: process.arch, node: process.version },
+    methodology: {
+      productionTiming: 'game renderPixels and GraphicsTarget.encode only; protocol decode and PNG export excluded',
+      percentiles: 'nearest-rank over 1800 fixed 60 Hz updates; zero-byte unchanged frames included',
+      wireValidation: 'strict Kitty keys, APC/ST framing, 4096-byte chunk cap, continuation markers, zlib RGB size',
+      fixture: `stick-slash seed ${SEED}, one complete 1800-step chapter`,
+      gates: 'native encode p95 and average/peak payload <= 115% of checked-in baseline; resume <= 50 ms local / 100 ms SSH',
+    },
+    scenarios: runs.map(run => ({ ...run.metrics, checkpoint: run.checkpoint,
+      resultHash: run.resultHash, captureHashes: Object.fromEntries(run.captures.map(c => [c.step, c.hash])) })),
+    lifecycle: lifecycleRuns,
+  };
+  fs.writeFileSync(path.join(out, 'metrics.json'), `${JSON.stringify(report, null, 2)}\n`);
+  writePreview(runs);
+  console.log(JSON.stringify({ output: out, scenarios: report.scenarios.map(s => ({
+    size: `${s.width}x${s.height}`, theme: s.theme, reducedMotion: s.reducedMotion,
+    combined: s.combined, payload: s.payload, unchangedEncode: s.unchangedEncode,
+  })), lifecycle: report.lifecycle }, null, 2));
+} finally {
+  if (priorHome === undefined) delete process.env.MOYU_HOME; else process.env.MOYU_HOME = priorHome;
+  if (priorTheme === undefined) delete process.env.MOYU_THEME; else process.env.MOYU_THEME = priorTheme;
+  if (priorReduce === undefined) delete process.env.MOYU_REDUCE_MOTION; else process.env.MOYU_REDUCE_MOTION = priorReduce;
+  fs.rmSync(stateDir, { recursive: true, force: true });
+}

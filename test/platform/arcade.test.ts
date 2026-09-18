@@ -8,7 +8,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { GameInstance, GameModule } from '../../src/platform/types.ts';
 
-function cartridge(id: string, create: () => GameInstance): GameModule {
+function cartridge(id: string, create: GameModule['create']): GameModule {
   return {
     manifest: {
       id, name: id.toUpperCase(), version: '1', apiVersion: 1, author: 'test', description: id,
@@ -56,6 +56,19 @@ test('each factory receives an isolated immutable context', () => {
   assert.equal(a.failureFor('healthy'), undefined);
 });
 
+test('built-in Stick Slash consumes the deterministic GameContext seed', () => {
+  const seeded: number[] = [];
+  const modules = BUILTIN_GAMES.map((module) => module.manifest.id === 'stick-slash' ? {
+    ...module,
+    create(context: Parameters<GameModule['create']>[0]) {
+      seeded.push(context.seed);
+      return module.create(context);
+    },
+  } : module);
+  new Arcade('/tmp/moyu-no-events-test', modules, undefined, 0x12345678);
+  assert.deepEqual(seeded, [0x12345678]);
+});
+
 test('rejected async factories are observed while being quarantined', async () => {
   const { spawnSync } = await import('node:child_process');
   const arcadeUrl = new URL('../../src/platform/arcade.ts', import.meta.url).href;
@@ -65,6 +78,44 @@ test('rejected async factories are observed while being quarantined', async () =
     '--unhandled-rejections=strict', '--experimental-strip-types', '--input-type=module', '--eval', script,
   ], { encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr);
+});
+
+test('non-callable then state remains valid game data', () => {
+  for (const [index, then] of [null, false, 0, 'state'].entries()) {
+    const id = `state-${index}`;
+    const a = new Arcade('/tmp/moyu-no-events-test', [
+      cartridge(id, () => ({ ...visibleGame('a', []), then }) as GameInstance),
+    ]);
+    assert.equal(a.available, 1, id);
+    assert.equal(a.failureFor(id), undefined, id);
+  }
+});
+
+test('callable then accessors are inspected once and never invoked', () => {
+  let reads = 0, calls = 0;
+  const a = new Arcade('/tmp/moyu-no-events-test', [cartridge('then-getter', () => {
+    const game = visibleGame('a', []);
+    Object.defineProperty(game, 'then', {
+      get() { reads++; return () => { calls++; }; },
+    });
+    return game;
+  })]);
+  assert.equal(a.available, 0);
+  assert.equal(reads, 1);
+  assert.equal(calls, 0);
+  assert.ok(a.failureFor('then-getter'));
+});
+
+test('throwing then accessors are quarantined without hiding later cartridges', () => {
+  const broken = cartridge('then-throws', () => {
+    const game = visibleGame('a', []);
+    Object.defineProperty(game, 'then', { get() { throw new Error('then getter failed'); } });
+    return game;
+  });
+  const a = new Arcade('/tmp/moyu-no-events-test', [broken, cartridge('healthy', () => visibleGame('a', []))]);
+  assert.equal(a.available, 1);
+  assert.match(a.failureFor('then-throws') ?? '', /then getter failed/);
+  assert.equal(a.failureFor('healthy'), undefined);
 });
 
 test('factory failures and invalid instances are quarantined as atomic cartridge slots', () => {
@@ -120,7 +171,8 @@ test('empty and all-failed arcades keep every public operation total', () => {
     assert.doesNotThrow(() => {
       a.resize(80, 24); a.keys.clear(); a.feed(Buffer.from('\t')); a.feed(Buffer.from('j'));
       a.setDisplay(2, 'braille'); a.panel(); void a.showingInstructions; a.advance(1000); a.advance(1200);
-      a.render(target, 'micro'); a.takeAlert(); a.hud(); a.pause(); a.resume(); a.takeViewToggle();
+      a.pollHostEvents(1200); a.render(target, 'micro'); a.takeAction(); void a.status;
+      a.hud(); a.pause(); a.resume(); a.enter(); a.takeViewToggle();
     });
     assert.match(a.panel().join(' '), /没有可用游戏/);
     assert.match(a.hud().left, /没有可用游戏/);
@@ -165,6 +217,24 @@ function fullMicroFrame(arcade: Arcade, target: BrailleTarget): string {
   return target.encode(1);
 }
 
+function stickModule(): GameModule {
+  const module = BUILTIN_GAMES.find((candidate) => candidate.manifest.id === 'stick-slash');
+  assert.ok(module);
+  return module;
+}
+
+function stickGame(seed = 1): GameInstance {
+  return stickModule().create(Object.freeze({ seed, random: () => 0.5 }));
+}
+
+function chapterOneCheckpoint(seed = 1): Record<string, unknown> {
+  const game = stickGame(seed);
+  const input = { left: false, right: false, up: false, down: false,
+    jump: false, primary: false, secondary: false };
+  for (let i = 0; i < 1800; i++) game.update(1 / 60, input);
+  return game.serialize?.() as Record<string, unknown>;
+}
+
 test('primary action changes the very next rendered micro frame', () => {
   const a = new Arcade('/tmp/moyu-no-events-test');
   const target = new BrailleTarget(40, 2);
@@ -198,18 +268,306 @@ test('two-row diff output stays lightweight enough for an SSH session', () => {
   }
 });
 
+test('Stick Slash v1 persistence separates lifetime records from campaign checkpoints', () => {
+  const state = chapterOneCheckpoint(21);
+  const checkpoint = state.checkpoint as Record<string, unknown>;
+  assert.equal(state.kills, checkpoint.kills);
+  assert.equal(state.bestCombo, checkpoint.bestCombo);
+
+  const restored = stickGame(999);
+  restored.restore?.(JSON.parse(JSON.stringify(state)));
+  assert.deepEqual(restored.serialize?.(), state);
+
+  const lifetime = { ...state, kills: (state.kills as number) + 3,
+    bestCombo: Math.max(state.bestCombo as number, 2) };
+  restored.restore?.(lifetime);
+  assert.deepEqual(restored.serialize?.(), lifetime,
+    'lifetime records may exceed the completed-campaign boundary');
+
+  const before = restored.serialize?.();
+  restored.restore?.({ ...state, kills: (checkpoint.kills as number) - 1 });
+  assert.deepEqual(restored.serialize?.(), before, 'outer totals cannot trail the checkpoint');
+  restored.restore?.({ version: 2, kills: 99, bestCombo: 88 });
+  assert.deepEqual(restored.serialize?.(), before, 'unknown versions must not fall through to legacy restore');
+});
+
+test('Stick Slash restores legacy and v1 pre-checkpoint lifetime records', () => {
+  const legacy = stickGame(24);
+  legacy.restore?.({ kills: 7, bestCombo: 3 });
+  assert.deepEqual(legacy.serialize?.(), {
+    version: 1, kills: 7, bestCombo: 3, checkpoint: null,
+  });
+
+  const v1 = stickGame(25);
+  v1.restore?.({ version: 1, kills: 9, bestCombo: 4, checkpoint: null });
+  assert.deepEqual(v1.serialize?.(), {
+    version: 1, kills: 9, bestCombo: 4, checkpoint: null,
+  });
+});
+
+test('Stick Slash result-screen J cannot bypass task completion ownership', () => {
+  const game = stickGame(22);
+  const none = { left: false, right: false, up: false, down: false,
+    jump: false, primary: false, secondary: false };
+  const slash = { ...none, primary: true };
+  for (let i = 0; i < 1800; i++) game.update(1 / 60, none);
+  const before = game.serialize?.() as Record<string, unknown>;
+  const checkpoint = before.checkpoint;
+  game.onHostEvent?.('task-done');
+  game.update(1 / 60, slash);
+  const clearing = game.serialize?.() as Record<string, unknown>;
+  assert.equal(clearing.checkpoint, checkpoint, 'clear-wave kills must not rewrite the finished chapter');
+  assert.ok((clearing.kills as number) >= (before.kills as number));
+  assert.match(game.hud?.() ?? '', /第1章完成/);
+  for (let i = 0; i < 300; i++) game.update(1 / 60, slash);
+  assert.match(game.hud?.() ?? '', /等待下个任务/);
+  game.onHostEvent?.('task-start');
+  game.update(1 / 60, slash);
+  assert.match(game.hud?.() ?? '', /2\/10/);
+});
+
+test('Stick Slash final HUD reports cumulative five-minute totals', () => {
+  const game = stickGame(23);
+  const state = chapterOneCheckpoint(23);
+  const first = state.checkpoint as Record<string, unknown>;
+  const firstKills = first.kills as number;
+  const firstScore = first.score as number;
+  const finalResult = { chapter: 10, score: 150, kills: 1, bestCombo: 1 };
+  const priorKills = firstKills + 2;
+  const priorScore = firstScore + 300;
+  const completed = {
+    ...first,
+    completed: 10,
+    score: priorScore + finalResult.score,
+    kills: priorKills + finalResult.kills,
+    bestCombo: Math.max(first.bestCombo as number, 1),
+    result: finalResult,
+  };
+  game.restore?.({ version: 1, kills: completed.kills,
+    bestCombo: completed.bestCombo, checkpoint: completed });
+  const hud = game.hud?.() ?? '';
+  assert.match(hud, new RegExp(`${completed.score}分`));
+  assert.match(hud, new RegExp(`${completed.kills}击破`));
+  assert.match(hud, new RegExp(`连击${completed.bestCombo}`));
+  assert.notEqual(completed.score, finalResult.score);
+  assert.notEqual(completed.kills, finalResult.kills);
+  assert.doesNotMatch(hud, new RegExp(`五分钟完成 · ${finalResult.score}分 · ${finalResult.kills}击破`));
+});
+
+test('cartridge random streams are independent of preceding factory consumption', () => {
+  const observed: number[] = [];
+  const healthy = cartridge('healthy-random', context => {
+    observed.push(context.random());
+    return visibleGame('a', []);
+  });
+  new Arcade('/tmp/moyu-no-events-test', [healthy], undefined, 0x12345678);
+  const alone = observed.pop();
+  const greedy = cartridge('greedy', context => {
+    for (let i = 0; i < 100; i++) context.random();
+    throw new Error('expected');
+  });
+  new Arcade('/tmp/moyu-no-events-test', [greedy, healthy], undefined, 0x12345678);
+  assert.equal(observed.pop(), alone);
+});
+
+test('hidden polling pauses and persists exactly once per task event', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-events-'));
+  const file = path.join(dir, 'events.log');
+  const home = path.join(dir, 'home');
+  const events: string[] = [];
+  let saves = 0;
+  const module = cartridge('lifecycle', () => ({
+    update() {}, render() {},
+    onHostEvent: event => { events.push(event); },
+    serialize: () => ({ saves: ++saves }),
+  }));
+  const beforeHome = process.env.MOYU_HOME;
+  process.env.MOYU_HOME = home;
+  const a = new Arcade(file, [module]);
+  try {
+    a.pause();
+    assert.equal(saves, 1);
+    assert.deepEqual(events, ['pause']);
+    appendSignal('notify', file);
+    a.pollHostEvents(1000);
+    assert.equal(a.status, 'needs-input');
+    assert.equal(a.takeAction(), 'return-to-cli');
+    assert.equal(saves, 2, 'already-paused event mutations must be saved once without another pause hook');
+    assert.deepEqual(events, ['pause', 'task-notify']);
+    a.pollHostEvents(1050);
+    assert.equal(a.takeAction(), null, 'sub-100ms poll must not replay an action');
+    appendSignal('start', file);
+    a.pollHostEvents(1100);
+    assert.equal(a.status, 'idle', 'task-start acknowledges needs-input status');
+    assert.deepEqual(events, ['pause', 'task-notify', 'task-start']);
+  } finally {
+    if (beforeHome === undefined) delete process.env.MOYU_HOME;
+    else process.env.MOYU_HOME = beforeHome;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('throwing host hooks cannot block later cartridges or required handoff', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-events-'));
+  const file = path.join(dir, 'events.log');
+  const home = path.join(dir, 'home');
+  const observed: string[] = [];
+  let saved = 0;
+  const broken = cartridge('broken-hook', () => ({
+    update() {}, render() {},
+    onHostEvent: event => { if (event === 'task-done') throw new Error('hook failed'); },
+  }));
+  const healthy = cartridge('healthy-hook', () => ({
+    update() {}, render() {}, onHostEvent: event => { observed.push(event); },
+    serialize: () => ({ saved: ++saved }),
+  }));
+  const beforeHome = process.env.MOYU_HOME;
+  process.env.MOYU_HOME = home;
+  const a = new Arcade(file, [broken, healthy], 'healthy-hook');
+  try {
+    appendSignal('done', file);
+    a.pollHostEvents(1000);
+    assert.deepEqual(observed, ['task-done', 'pause']);
+    assert.equal(a.status, 'task-done');
+    assert.equal(a.takeAction(), 'return-to-cli');
+    assert.equal(saved, 1);
+  } finally {
+    if (beforeHome === undefined) delete process.env.MOYU_HOME;
+    else process.env.MOYU_HOME = beforeHome;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('backward wall-clock changes rebase host polling without replaying events', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-events-'));
+  const file = path.join(dir, 'events.log');
+  const events: string[] = [];
+  const a = new Arcade(file, [cartridge('clock', () => ({
+    update() {}, render() {}, onHostEvent: event => { events.push(event); },
+  }))]);
+  try {
+    a.pollHostEvents(10_000);
+    appendSignal('notify', file);
+    a.pollHostEvents(9_000);
+    assert.deepEqual(events, ['task-notify', 'pause']);
+    assert.equal(a.status, 'needs-input');
+    assert.equal(a.takeAction(), 'return-to-cli');
+    a.pollHostEvents(9_050);
+    assert.deepEqual(events, ['task-notify', 'pause']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('already-paused done and notify batch saves once without replaying pause', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-events-'));
+  const file = path.join(dir, 'events.log');
+  const home = path.join(dir, 'home');
+  const events: string[] = [];
+  let saves = 0;
+  const beforeHome = process.env.MOYU_HOME;
+  process.env.MOYU_HOME = home;
+  const a = new Arcade(file, [cartridge('paused-batch', () => ({
+    update() {}, render() {}, onHostEvent: event => { events.push(event); },
+    serialize: () => ({ saves: ++saves }),
+  }))]);
+  try {
+    a.pause();
+    appendSignal('done', file);
+    appendSignal('notify', file);
+    a.pollHostEvents(1000);
+    assert.equal(saves, 2);
+    assert.deepEqual(events, ['pause', 'task-done', 'task-notify']);
+    assert.equal(a.status, 'task-done');
+    assert.equal(a.takeAction(), 'return-to-cli');
+  } finally {
+    if (beforeHome === undefined) delete process.env.MOYU_HOME;
+    else process.env.MOYU_HOME = beforeHome;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('throwing active pause hook cannot block persistence or handoff', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-events-'));
+  const file = path.join(dir, 'events.log');
+  const home = path.join(dir, 'home');
+  const events: string[] = [];
+  let saves = 0;
+  const beforeHome = process.env.MOYU_HOME;
+  process.env.MOYU_HOME = home;
+  const a = new Arcade(file, [cartridge('pause-throws', () => ({
+    update() {}, render() {},
+    onHostEvent: event => {
+      events.push(event);
+      if (event === 'pause') throw new Error('pause failed');
+    },
+    serialize: () => ({ saves: ++saves }),
+  }))]);
+  try {
+    appendSignal('done', file);
+    a.pollHostEvents(1000);
+    assert.deepEqual(events, ['task-done', 'pause']);
+    assert.equal(saves, 1);
+    assert.equal(a.status, 'task-done');
+    assert.equal(a.takeAction(), 'return-to-cli');
+  } finally {
+    if (beforeHome === undefined) delete process.env.MOYU_HOME;
+    else process.env.MOYU_HOME = beforeHome;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ordered start and notify batches preserve notification type priority', () => {
+  for (const order of [['notify', 'start'], ['start', 'notify']] as const) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-events-'));
+    const file = path.join(dir, 'events.log');
+    const events: string[] = [];
+    const a = new Arcade(file, [cartridge(`order-${order.join('-')}`, () => ({
+      update() {}, render() {}, onHostEvent: event => { events.push(event); },
+    }))]);
+    try {
+      for (const event of order) appendSignal(event, file);
+      a.pollHostEvents(1000);
+      const dispatched: string[] = order.map(event => event === 'start' ? 'task-start' : 'task-notify');
+      dispatched.push('pause');
+      assert.deepEqual(events, dispatched);
+      assert.equal(a.status, 'needs-input', order.join(' -> '));
+      assert.equal(a.takeAction(), 'return-to-cli');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test('a mixed host-event batch preserves done priority while dispatching every event in order', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-events-'));
+  const file = path.join(dir, 'events.log');
+  const events: string[] = [];
+  const a = new Arcade(file, [cartridge('batch', () => ({
+    update() {}, render() {}, onHostEvent: event => { events.push(event); },
+  }))]);
+  try {
+    appendSignal('done', file);
+    appendSignal('start', file);
+    appendSignal('notify', file);
+    a.pollHostEvents(1000);
+    assert.deepEqual(events, ['task-done', 'task-start', 'task-notify', 'pause']);
+    assert.equal(a.status, 'task-done');
+    assert.equal(a.takeAction(), 'return-to-cli');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('task completion is silent, persistent in standby, and cleared when viewed', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-events-'));
   const file = path.join(dir, 'events.log');
   const a = new Arcade(file);
   try {
     appendSignal('done', file);
-    a.advance(1000);
-    for (let i = 1; i <= 8; i++) a.advance(1000 + i * 17);
-    assert.equal(a.takeAlert(), '', '空串是宿主切回 CLI 的无声事件，不应包含响铃或通知序列');
+    a.pollHostEvents(1000);
+    assert.equal(a.takeAction(), 'return-to-cli');
+    assert.equal(a.takeAction(), null, '宿主动作只能消费一次');
+    assert.equal(a.status, 'task-done');
     assert.equal(a.hud().urgent, true);
     assert.match(a.hud().short, /任务完成/);
     a.resume();
-    assert.equal(a.hud().urgent, false);
+    assert.equal(a.status, 'task-done', '普通恢复不能顺手清掉未查看的任务状态');
+    a.enter();
+    assert.equal(a.status, 'idle');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

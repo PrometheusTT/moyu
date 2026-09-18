@@ -11,6 +11,7 @@
  *   4. **收尾**。SIGHUP 之后给个宽限期再 SIGKILL。
  */
 import type { IPty } from '@lydell/node-pty';
+import { scrubInternalEnv } from './supervision.ts';
 
 export type PtyHostOptions = {
   file: string;
@@ -67,7 +68,7 @@ export class PtyHost {
     const rows = Math.max(1, Math.floor(opts.rows));
 
     const env: Record<string, string> = {};
-    for (const [k, v] of Object.entries(opts.env ?? process.env)) {
+    for (const [k, v] of Object.entries(scrubInternalEnv(opts.env ?? process.env))) {
       if (v !== undefined) env[k] = v;
     }
     // LINES / COLUMNS 会被一些程序优先于 ioctl 采信，那就绕过了我们的尺寸控制。

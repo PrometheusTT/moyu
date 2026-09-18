@@ -60,7 +60,7 @@ export class NativePixelCanvas implements PixelCanvas {
       const distance = Math.sqrt(ex * ex + ey * ey) - radius;
       if (distance >= 0.5) continue;
       // Quantized edge coverage is stable from frame to frame and compresses efficiently.
-      const coverage = Math.min(1, Math.round((0.5 - distance) * 16) / 16);
+      const coverage = Math.min(1, Math.round((0.5 - distance) * 4) / 4);
       if (coverage <= 0) continue;
       this.target.setPixel(x, y, coverage >= 1 ? color : blendCoverage(this.target.getPixel(x, y), color, coverage));
     }

@@ -1,0 +1,66 @@
+name: Feature request
+description: 提议新的能力、兼容路径或社区改进
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Moyu 优先保护 coding CLI、终端安全和低干扰体验。请先描述真实问题，再讨论实现方案。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的问题
+      description: 谁在什么环境中遇到了什么限制？现有替代方案为什么不够？
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议的体验
+      description: 从用户角度描述输入、输出、失败和回退行为。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响范围
+      multiple: true
+      options:
+        - Terminal / PTY safety
+        - Rendering and compatibility
+        - Cartridge API
+        - Built-in games
+        - Agent hooks
+        - Installation and release
+        - Documentation and community
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 考虑过的替代方案
+      description: 包括不做这项功能、使用现有环境变量或由 Cartridge 实现。
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: 兼容性与风险
+      description: 是否影响输入透传、终端恢复、SSH、Node.js 20、存档或 API v1？
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我搜索过现有 Issue 和路线说明。
+          required: true
+        - label: 我描述的是用户问题，而不只是指定一种实现。
+          required: true
+        - label: 我同意遵守项目行为准则。
+          required: true

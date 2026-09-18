@@ -1,8 +1,9 @@
 {
   "name": "moyu-game",
-  "version": "0.1.0",
-  "description": "Coding agent 工作时一键打开的轻量终端掌机与本地 Cartridge 游戏平台",
-  "keywords": ["cli", "game", "terminal", "tui", "claude-code", "codex", "ssh", "braille", "kitty-graphics", "cartridge", "pty"],
+  "version": "0.2.0",
+  "description": "Local-first terminal arcade for Codex, Claude Code, and other coding agents",
+  "keywords": ["cli", "game", "terminal", "terminal-game", "tui", "ai-agent", "claude-code", "codex", "ssh", "braille", "kitty-graphics", "cartridge", "pty"],
+  "author": "PrometheusTT and contributors",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -12,16 +13,26 @@
   "bugs": {
     "url": "https://github.com/PrometheusTT/moyu/issues"
   },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "type": "module",
   "bin": {
-    "moyu": "./bin/moyu"
+    "moyu": "bin/moyu"
   },
   "files": [
     "bin/",
     "dist/",
     "README.md",
+    "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "pic.png",
     "PRODUCT.md",
-    "docs/terminal-qa.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "docs/",
     "LICENSE"
   ],
   "os": ["darwin", "linux"],
@@ -32,7 +43,11 @@
     "typecheck": "tsc --noEmit",
     "compile": "tsc -p tsconfig.build.json",
     "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
-    "prepublishOnly": "npm run typecheck && npm run compile",
+    "docs:check": "node scripts/check-docs.mjs",
+    "check": "npm run typecheck && npm run docs:check && npm test",
+    "verify": "npm run check && npm run compile",
+    "smoke": "node scripts/startup-smoke.mjs source dist",
+    "prepublishOnly": "npm run check && npm run compile",
     "dev": "node --experimental-strip-types src/app/main.ts",
     "bench": "node --experimental-strip-types src/app/main.ts bench",
     "dev:link-vendor": "node scripts/link-vendor.mjs"

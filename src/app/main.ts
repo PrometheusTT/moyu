@@ -14,6 +14,7 @@ import { Passthrough } from '../shell/passthrough.ts';
 import { VtCursor } from '../shell/vtcursor.ts';
 import { PtyHost } from '../shell/pty.ts';
 import { Teardown, doctorResetSeq, writeAllSync, type RestoreOptions } from '../shell/teardown.ts';
+import { completeSupervision, scrubInternalEnv } from '../shell/supervision.ts';
 import { ScreenArbiter } from '../shell/altscreen.ts';
 import { InputRouter, hotkeyHint } from '../shell/focus.ts';
 import { Canvas } from '../render/canvas.ts';
@@ -23,7 +24,6 @@ import { probeCaps, knownGraphicsTerm, DEFAULT_CELL } from '../render/caps.ts';
 import { stripPainter, type Painter } from '../render/painter.ts';
 import type { PixelTarget, Tier } from '../render/target.ts';
 import { paintWorld } from '../render/scene.ts';
-import { fitRow } from '../render/text.ts';
 import { PlaySurface } from '../platform/surface.ts';
 import { paintScene, paintStress } from './scene0.ts';
 import { Arcade } from '../platform/arcade.ts';
@@ -42,6 +42,7 @@ import { fileURLToPath } from 'node:url';
 
 const FPS = 30;
 const FRAME_MS = 1000 / FPS;
+const HOST_EVENT_MS = 100;
 
 /**
  * stdout 积压超过这个字节数就跳过这一帧。
@@ -51,16 +52,51 @@ const FRAME_MS = 1000 / FPS;
  */
 const BACKPRESSURE = 48 * 1024;
 
-/**
- * HUD 和收起条共用的三套配色。
- *
- * 提出来是因为它们必须**一模一样** —— 收起条就是 HUD 塌成一行的样子，两处各写一份
- * 迟早会漂移成"收起之后颜色突然变了"。等待权限那档故意用刺眼的琥珀底：那是唯一一种
- * 你不看一眼就会一直卡着的状态。
- */
-// 候场行故意不用色块背景。它应该融进 coding CLI，只在用户主动看向右下角时被发现。
-const SGR_URGENT = '\x1b[38;2;226;190;96m\x1b[49m';
-const SGR_IDLE = '\x1b[38;2;112;118;134m\x1b[49m';
+export type ExecutableResolution = Readonly<
+  | { kind: 'executable'; path: string }
+  | { kind: 'missing' }
+  | { kind: 'unusable'; path: string; detail: string }
+>;
+
+export function resolveExecutable(file: string, env: NodeJS.ProcessEnv = process.env): ExecutableResolution {
+  const search = env.PATH === undefined ? '/usr/bin:/bin' : env.PATH;
+  const candidates = file.includes('/') ? [path.resolve(file)]
+    : search.split(path.delimiter).map(dir => path.join(dir || '.', file));
+  let unusable: { path: string; detail: string } | null = null;
+  for (const candidate of candidates) {
+    try {
+      const stat = fs.statSync(candidate);
+      if (!stat.isFile()) {
+        unusable ??= { path: path.resolve(candidate), detail: '不是普通文件' };
+        continue;
+      }
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return { kind: 'executable', path: path.resolve(candidate) };
+      } catch (error) {
+        unusable ??= { path: path.resolve(candidate), detail: diagnosticLine(error, '不可执行') };
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        unusable ??= { path: path.resolve(candidate), detail: diagnosticLine(error, '无法访问') };
+      }
+    }
+  }
+  return unusable === null ? { kind: 'missing' }
+    : { kind: 'unusable', path: unusable.path, detail: unusable.detail };
+}
+
+function diagnosticLine(value: unknown, fallback: string): string {
+  try {
+    const detail = value instanceof Error ? value.message : String(value);
+    return detail.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim() || fallback;
+  } catch { return fallback; }
+}
+
+/** Standby uses one quiet foreground cell and no background block or ambient motion. */
+const SGR_STANDBY_EVENT = '\x1b[38;2;160;166;180m\x1b[49m';
+const SGR_STANDBY_IDLE = '\x1b[38;2;90;96;110m\x1b[49m';
 
 /**
  * 焦点切换的最小间隔。
@@ -68,6 +104,10 @@ const SGR_IDLE = '\x1b[38;2;112;118;134m\x1b[49m';
  * 焦点变化会 resize PTY，而 resize 让内层 TUI 全量重绘 —— 连按会把它抖成一片。
  */
 const FOCUS_DEBOUNCE_MS = 180;
+/** A repaint may span several PTY reads; choose its anchor only after output has gone quiet. */
+const COMPOSER_SETTLE_MS = 60;
+/** Repaint authorization is causally useful only near the resize/refresh/control that created it. */
+const COMPOSER_PERMIT_MS = 750;
 
 function usage(): string {
   return [
@@ -136,6 +176,18 @@ async function main(): Promise<number> {
   const inner = dd >= 0 ? argv.slice(dd + 1) : argv;
   if (inner.length === 0) { process.stderr.write(`${usage()}\n`); return 2; }
   return cmdWrap(inner);
+}
+
+/** If an entry-point promise rejects after takeover, release every installed Teardown before exiting. */
+const activeTeardowns = new Set<Teardown>();
+
+function trackTeardown(teardown: Teardown): Teardown {
+  activeTeardowns.add(teardown);
+  return teardown;
+}
+
+function releaseActiveTeardowns(): void {
+  for (const teardown of activeTeardowns) teardown.run();
 }
 
 /* ── moyu install / moyu doctor ─────────────────────────────────────────
@@ -373,29 +425,33 @@ function benchGame(): (t: PixelTarget, f: number) => void {
 async function cmdCaps(gfx: boolean): Promise<number> {
   const tty = process.stdout.isTTY === true && process.stdin.isTTY === true;
   const t = termSize();
+  const wasRaw = process.stdin.isRaw;
+  let restoreOptions: RestoreOptions = { deleteImage: false };
+  const teardown = tty ? trackTeardown(new Teardown(() => restoreOptions)) : null;
+  if (teardown !== null) {
+    teardown.install();
+    teardown.onRestore(() => {
+      try { process.stdin.setRawMode(wasRaw); } catch { /* 终端已经消失 */ }
+      process.stdin.pause();
+    });
+  }
   // 回复必须在 raw 下读：行缓冲会把它扣到用户按回车，那时候早超时了。
   let raw = false;
-  if (tty) {
+  if (teardown !== null) {
+    await teardown.acquire(restoreOptions);
     process.stdin.setRawMode(true);
     process.stdin.resume();
     raw = true;
   }
-  let caps;
   try {
-    caps = await probeCaps({
+    const caps = await probeCaps({
       stdin: process.stdin,
       write: (x) => { process.stdout.write(x); },
       env: process.env,
       cols: t.cols, rows: t.rows, tty,
     });
-  } finally {
-    if (raw) {
-      process.stdin.setRawMode(false);
-      process.stdin.pause();
-    }
-  }
 
-  const envOr = (k: string): string => {
+    const envOr = (k: string): string => {
     const v = process.env[k];
     return v === undefined || v === '' ? '（没设）' : v;
   };
@@ -415,6 +471,10 @@ async function cmdCaps(gfx: boolean): Promise<number> {
   const target: PixelTarget = caps.tier === 'graphics' ? new GraphicsTarget(cols, rows, caps.cellW, caps.cellH)
     : caps.tier === 'braille' ? new BrailleTarget(cols, rows) : new Canvas(cols, rows);
 
+  if (gfx && teardown !== null) {
+    restoreOptions = { deleteImage: true };
+    await teardown.update(restoreOptions);
+  }
   process.stdout.write([
     `终端       ${t.cols}×${t.rows} 字符格${tty ? '' : '（不是 TTY —— 下面的探测结果没有意义）'}`,
     `档位       ${caps.tier}`,
@@ -451,8 +511,25 @@ async function cmdCaps(gfx: boolean): Promise<number> {
     gfx ? '' : '想单独验证 Kitty 图片链路：moyu doctor --gfx（不会改变日常自动选择）。',
   ].filter((x) => x !== '').join('\n') + '\n');
   // 协议自检刻意保持一条小图，避免 doctor 一次向 SSH 灌入整屏 RGB 数据。
-  if (gfx) drawGfxSelfTest(fieldColsFor(t.cols), 2, caps.cellW, caps.cellH);
-  return 0;
+    if (gfx) {
+      drawGfxSelfTest(fieldColsFor(t.cols), 2, caps.cellW, caps.cellH);
+      // 正常完成时诊断图必须留给用户观察；只有绘图过程中异常/被杀才让 supervisor 删除。
+      if (teardown !== null) {
+        await teardown.snapshot({ deleteImage: false });
+        restoreOptions = { deleteImage: false };
+      }
+    }
+    return 0;
+  } finally {
+    if (raw) {
+      try { process.stdin.setRawMode(wasRaw); } catch { /* 终端已经消失 */ }
+      process.stdin.pause();
+    }
+    if (teardown !== null) {
+      teardown.run();
+      try { await teardown.released(); } finally { activeTeardowns.delete(teardown); }
+    }
+  }
 }
 
 /**
@@ -497,11 +574,54 @@ function drawGfxSelfTest(cols: number, rows: number, cellW: number, cellH: numbe
 
 /* ────────────────────────────── 外壳 spike ────────────────────────────── */
 
+type PtyBoundary =
+  | { kind: 'alt-screen'; on: boolean; offset: number }
+  | { kind: 'display-erase'; offset: number };
+
+type ComposerBaseline = {
+  row: number;
+  cols: number;
+  innerRows: number;
+  screen: number;
+};
+
+type ComposerPermit = {
+  generation: number;
+  screen: number;
+  mode: 'verify' | 'repaint' | 'draft' | 'draft-verify';
+  preserveRow: boolean;
+  cols: number;
+  innerRows: number;
+  expectedRow: number;
+  minRow: number;
+  maxRow: number;
+  bestRow: number | null;
+  bestDistance: number;
+};
+
+type ComposerProposal = {
+  generation: number;
+  screen: number;
+  row: number;
+  cols: number;
+  innerRows: number;
+};
+
 async function cmdWrap(inner: string[]): Promise<number> {
   // 没有 TTY 就没有"分屏"可言（管道、CI、被别的程序调用）。这时候唯一正确的行为是
   // 完全退化成一层透明的转发 —— 装作外壳不存在，别把转义序列灌进人家的管道里。
-  if (!process.stdout.isTTY || !process.stdin.isTTY) return runBare(inner);
-  return new Shell(inner, shellEvents(), await loadGameModules()).run();
+  const resolved = resolveExecutable(inner[0]!);
+  if (resolved.kind === 'missing') {
+    process.stderr.write(`moyu: 找不到可执行命令 ${diagnosticLine(inner[0], '（空命令）')}\n`);
+    return 127;
+  }
+  if (resolved.kind === 'unusable') {
+    process.stderr.write(`moyu: 不能执行 ${diagnosticLine(inner[0], '（空命令）')}：${diagnosticLine(resolved.detail, '不可执行')}\n`);
+    return 126;
+  }
+  const argv = [resolved.path, ...inner.slice(1)];
+  if (!process.stdout.isTTY || !process.stdin.isTTY) return runBare(argv);
+  return new Shell(argv, shellEvents(), await loadGameModules()).run();
 }
 
 /** 每个外壳一条事件文件，避免多个 Codex/Claude 窗口互相触发。显式 MOYU_EVENTS 仍然优先。 */
@@ -519,13 +639,34 @@ function shellEvents(): { file: string; owned: boolean } {
 async function runBare(inner: string[]): Promise<number> {
   const { spawn } = await import('node:child_process');
   return new Promise<number>((resolve) => {
-    const child = spawn(inner[0]!, inner.slice(1), { stdio: 'inherit' });
-    child.on('error', (e) => { process.stderr.write(`moyu: 起不来 ${inner[0]}：${e.message}\n`); resolve(127); });
+    let settled = false;
+    const settle = (code: number): void => { if (!settled) { settled = true; resolve(code); } };
+    let child;
+    try {
+      child = spawn(inner[0]!, inner.slice(1), {
+        stdio: 'inherit',
+        shell: false,
+        env: scrubInternalEnv(),
+      });
+    } catch (error) {
+      process.stderr.write(`moyu: 起不来 ${diagnosticLine(inner[0], '（空命令）')}：${diagnosticLine(error, '启动失败')}\n`);
+      settle(invocationStatus(error));
+      return;
+    }
+    child.on('error', (error) => {
+      process.stderr.write(`moyu: 起不来 ${diagnosticLine(inner[0], '（空命令）')}：${diagnosticLine(error, '启动失败')}\n`);
+      settle(invocationStatus(error));
+    });
     child.on('exit', (code, signal) => {
       const signo = signal === null ? null : osConstants.signals[signal];
-      resolve(signo === null || signo === undefined ? (code ?? 0) : 128 + signo);
+      settle(signo === null || signo === undefined ? (code ?? 0) : 128 + signo);
     });
   });
+}
+
+function invocationStatus(error: unknown): 126 | 127 {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR' ? 127 : 126;
 }
 
 /** 真实终端尺寸。拿不到就给一个保守的默认值，而不是崩。 */
@@ -543,12 +684,25 @@ class Shell {
   private readonly surface = new PlaySurface();
   /** 已确认的 Codex 输入提示行；完整匹配 prompt 签名后才设置。 */
   private composerRow: number | null = null;
-  private composerCandidate: { row: number; col: number; index: number } | null = null;
-  /** true 时游戏覆盖在输入框上方两行，底部分屏仍保持一行候场几何。 */
+  /** 一次确认后持续有效；坐标失效不等于签名的来源不再可信。 */
+  private composerTrusted = false;
+  private composerCandidate: { row: number; col: number; index: number; generation: number } | null = null;
+  private composerProposal: ComposerProposal | null = null;
+  private composerBaseline: ComposerBaseline | null = null;
+  private composerPermit: ComposerPermit | null = null;
+  private composerGeneration = 0;
+  private composerSettleTimer: NodeJS.Timeout | null = null;
+  private composerExpiryTimer: NodeJS.Timeout | null = null;
+  /** 主屏/备用屏各自有一份坐标空间；切换一次就换一代。 */
+  private composerScreen = 0;
+  /** Passthrough 在一次 push 内按输出偏移排好的逻辑边界。 */
+  private readonly ptyBoundaries: PtyBoundary[] = [];
   private inlinePlay = false;
   private inlineTop: number | null = null;
+  /** 用户缩回两行后，即使坐标要等重绘确认，也应继续回到 inline。 */
+  private wantInline = false;
   private readonly preferComposerOverlay: boolean;
-  /** 收起那一行上一次写出去的字节，用来做“没变就不发”。 */
+  /** Last one-cell standby paint, used to suppress unchanged writes. */
   private lastBar = '';
   private layout: Layout | null = null;
 
@@ -568,6 +722,7 @@ class Shell {
 
   private pty: PtyHost | null = null;
   private timer: NodeJS.Timeout | null = null;
+  private hostTimer: NodeJS.Timeout | null = null;
   private tee: number | null = null;
   private ptyPaused = false;
 
@@ -577,7 +732,14 @@ class Shell {
   private skipped = 0;
   private lastToggle = 0;
   private resolve: ((code: number) => void) | null = null;
+  private outcome: number | null = null;
+  private stopping = false;
   private finished = false;
+  private removePtyData: (() => void) | null = null;
+  private removePtyExit: (() => void) | null = null;
+  private readonly stdinHandler = (chunk: Buffer): void => { this.onStdin(chunk); };
+  private readonly resizeHandler = (): void => { this.onResize(); };
+  private drainHandler: (() => void) | null = null;
 
   constructor(argv: string[], events: { file: string; owned: boolean }, modules: GameModule[]) {
     this.argv = argv;
@@ -606,21 +768,15 @@ class Shell {
       // "你有整个窗口"，内层照那个数排版就会算错，按窗口高度算的图还会溢进游戏区。
       // 回复要写进内层的 **stdin**，所以走 pty.write 而不是 this.write。
       onSizeQuery: (reply) => { this.pty?.write(reply); },
-      // 备用屏切换**不让屏**，只在新缓冲区上重建几何 —— 见 altscreen.ts 的文件头，
-      // 真实 claude 整个会话都待在备用屏上，让屏等于游戏永久消失。
-      onAltScreen: () => { this.onScreenSwap(); },
-      // ED 2 / ED 3 不受滚动区约束，会把游戏区和候场条一起擦掉。两种状态都有
-      // 输出缓存：只清画布/HUD 缓存会让收起状态误以为底栏还在，真实 Codex 启动
-      // 时切备用屏后再 ED 2，用户看到的正是“一直没有最下面那行”。
-      onDisplayErase: () => {
-        this.invalidateComposer();
-        this.target.invalidate(); this.lastBar = '';
-      },
+      // 回调只记录**改写输出里的有序边界**。状态变化要等 VtCursor 吃完边界前的字节再做，
+      // 否则同一 chunk 里的「旧 prompt → ED/切屏 → 新 prompt」会被倒序解释。
+      onAltScreen: (on, offset) => { this.ptyBoundaries.push({ kind: 'alt-screen', on, offset }); },
+      onDisplayErase: (offset) => { this.ptyBoundaries.push({ kind: 'display-erase', offset }); },
     });
     this.vt = new VtCursor({ cols: t.cols, rows: innerRows,
       onPrint: (cp, row, col) => { this.observeComposer(cp, row, col); } });
     this.target = new Canvas(t.cols, 1);
-    this.teardown = new Teardown(() => this.restoreState());
+    this.teardown = trackTeardown(new Teardown(() => this.restoreState()));
   }
 
   /** 退出时的还原参数。现场取值 —— 内层光标一直在动，安装时的快照到这会儿早过期了。 */
@@ -644,17 +800,17 @@ class Shell {
     // 那条路径会去打印栈，而屏幕已经没了。
     process.stdout.on('error', () => { /* 交给还原路径 */ });
 
+    const rawBaseline = process.stdin.isRaw;
     this.teardown.install();
-    this.teardown.onRestore(() => { this.stopFrames(); });
-    this.teardown.onRestore(() => { try { process.stdin.setRawMode(false); } catch { /* 已经不是 TTY 了 */ } });
+    this.teardown.onRestore(() => { this.quiesce(); });
+    this.teardown.onRestore(() => {
+      try { process.stdin.setRawMode(rawBaseline); } catch { /* 已经不是 TTY 了 */ }
+    });
     this.teardown.onRestore(() => { this.pty?.killNow(); });
     this.teardown.onRestore(() => { this.closeTee(); });
     this.teardown.onRestore(() => { this.cleanupEvents(); });
-    // 最后一个：删掉 bin/moyu 的接管标记。放最后是因为它的语义是"还原真的做完了"——
-    // 前面的钩子抛异常会被 Teardown 吞掉，但还原字节在那之前就已经写出去了，所以
-    // 走到这一步屏幕一定是干净的。SIGKILL 时这行跑不到，标记留着，sh 的 trap 接手。
-    this.teardown.onRestore(() => { clearTakeover(); });
-    markTakeover();
+    await this.teardown.acquire(this.restoreState());
+    if (this.stopping) return this.waitForOutcome();
 
     this.openTee();
 
@@ -671,10 +827,13 @@ class Shell {
       env: process.env,
       cols: t.cols, rows: t.rows, tty: true,
     });
+    if (this.stopping) return this.waitForOutcome();
     this.frameMs = 1000 / caps.fps;
     // 回答内层 `CSI 14/16 t` 用的格像素：探测值优于默认值，两档都要（半块档也会被问）。
     this.pass.cell = { w: caps.cellW, h: caps.cellH };
     if (caps.tier === 'graphics') {
+      await this.teardown.update({ deleteImage: true });
+      if (this.stopping) return this.waitForOutcome();
       // 尺寸随便给，下面 applyLayout 立刻按真实布局 resize 一次。
       this.target = new GraphicsTarget(t.cols, 1, caps.cellW, caps.cellH);
     } else if (caps.tier === 'braille') {
@@ -701,29 +860,39 @@ class Shell {
         args: this.argv.slice(1),
         cols: t.cols,
         rows: innerRows,
-        env: { ...process.env, MOYU_EVENTS: this.events.file },
+        env: { ...scrubInternalEnv(), MOYU_EVENTS: this.events.file },
       });
     } catch (e) {
+      if (this.stopping) return this.waitForOutcome();
       this.teardown.run();
-      process.stderr.write(`moyu: ${e instanceof Error ? e.message : String(e)}\n`);
-      return 127;
+      await this.teardown.released();
+      process.stderr.write(`moyu: ${diagnosticLine(e, '内层命令启动失败')}\n`);
+      return invocationStatus(e);
+    }
+    if (this.stopping) {
+      this.pty.killNow();
+      return this.waitForOutcome();
     }
 
-    this.pty.onData((data) => { this.onPtyData(data); });
-    this.pty.onExit(({ exitCode }) => { this.finish(exitCode); });
+    this.removePtyData = this.pty.onData((data) => { this.onPtyData(data); });
+    this.removePtyExit = this.pty.onExit(({ exitCode, signal }) => {
+      void this.finish(signal ? 128 + signal : exitCode);
+    });
 
     // 探测那 150ms 里用户抢跑敲的键。攒到现在才喂 —— 那会儿 PTY 还不存在，
     // 转发给谁都没有；丢掉的话用户会觉得"开头几个字符吃了"。
     if (caps.leftover.length > 0) this.onStdin(caps.leftover);
-    process.stdin.on('data', (chunk: Buffer) => { this.onStdin(chunk); });
+    process.stdin.on('data', this.stdinHandler);
 
     // 用 stdout 的 'resize' 而**不是** `process.on('SIGWINCH')`：SIGWINCH 的监听器顺序
     // 不保证排在 Node 自己刷新 `process.stdout.columns/rows` 之后，直接在信号里读尺寸
     // 会读到**上一次**的值。'resize' 是文档承诺"columns/rows 已经更新"之后才发的。
-    process.stdout.on('resize', () => { this.onResize(); });
+    process.stdout.on('resize', this.resizeHandler);
 
-    this.startFrames();
-    return new Promise<number>((resolve) => { this.resolve = resolve; });
+    this.startHostEvents();
+    this.syncFrames();
+    this.paintStandby();
+    return this.waitForOutcome();
   }
 
   /* ── 布局 ─────────────────────────────────────────────────────────── */
@@ -742,7 +911,8 @@ class Shell {
     const prevTop = this.layout?.gameTop;
     const clearFrom = prevTop === undefined ? l.gameTop : Math.min(prevTop, l.gameTop);
     this.layout = l;
-    this.invalidateComposerCandidate();
+    const resized = this.pty === null || this.pty.cols !== l.cols || this.pty.rows !== l.innerRows;
+    if (!resized) this.invalidateComposerCandidate();
 
     this.pass.region = { top: 1, bottom: l.innerRows };
     this.pass.cols = l.cols;
@@ -767,7 +937,7 @@ class Shell {
     seq += `\x1b[${clearFrom};1H\x1b[J`;
     this.write(seq + this.vt.restoreSeq());
 
-    this.pty?.resize(l.cols, l.innerRows);
+    this.resizePty(l.cols, l.innerRows);
   }
 
   /** 候场一行；安全回退路径也只打开两行。 */
@@ -786,24 +956,40 @@ class Shell {
     // 图就是纯粹的垃圾。展开时终端里那张已经没了，所以必须整幅重传，不能"没动就不发"。
     if (v) this.write(this.target.disposeSeq());
     else this.target.invalidate();
+    this.syncFrames();
     this.relayout();
+    if (v) this.paintStandby();
   }
 
-  /** 让出整屏。两个原因（用户收起 / 太小）共用这一条路径。 */
+  /** 终端太小时让出整屏，并永久把这次游戏焦点交还给 CLI。 */
   private onYield(): void {
     const t = termSize();
     const gameTop = Math.min(this.layout?.gameTop ?? t.rows, this.inlineTop ?? t.rows);
+    // 先归还输入；下面再按当前缓冲区撤滚动区和图片，不能让 resize 后重新吃游戏键。
+    this.returnToCli();
+    this.collapsed = true;
     // 先撤滚动区、擦掉游戏区，再把 PTY 调成整屏。反过来的话内层收到 SIGWINCH
     // 会立刻按整屏高度画，而滚动区还卡在上半屏，它画到底部时会被截断。
     // 让屏要顺手把终端里那张图删掉：擦文字擦不掉它（图是终端另存的一层），
     // 收起游戏区之后一张挂在那儿的图就是纯粹的垃圾。
     this.write(this.target.disposeSeq() + fullScrollRegionSeq() + `\x1b[${gameTop};1H\x1b[J` + this.vt.restoreSeq());
-    this.invalidateComposer();
-    if (this.inlinePlay) this.target.invalidate();
+    if (this.inlinePlay) {
+      this.inlinePlay = false;
+      this.inlineTop = null;
+      this.target.invalidate();
+    }
+    this.lastBar = '';
+    // Composer output at full-screen geometry must not mutate split-layout coordinates.
+    // resizePty keeps the durable pre-yield baseline for the resume transaction.
+    this.abortComposerOperation();
+    this.composerGeneration++;
+    this.composerRow = null;
+    this.inlineTop = null;
+    this.syncFrames();
     this.pass.region = { top: 1, bottom: t.rows };
     this.pass.cols = t.cols;
     this.vt.resize(t.cols, t.rows);
-    this.pty?.resize(t.cols, t.rows);
+    this.resizePty(t.cols, t.rows);
   }
 
   /** 收屏，重新分屏。 */
@@ -818,27 +1004,16 @@ class Shell {
       this.target.resize(fieldColsFor(t.cols), MICRO_GAME_ROWS);
       this.target.invalidate();
     }
+    this.syncFrames();
+    this.paintStandby();
   }
 
-  /**
-   * 内层切了备用屏（`?1049h` / `?1049l`）。**不让屏**，只把我们的几何在新缓冲区上重建。
-   *
-   * 为什么不让屏：实测真实 claude 2.1.260 启动时切过去就再也不回来（退出才 `?1049l`），
-   * 让屏等于游戏在启动一秒后永久消失、同屏合成根本没发生过。备用屏只是另一个缓冲区，
-   * 内层有多少行是我们用 TIOCSWINSZ 告诉它的，跟它画在哪个缓冲区上无关 ——
-   * 所以尺寸不用动，也**不要** resize PTY（那会白白触发内层一次全量重绘）。
-   *
-   * 两个缓冲区之间唯一的实质差别是 **DECSTBM 是每缓冲区各自一份**：切过去之后新缓冲区
-   * 的边距是默认的整屏，不重设的话内层换行就能滚到游戏区上。
-   *
-   * 必须推到 setImmediate：回调是在 `?1049h/l` 的字节**还没写出去**的时候触发的
-   * （Passthrough 先上报、再吐字节），这时候活动屏幕还是旧的那个。同步设滚动区就设到了
-   * 旧缓冲区上 —— 白设一遍，而真正要去的那个缓冲区还是整屏边距。
-   */
-  private onScreenSwap(): void {
+  /** 内层切换主屏/备用屏以后，在**新缓冲区**上重建外壳几何。 */
+  private onScreenSwap(_on: boolean): void {
+    const screen = this.composerScreen;
     setImmediate(() => {
       const l = this.layout;
-      if (this.finished || l === null) return;
+      if (this.finished || l === null || screen !== this.composerScreen) return;
       // live 是 target 级状态，但 kitty 图片实际按主/备用屏分别存。收起或让屏后切到另一个
       // 缓冲区时，那里可能还有旧图，必须在新缓冲区上再无条件删一次。
       if (this.arbiter.yielded) {
@@ -847,33 +1022,34 @@ class Shell {
       }
       if (this.inlinePlay) {
         const removeImage = this.target.tier === 'graphics' ? deleteImageSeq() : '';
-        this.invalidateComposer();
         this.target.invalidate();
         this.lastBar = '';
         this.write(removeImage + scrollRegionSeq(l)
           + `\x1b[${l.gameTop};1H\x1b[2K` + this.vt.restoreSeq());
+        this.paintFirstFrame();
         return;
       }
       if (this.collapsed) {
-        // Codex 启动时会切进备用屏。DECSTBM 与屏幕内容都不跨缓冲区：如果这里只
-        // 返回，新的屏幕既没有底栏，也没有保护游戏行的滚动区。清空缓存让下一帧
-        // 必定重画待机条，并先在当前（新）缓冲区重新建立一行布局。
+        // DECSTBM and screen contents are buffer-local. Rebuild the protected row, then repaint
+        // the one-cell marker immediately because no standby frame loop is running.
         const removeImage = this.target.tier === 'graphics' ? deleteImageSeq() : '';
         this.lastBar = '';
         this.write(removeImage + scrollRegionSeq(l)
           + `\x1b[${l.gameTop};1H\x1b[J` + this.vt.restoreSeq());
+        this.paintStandby();
         return;
       }
-      this.write(scrollRegionSeq(l) + `\x1b[${l.gameTop};1H\x1b[J` + this.vt.restoreSeq());
+    this.write(scrollRegionSeq(l) + `\x1b[${l.gameTop};1H\x1b[J` + this.vt.restoreSeq());
       // 新缓冲区上游戏区是空的（1049h 会清屏，也会清掉图），而画布只发变化 ——
       // 不 invalidate 就一直黑着。
       this.target.invalidate();
+      this.paintFirstFrame();
     });
   }
 
   private onResize(): void {
+    if (this.stopping) return;
     const t = termSize();
-    this.invalidateComposer();
     const r = computeLayout({ cols: t.cols, rows: t.rows, manualGameRows: this.wantGameRows() });
 
     if (r.kind !== 'split') {
@@ -882,7 +1058,7 @@ class Shell {
       this.pass.region = { top: 1, bottom: t.rows };
       this.pass.cols = t.cols;
       this.vt.resize(t.cols, t.rows);
-      this.pty?.resize(t.cols, t.rows);
+      this.resizePty(t.cols, t.rows);
       return;
     }
 
@@ -892,7 +1068,7 @@ class Shell {
       this.pass.region = { top: 1, bottom: t.rows };
       this.pass.cols = t.cols;
       this.vt.resize(t.cols, t.rows);
-      this.pty?.resize(t.cols, t.rows);
+      this.resizePty(t.cols, t.rows);
       return;
     }
     // flipped 为真时 onResume 已经排好了 applyLayout，别做第二遍。
@@ -901,6 +1077,8 @@ class Shell {
       this.target.resize(fieldColsFor(t.cols), MICRO_GAME_ROWS);
       this.target.invalidate();
     }
+    this.syncFrames();
+    this.paintStandby();
   }
 
   private relayout(): void {
@@ -914,7 +1092,8 @@ class Shell {
   /* ── 帧循环 ───────────────────────────────────────────────────────── */
 
   private startFrames(): void {
-    if (this.timer !== null) return;
+    const visible = this.inlinePlay || !this.collapsed;
+    if (this.timer !== null || !visible || this.arbiter.yielded || this.focus !== 'game') return;
     this.timer = setInterval(() => { this.tick(); }, this.frameMs);
     // 帧定时器不该把进程钉在事件循环上 —— 内层退出后我们要能自然收尾。
     this.timer.unref();
@@ -926,35 +1105,59 @@ class Shell {
     this.timer = null;
   }
 
+  private syncFrames(): void {
+    const visible = this.inlinePlay || !this.collapsed;
+    if (!this.finished && visible && !this.arbiter.yielded && this.focus === 'game') this.startFrames();
+    else this.stopFrames();
+  }
+
+  /** Entry paints now; the interval only schedules subsequent active frames. */
+  private paintFirstFrame(): void {
+    this.syncFrames();
+    if (this.timer !== null) this.tick();
+  }
+
+  private startHostEvents(): void {
+    if (this.hostTimer !== null) return;
+    this.hostTimer = setInterval(() => { this.pollHostEvents(); }, HOST_EVENT_MS);
+    this.hostTimer.unref();
+  }
+
+  private stopHostEvents(): void {
+    if (this.hostTimer === null) return;
+    clearInterval(this.hostTimer);
+    this.hostTimer = null;
+  }
+
+  private pollHostEvents(): void {
+    if (this.finished) return;
+    const before = this.game.status;
+    this.game.pollHostEvents(Date.now());
+    if (this.game.takeAction() === 'return-to-cli') this.returnToCli();
+    if (this.game.status !== before) this.paintStandby();
+  }
+
   private tick(): void {
     const l = this.layout;
     if (l === null || this.finished || this.arbiter.yielded) return;
     // 内层的吞吐优先于游戏：它在刷屏时我们丢帧，而不是把它的输出排在我们的队列后面。
     if (process.stdout.writableLength > BACKPRESSURE) { this.skipped++; return; }
     if (this.inlinePlay) { this.tickInline(l); return; }
-    if (this.collapsed) { this.tickCollapsed(l); return; }
+    if (this.collapsed) return;
 
     this.game.setDisplay(l.gameRows, this.target.tier);
     this.game.advance(Date.now());
     const body = this.surface.render(this.game, this.target, l.gameTop, l.cols, l.gameRows);
     this.frames++;
 
-    // A task event is an empty sentinel: save and return focus without audible interruption.
-    const alert = this.game.takeAlert();
-    if (alert !== null && this.focus === 'game') {
-      this.toggleFocus();
-      return;
-    }
-
     // 必须是**一次** write：中间被内层的输出插进来会同时撕裂两边的画面。
     //
     // 画布最后一格恰好是屏幕右下角，写它会置上"延迟换行"标志，但紧跟着的
     // restoreSeq 以 SGR 开头 —— 控制序列不会消费那个标志，只有可打印字符会。所以不会滚屏。
-    // **没动就不发**：画布没变（`body === ''`）+ HUD 文本没变 + 没有横幅 = 整帧零字节。
-    // 任务完成后的暂停就是这个状态，而那正是用户在读横幅、最不该有带宽噪声的时候。
-    // 隐藏光标那一对也一起省掉 —— 没画东西就没有光标要藏。
-    if (body === '' && alert === null) return;
-    this.write(`\x1b[?25l${alert ?? ''}${body}${this.vt.restoreSeq()}`);
+    // **没动就不发**：画布没变时整帧零字节。任务事件由独立定时器处理，
+    // 不需要靠渲染循环夹带任何哨兵或横幅。
+    if (body === '') return;
+    this.write(`\x1b[?25l${body}${this.vt.restoreSeq()}`);
   }
 
   /** 在 Codex 输入提示正上方绘制两行，不改变内层 PTY 尺寸或滚动区。 */
@@ -970,29 +1173,22 @@ class Shell {
     this.game.advance(Date.now());
     const body = this.surface.render(this.game, this.target, top, l.cols, MICRO_GAME_ROWS);
     this.frames++;
-    const alert = this.game.takeAlert();
-    if (alert !== null && this.focus === 'game') { this.toggleFocus(); return; }
-    if (body === '' && alert === null) return;
-    this.write(`\x1b[?25l${alert ?? ''}${body}${this.vt.restoreSeq()}`);
+    if (body === '') return;
+    this.write(`\x1b[?25l${body}${this.vt.restoreSeq()}`);
   }
 
-  /**
-   * 收起状态下那一行。
-   *
-   * Simulation advances without painting, so task state is still observed while bandwidth stays quiet.
-   */
-  private tickCollapsed(l: Layout): void {
-    this.game.advance(Date.now());
-    const alert = this.game.takeAlert();
-    if (alert !== null && this.focus === 'game') this.toggleFocus();
-    const h = this.game.hud();
-    const text = h.urgent ? `moyu · ${h.short} · Ctrl+] 开玩` : 'moyu  Ctrl+] 开玩';
-    // 最后一列留白：写屏幕右下角会置上延迟换行标志，见 hudSeq。
-    const seq = `${h.urgent ? SGR_URGENT : SGR_IDLE}`
-      + `\x1b[${l.gameTop};1H${fitRow('', text, Math.max(1, l.cols - 1))}\x1b[0m`;
-    if (seq === this.lastBar && alert === null) return;
+  /** Paint exactly one safe-edge cell; unchanged standby has no timer and emits no bytes. */
+  private paintStandby(): void {
+    const l = this.layout;
+    if (l === null || this.finished || this.arbiter.yielded || !this.collapsed) return;
+    const event = this.game.status !== 'idle';
+    // cols - 1 is deliberately not the bottom-right cell, which would arm delayed wrap.
+    const col = Math.max(1, l.cols - 1);
+    const seq = `${event ? SGR_STANDBY_EVENT : SGR_STANDBY_IDLE}`
+      + `\x1b[${l.gameTop};${col}H${event ? '•' : '·'}\x1b[0m`;
+    if (seq === this.lastBar) return;
     this.lastBar = seq;
-    this.write(`\x1b[?25l${alert ?? ''}${seq}${this.vt.restoreSeq()}`);
+    this.write(`\x1b[?25l${seq}${this.vt.restoreSeq()}`);
   }
 
   /* ── 数据流 ───────────────────────────────────────────────────────── */
@@ -1001,27 +1197,56 @@ class Shell {
     if (this.tee !== null) {
       try { fs.writeSync(this.tee, data); } catch { this.closeTee(); }
     }
+    this.ptyBoundaries.length = 0;
     const rewritten = this.pass.push(data);
+    let start = 0;
+    for (const boundary of this.ptyBoundaries) {
+      const end = Math.max(start, Math.min(rewritten.length, boundary.offset));
+      if (end > start) this.vt.feed(rewritten.subarray(start, end));
+      this.applyPtyBoundary(boundary);
+      start = end;
+    }
+    if (start < rewritten.length) this.vt.feed(rewritten.subarray(start));
+    const repaintStandby = this.ptyBoundaries.at(-1)?.kind === 'display-erase';
+    this.activateComposerProposal();
     if (rewritten.length === 0) return;
-    // 喂 VtCursor 的必须是**改写后**的字节：我们要还原的是真实终端光标的位置，
-    // 而真实终端看到的就是这一版。喂原始字节的话，一条被夹取的定位会让跟踪值和终端
-    // 实际状态分叉 —— 而这个分叉恰好只在"内层试图越界"时发生，也就是最需要还原正确的时候。
-    this.vt.feed(rewritten);
     // Codex 会按需重绘输入框附近；下一帧必须把被它盖掉的微型画面补回来。
     if (this.inlinePlay) this.target.invalidate();
     const ready = process.stdout.write(rewritten);
     if (!ready && !this.ptyPaused) {
       this.ptyPaused = true;
       this.pty?.pause();
-      process.stdout.once('drain', () => {
+      this.drainHandler = () => {
+        this.drainHandler = null;
+        if (this.stopping) return;
         this.ptyPaused = false;
         this.pty?.resume();
-      });
+      };
+      process.stdout.once('drain', this.drainHandler);
     }
+    // ED 0 is written before the marker: painting at the boundary would be erased by the very
+    // bytes that caused it. Active play owns its next frame instead of exposing standby.
+    if (repaintStandby && this.focus === 'cli' && this.collapsed) this.paintStandby();
+  }
+
+  private applyPtyBoundary(boundary: PtyBoundary): void {
+    this.abortComposerOperation();
+    if (this.inlinePlay) {
+      // ED/换屏已经擦掉旧 overlay；这里只撤销状态，不能在 PTY 控制序列写出前另写清行。
+      this.inlinePlay = false;
+      this.inlineTop = null;
+      this.target.invalidate();
+    }
+    if (boundary.kind === 'alt-screen') this.composerScreen++;
+    this.beginComposerRepaint(false);
+    this.target.invalidate();
+    this.lastBar = '';
+    this.syncFrames();
+    if (boundary.kind === 'alt-screen') this.onScreenSwap(boundary.on);
   }
 
   private onStdin(chunk: Uint8Array): void {
-    for (const a of this.router.route(chunk)) {
+    this.router.route(chunk, (a) => {
       switch (a.kind) {
         case 'forward': this.pty?.write(a.bytes); break;
         // 焦点在游戏：按键喂给游戏，**不**转发给内层（不然打字会跑进 claude 的输入框）。
@@ -1033,109 +1258,408 @@ class Shell {
           break;
         case 'toggle-focus': this.toggleFocus(); break;
       }
-    }
+    });
   }
 
   private toggleFocus(): void {
     const now = Date.now();
-    // 防止键盘自动重复在一次手势里立刻展开又收起。
-    if (this.focus === 'cli' && now - this.lastToggle < FOCUS_DEBOUNCE_MS) return;
-    this.lastToggle = now;
     const entering = this.focus === 'cli';
-    if (entering) this.expanded = false;
-    this.focus = entering ? 'game' : 'cli';
-    // latch 里可能还压着一个方向键。不清掉的话焦点一离开游戏，角色会自己再走 150ms。
+    // 防止键盘自动重复在一次手势里立刻展开又收起。
+    if (entering && now - this.lastToggle < FOCUS_DEBOUNCE_MS) return;
+    this.lastToggle = now;
+    if (!entering) { this.returnToCli(); return; }
+
+    this.expanded = false;
+    this.focus = 'game';
     this.game.keys.clear();
-    // 路由器必须跟着变。漏了这一行的后果是 HUD 说"焦点在游戏"、按键却还在往内层跑，
-    // 而且是**静默**的分叉 —— M0 里两条路都通向内层，所以症状要到 M1 才会显形。
-    this.router.focus = this.focus;
-    if (entering && this.canUseComposerOverlay()) this.startInlinePlay();
-    else if (!entering && this.inlinePlay) this.stopInlinePlay();
-    else this.setCollapsed(!entering);
-    if (entering) this.game.resume(); else this.game.pause();
+    this.router.focus = 'game';
+    this.wantInline = !this.expanded;
+    if (this.canUseComposerOverlay()) this.startInlinePlay();
+    else this.setCollapsed(false);
+    this.game.enter();
+    this.game.resume();
+    this.ensurePlayableSurface();
     this.lastBar = '';
+    this.paintFirstFrame();
+  }
+
+  /** Return keyboard and terminal ownership to the wrapped CLI without entry debounce. */
+  private returnToCli(): void {
+    this.focus = 'cli';
+    this.router.focus = 'cli';
+    this.game.keys.clear();
+    this.game.pause();
+    this.wantInline = false;
+    this.stopFrames();
+
+    if (this.arbiter.yielded) {
+      // The yield path owns image deletion and terminal geometry after input is surrendered.
+      this.inlinePlay = false;
+      this.inlineTop = null;
+      this.target.invalidate();
+      this.lastBar = '';
+      return;
+    }
+    if (this.inlinePlay) {
+      const needsResize = !this.collapsed;
+      this.stopInlinePlay(!needsResize);
+      this.setCollapsed(true);
+    } else this.setCollapsed(true);
+    this.paintStandby();
   }
 
   private observeComposer(cp: number, row: number, col: number): void {
-    if (!this.preferComposerOverlay) return;
+    if (!this.preferComposerOverlay || this.arbiter.yielded) return;
     const signature = ' Ask Codex';
+    const generation = this.composerGeneration;
     const candidate = this.composerCandidate;
-    if (candidate !== null && row === candidate.row && col === candidate.col) {
+    if (candidate !== null && candidate.generation === generation
+      && row === candidate.row && col === candidate.col) {
       if (cp === signature.codePointAt(candidate.index)) {
         candidate.index++;
         candidate.col++;
         if (candidate.index === signature.length) {
           this.composerCandidate = null;
-          this.confirmComposer(row);
+          this.observeExactComposer(row);
         }
         return;
       }
       this.composerCandidate = null;
-    } else if (candidate !== null) this.composerCandidate = null;
+    } else if (candidate !== null) {
+      this.composerCandidate = null;
+    }
+
     if (col <= 4 && row > MICRO_GAME_ROWS && (cp === 0x203a || cp === 0x276f)) {
-      this.composerCandidate = { row, col: col + 1, index: 0 };
+      const permit = this.composerPermit;
+      this.composerCandidate = { row, col: col + 1, index: 0, generation };
+      if (this.composerTrusted && permit !== null && permit.mode !== 'verify'
+        && permit.generation === generation && permit.screen === this.composerScreen
+        && row >= permit.minRow && row <= permit.maxRow) {
+        this.recordComposerCandidate(permit, row, false);
+      }
     }
   }
 
-  private confirmComposer(row: number): void {
+  private observeExactComposer(row: number): void {
+    const l = this.layout;
+    const permit = this.composerPermit;
+    if (!this.composerTrusted) {
+      const proposal = this.composerProposal;
+      if (permit?.mode === 'verify' && permit.generation === this.composerGeneration
+        && permit.screen === this.composerScreen && proposal !== null && l !== null
+        && proposal.generation === permit.generation && proposal.screen === permit.screen
+        && row === permit.expectedRow && row === proposal.row
+        && l.cols === proposal.cols && l.innerRows === proposal.innerRows) {
+        this.commitComposer(row, true);
+        return;
+      }
+      if (permit === null && l !== null && row > MICRO_GAME_ROWS) {
+        this.composerProposal = {
+          generation: this.composerGeneration,
+          screen: this.composerScreen,
+          row,
+          cols: l.cols,
+          innerRows: l.innerRows,
+        };
+      }
+      return;
+    }
+    if (permit !== null && permit.mode !== 'verify'
+      && permit.generation === this.composerGeneration && permit.screen === this.composerScreen
+      && row >= permit.minRow && row <= permit.maxRow) {
+      this.recordComposerCandidate(permit, row, true);
+    }
+  }
+
+  private activateComposerProposal(): void {
+    const proposal = this.composerProposal;
+    const l = this.layout;
+    if (proposal === null || this.composerTrusted || this.arbiter.yielded) return;
+    // Refresh acknowledgement and repaint can arrive in separate PTY chunks. Once verification
+    // is armed, unrelated output must not discard the proposal the repaint is bound to.
+    if (this.composerPermit !== null) return;
+    if (this.pty === null || l === null || proposal.generation !== this.composerGeneration
+      || proposal.screen !== this.composerScreen || proposal.cols !== l.cols
+      || proposal.innerRows !== l.innerRows) {
+      this.composerProposal = null;
+      return;
+    }
+    const generation = ++this.composerGeneration;
+    const permit: ComposerPermit = {
+      generation,
+      screen: proposal.screen,
+      mode: 'verify',
+      preserveRow: false,
+      cols: proposal.cols,
+      innerRows: proposal.innerRows,
+      expectedRow: proposal.row,
+      minRow: proposal.row,
+      maxRow: proposal.row,
+      bestRow: null,
+      bestDistance: Number.POSITIVE_INFINITY,
+    };
+    // Keep the proposal while the refresh is live so verification also binds to its geometry.
+    this.composerProposal = { ...proposal, generation };
+    this.composerPermit = permit;
+    this.scheduleComposerExpiry(permit);
+    if (this.pty.refresh() !== true) this.abortComposerOperation();
+  }
+
+  private recordComposerCandidate(permit: ComposerPermit, row: number, exact: boolean): void {
+    if (exact) {
+      // A full signature is authoritative. Discard provisional glyph-only rows so an earlier,
+      // closer transcript glyph cannot outrank the real composer during the same repaint.
+      permit.bestRow = row;
+      permit.bestDistance = -1;
+    } else if (permit.mode === 'draft' || permit.mode === 'draft-verify') {
+      const distance = Math.abs(row - permit.expectedRow);
+      // A non-empty draft has no fixed suffix. Its first repaint only nominates a row; a fresh
+      // same-size challenge must redraw that same row before it can become an anchor.
+      if (distance < permit.bestDistance || (distance === permit.bestDistance
+        && (permit.bestRow === null || row >= permit.bestRow))) {
+        permit.bestRow = row;
+        permit.bestDistance = distance;
+      }
+    } else if (permit.bestDistance >= 0) {
+      const distance = Math.abs(row - permit.expectedRow);
+      // Preserve-row refreshes may emit transcript first; a provisional glyph is never committed.
+      if (distance < permit.bestDistance || (distance === permit.bestDistance
+        && (permit.bestRow === null || row >= permit.bestRow))) {
+        permit.bestRow = row;
+        permit.bestDistance = distance;
+      }
+    }
+    if (exact || ((permit.mode === 'draft' || permit.mode === 'draft-verify')
+      && permit.bestRow === row)) this.scheduleComposerSettle(permit);
+  }
+
+  private resolveComposerPermit(permit: ComposerPermit): void {
+    const row = permit.bestRow;
+    if (row === null) return;
+    if (permit.bestDistance < 0 || permit.mode === 'draft-verify') {
+      this.commitComposer(row);
+      return;
+    }
+    if (permit.mode === 'draft') this.challengeDraftComposer(permit, row);
+  }
+
+  private challengeDraftComposer(permit: ComposerPermit, row: number): void {
+    const pty = this.pty;
+    const l = this.layout;
+    if (this.finished || pty === null || l === null || this.arbiter.yielded
+      || this.composerPermit !== permit || permit.generation !== this.composerGeneration
+      || permit.screen !== this.composerScreen || l.cols !== permit.cols
+      || l.innerRows !== permit.innerRows) return;
+    this.abortComposerOperation();
+    const generation = ++this.composerGeneration;
+    const challenge: ComposerPermit = {
+      generation,
+      screen: permit.screen,
+      mode: 'draft-verify',
+      preserveRow: false,
+      cols: permit.cols,
+      innerRows: permit.innerRows,
+      expectedRow: row,
+      minRow: row,
+      maxRow: row,
+      bestRow: null,
+      bestDistance: Number.POSITIVE_INFINITY,
+    };
+    this.composerPermit = challenge;
+    this.scheduleComposerExpiry(challenge);
+    if (pty.refresh() !== true) {
+      this.abortComposerOperation();
+      this.fallbackFromInlineInvalidation();
+    }
+  }
+
+  private commitComposer(row: number, establishTrust = false): void {
+    const l = this.layout;
+    if (this.arbiter.yielded || l === null || row <= MICRO_GAME_ROWS) return;
+    if (establishTrust) this.composerTrusted = true;
+    if (!this.composerTrusted) return;
+    this.abortComposerOperation();
     this.composerRow = row;
+    this.composerBaseline = { row, cols: l.cols, innerRows: l.innerRows, screen: this.composerScreen };
     if (this.inlinePlay && this.inlineTop !== null && row - MICRO_GAME_ROWS !== this.inlineTop) {
       setImmediate(() => {
         if (!this.inlinePlay || this.composerRow === null || this.inlineTop === this.composerRow - MICRO_GAME_ROWS) return;
         this.stopInlinePlay(); this.startInlinePlay();
       });
     }
-    if (this.focus === 'game' && !this.expanded && this.collapsed && !this.inlinePlay) {
+    if (this.focus === 'game' && !this.expanded && this.wantInline && !this.inlinePlay) {
       setImmediate(() => {
-        if (this.focus === 'game' && !this.expanded && this.collapsed && !this.inlinePlay && this.canUseComposerOverlay()) this.startInlinePlay();
+        if (this.focus === 'game' && !this.expanded && this.wantInline && !this.inlinePlay
+          && this.canUseComposerOverlay()) this.startInlinePlay();
       });
     }
   }
 
-  private invalidateComposerCandidate(): void { this.composerCandidate = null; }
-  private invalidateComposer(): void {
+  private invalidateComposerCandidate(): void {
+    this.abortComposerOperation();
+    this.composerGeneration++;
+  }
+
+  private resizePty(cols: number, rows: number): void {
+    const pty = this.pty;
+    if (pty === null || (pty.cols === cols && pty.rows === rows)) return;
+    if (this.arbiter.yielded) {
+      // Full-screen yield is not a split-layout repaint transaction. Keep the durable split
+      // baseline and reacquire only after onResume installs the new split geometry.
+      this.abortComposerOperation();
+      this.composerGeneration++;
+      this.composerRow = null;
+      this.inlineTop = null;
+      if (this.inlinePlay) {
+        this.inlinePlay = false;
+        this.target.invalidate();
+      }
+      pty.resize(cols, rows);
+      return;
+    }
+    this.beginComposerRepaint(false, cols, rows);
+    if (pty.resize(cols, rows) !== true) {
+      this.abortComposerOperation();
+      this.fallbackFromInlineInvalidation();
+    }
+  }
+
+  /** Arm a transaction before an operation that can redraw the composer. */
+  private beginComposerRepaint(preserveRow: boolean, cols?: number, innerRows?: number): void {
+    this.abortComposerOperation();
+    const l = this.layout;
+    const nextCols = cols ?? l?.cols;
+    const nextRows = innerRows ?? l?.innerRows;
+    const baseline = this.composerBaseline;
+    const row = this.composerRow ?? baseline?.row;
+    const generation = ++this.composerGeneration;
+    if (!preserveRow) {
+      this.composerRow = null;
+      this.inlineTop = null;
+      if (this.inlinePlay) {
+        this.inlinePlay = false;
+        this.target.invalidate();
+      }
+    }
+    if (!this.composerTrusted || baseline === null || nextCols === undefined || nextRows === undefined
+      || row === null || row === undefined) return;
+    const expected = clampRow(row + (nextRows - baseline.innerRows), nextRows);
+    const widthChanged = baseline.cols !== nextCols;
+    const radius = widthChanged ? Math.max(4, Math.min(12, Math.floor(nextRows / 3))) : 2;
+    const permit: ComposerPermit = {
+      generation,
+      screen: this.composerScreen,
+      mode: preserveRow ? 'repaint' : 'draft',
+      preserveRow,
+      cols: nextCols,
+      innerRows: nextRows,
+      expectedRow: expected,
+      minRow: Math.max(MICRO_GAME_ROWS + 1, expected - radius),
+      maxRow: Math.min(nextRows, expected + radius),
+      bestRow: null,
+      bestDistance: Number.POSITIVE_INFINITY,
+    };
+    this.composerPermit = permit;
+    this.scheduleComposerExpiry(permit);
+  }
+
+  private scheduleComposerSettle(permit: ComposerPermit): void {
+    if (this.composerSettleTimer !== null) clearTimeout(this.composerSettleTimer);
+    this.composerSettleTimer = setTimeout(() => {
+      this.composerSettleTimer = null;
+      if (this.finished || this.composerPermit !== permit || permit.generation !== this.composerGeneration
+        || permit.screen !== this.composerScreen) return;
+      this.resolveComposerPermit(permit);
+    }, COMPOSER_SETTLE_MS);
+    this.composerSettleTimer.unref();
+  }
+
+  private scheduleComposerExpiry(permit: ComposerPermit): void {
+    if (this.composerExpiryTimer !== null) clearTimeout(this.composerExpiryTimer);
+    this.composerExpiryTimer = setTimeout(() => {
+      this.composerExpiryTimer = null;
+      if (this.finished || this.composerPermit !== permit || permit.generation !== this.composerGeneration
+        || permit.screen !== this.composerScreen) return;
+      if (permit.bestRow !== null) {
+        this.resolveComposerPermit(permit);
+        return;
+      }
+      // A silent same-size refresh leaves a still-valid row; invalidating operations stay invalid.
+      this.abortComposerOperation();
+      if (!permit.preserveRow) this.fallbackFromInlineInvalidation();
+    }, COMPOSER_PERMIT_MS);
+    this.composerExpiryTimer.unref();
+  }
+
+  private abortComposerOperation(): void {
     this.composerCandidate = null;
-    this.composerRow = null;
-    this.inlineTop = null;
+    this.composerProposal = null;
+    this.composerPermit = null;
+    if (this.composerSettleTimer !== null) clearTimeout(this.composerSettleTimer);
+    if (this.composerExpiryTimer !== null) clearTimeout(this.composerExpiryTimer);
+    this.composerSettleTimer = null;
+    this.composerExpiryTimer = null;
+  }
+
+  private clearComposerTimers(): void {
+    this.abortComposerOperation();
+  }
+
+  private fallbackFromInlineInvalidation(): void {
+    if (this.focus !== 'game' || this.expanded || !this.wantInline || this.inlinePlay) return;
+    this.collapsed = false;
+    this.relayout();
+    this.paintFirstFrame();
   }
 
   private toggleSize(): void {
     if (this.focus !== 'game') return;
-    if (this.inlinePlay) this.stopInlinePlay();
+    if (this.inlinePlay) this.stopInlinePlay(false);
     this.expanded = !this.expanded;
-    // Expanded views use a protected bottom region. The PTY resize invalidates old composer rows.
-    this.invalidateComposer();
+    this.wantInline = !this.expanded;
     this.collapsed = false;
     this.relayout();
-    if (!this.expanded) {
-      // Allow Codex's resize repaint to supply a fresh anchor before moving back inline.
-      setTimeout(() => {
-        if (this.focus !== 'game' || this.expanded || this.inlinePlay || !this.canUseComposerOverlay()) return;
-        this.setCollapsed(true);
-        this.invalidateComposer();
-        this.pty?.refresh();
-      }, 80).unref();
-    }
+    const l = this.layout;
+    if (l !== null) this.game.setDisplay(l.gameRows, this.target.tier);
+    if (!this.game.playable()) { this.returnToCli(); return; }
+    this.paintFirstFrame();
+  }
+
+  private ensurePlayableSurface(): void {
+    if (this.focus !== 'game' || this.game.playable()) return;
+    const l = this.layout;
+    if (l === null) { this.returnToCli(); return; }
+    this.expanded = true;
+    this.wantInline = false;
+    this.collapsed = false;
+    const t = termSize();
+    const r = computeLayout({ cols: t.cols, rows: t.rows, manualGameRows: this.wantGameRows() });
+    if (r.kind !== 'split') { this.returnToCli(); return; }
+    this.applyLayout(r.layout, 'resize');
+    this.game.setDisplay(r.layout.gameRows, this.target.tier);
+    if (!this.game.playable()) this.returnToCli();
   }
 
   private canUseComposerOverlay(): boolean {
-    return this.preferComposerOverlay && this.layout !== null && this.composerRow !== null
-      && this.composerRow > MICRO_GAME_ROWS;
+    return this.preferComposerOverlay && !this.arbiter.yielded && this.layout !== null
+      && this.composerRow !== null && this.composerRow > MICRO_GAME_ROWS;
   }
 
   private startInlinePlay(): void {
     const l = this.layout;
-    if (l === null || this.composerRow === null) return;
+    if (this.arbiter.yielded || l === null || this.composerRow === null) return;
+    this.wantInline = true;
     this.inlinePlay = true;
     this.inlineTop = this.composerRow - MICRO_GAME_ROWS;
     this.target.resize(fieldColsFor(l.cols), MICRO_GAME_ROWS);
     this.target.invalidate();
     this.lastBar = '';
+    this.syncFrames();
     // 收掉最底部的候场提示；游戏本体只出现在输入框上方。
     this.write(this.target.disposeSeq() + `\x1b[${l.gameTop};1H\x1b[2K` + this.vt.restoreSeq());
   }
 
-  private stopInlinePlay(): void {
+  private stopInlinePlay(refresh = true): void {
     const l = this.layout;
     const top = this.inlineTop;
     let seq = this.target.disposeSeq();
@@ -1143,19 +1667,52 @@ class Shell {
     this.inlinePlay = false;
     this.inlineTop = null;
     this.target.invalidate();
+    this.syncFrames();
     if (l !== null) seq += this.vt.restoreSeq();
     this.write(seq);
-    // 清行只能删掉游戏，真正属于 Codex 的内容交给它自己按当前状态重画。
-    this.pty?.refresh();
+    // 清行只能删掉游戏，真正属于 Codex 的内容交给它自己按当前状态重画。相同尺寸的
+    // SIGWINCH 可能一个字节都不产出，所以保留现有坐标；若有 ED/新 glyph 再原子替换。
+    if (refresh) {
+      this.beginComposerRepaint(true);
+      if (this.pty?.refresh() !== true) this.abortComposerOperation();
+    }
   }
 
   /* ── 收尾 ─────────────────────────────────────────────────────────── */
 
-  private finish(code: number): void {
+  /** Stop every asynchronous producer before terminal restoration begins. */
+  private quiesce(): void {
+    if (this.stopping) return;
+    this.stopping = true;
+    this.stopFrames();
+    this.stopHostEvents();
+    this.clearComposerTimers();
+    process.stdin.off('data', this.stdinHandler);
+    process.stdin.pause();
+    process.stdout.off('resize', this.resizeHandler);
+    if (this.drainHandler !== null) process.stdout.off('drain', this.drainHandler);
+    this.drainHandler = null;
+    this.ptyPaused = false;
+    this.removePtyData?.();
+    this.removePtyData = null;
+    this.removePtyExit?.();
+    this.removePtyExit = null;
+  }
+
+  /** Preserve an early PTY outcome until run() reaches its final await. */
+  private waitForOutcome(): Promise<number> {
+    if (this.outcome !== null) return Promise.resolve(this.outcome);
+    return new Promise((resolve) => { this.resolve = resolve; });
+  }
+
+  private async finish(code: number): Promise<void> {
     if (this.finished) return;
     this.finished = true;
-    this.stopFrames();
+    this.outcome = code;
+    try { await this.teardown.snapshot(this.restoreState()); } catch { /* supervisor 可能已经断开 */ }
     this.teardown.run();
+    try { await this.teardown.released(); } catch { /* 本地已同步还原 */ }
+    activeTeardowns.delete(this.teardown);
     const r = this.resolve;
     this.resolve = null;
     r?.(code);
@@ -1190,23 +1747,8 @@ class Shell {
   }
 }
 
-/**
- * `bin/moyu` 的接管标记。它的语义是"屏幕还欠一次还原"。
- *
- * 用标记文件而不是退出码，因为退出码分不清两件事：内层 CLI 自己退出码 130 是很正常的，
- * 不代表屏幕坏了。而重复还原有真实代价 —— `?1049l` 自带一次光标恢复，
- * 会把用户 shell 的光标搬到一个陈旧的位置去。
- */
-function markTakeover(): void {
-  const p = process.env.MOYU_TAKEOVER_FLAG;
-  if (p === undefined || p === '') return;
-  try { fs.writeFileSync(p, 'taken\n'); } catch { /* 没标记只是少一层兜底，不该因此不启动 */ }
-}
-
-function clearTakeover(): void {
-  const p = process.env.MOYU_TAKEOVER_FLAG;
-  if (p === undefined || p === '') return;
-  try { fs.unlinkSync(p); } catch { /* 已经没了 */ }
+function clampRow(row: number, innerRows: number): number {
+  return Math.max(MICRO_GAME_ROWS + 1, Math.min(innerRows, row));
 }
 
 export { main };
@@ -1229,11 +1771,18 @@ function isEntry(entry: string): boolean {
 const entry = process.argv[1];
 if (entry !== undefined && isEntry(entry)) {
   main().then(
-    (code) => { process.exit(code); },
-    (e: unknown) => {
-      // 到这里说明还原钩子已经跑过了（Teardown 挂了 uncaughtException），屏幕是干净的。
-      process.stderr.write(`moyu: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`);
-      process.exit(1);
+    async (code) => {
+      activeTeardowns.clear();
+      await completeSupervision();
+      process.exitCode = code;
+    },
+    async (e: unknown) => {
+      process.stderr.write(`moyu: ${diagnosticLine(e, '未处理异常')}\n`);
+      releaseActiveTeardowns();
+      await Promise.allSettled([...activeTeardowns].map((teardown) => teardown.released()));
+      activeTeardowns.clear();
+      try { await completeSupervision(); } catch { /* 原始异常决定退出状态 */ }
+      process.exitCode = 1;
     },
   );
 }

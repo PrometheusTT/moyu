@@ -1,186 +1,241 @@
-# 摸鱼 Moyu
+<div align="center">
 
-**Agent 在干活，你在掌机里。任务一结束，一键回到工作。**
+<h1>摸鱼 Moyu</h1>
 
-Moyu 是一个很轻的终端游戏宿主。它把 Codex、Claude Code 或其他 coding CLI 原样包起来，
-平时只在右下角占一行；按一次 `Ctrl+]`，Codex 输入框上方两行就变成一台微型掌机。
-首次进入会显示操作说明，按游戏操作键开始，`?` 随时查看帮助。`E` 主动展开为六行，
-空间不足时使用四行；贪吃蛇与落块需要六行完整棋盘，两行中显示展开入口。
-不需要账户、服务端或首次配置，SSH 和 Termius 也能直接玩。
+<p><strong>Agent 在干活，你在掌机里。任务一结束，一键回到工作。</strong></p>
+
+<p>
+  <a href="https://github.com/PrometheusTT/moyu/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/PrometheusTT/moyu/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/PrometheusTT/moyu/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/PrometheusTT/moyu?display_name=tag&sort=semver"></a>
+  <img alt="Node.js 20 or newer" src="https://img.shields.io/badge/Node.js-%E2%89%A520-339933?logo=node.js&logoColor=white">
+  <a href="./LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+</p>
+
+<img src="./pic.png" width="760" alt="Moyu 的终端像素掌机插画">
+
+<p>
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#它如何工作">工作方式</a> ·
+  <a href="#cartridge-游戏生态">Cartridge</a> ·
+  <a href="./CONTRIBUTING.md">参与贡献</a> ·
+  <a href="./docs/troubleshooting.md">故障排查</a>
+</p>
+
+</div>
+
+Moyu 是一个轻量、local-first 的终端游戏宿主。它把 Codex、Claude Code 或其他 coding CLI
+放进真实 PTY，平时只在终端右下安全边缘显示一个安静的 `·`。按一次 `Ctrl+]`，即可在不
+结束 agent 会话的前提下打开掌机；任务完成后，Moyu 保存游戏、把输入交还 CLI，并用 `•`
+提示有未查看事件。
+
+> [!IMPORTANT]
+> Moyu 当前处于 `0.x` 阶段。核心终端安全边界有完整自动化测试，但 Cartridge API 在 `1.0`
+> 之前仍可能调整。生产工作流中请先运行 `moyu doctor`，并保留常用终端的正常恢复手段。
+
+## 为什么是 Moyu
+
+- **工作优先**：CLI 的输入、输出、信号、退出码和终端状态始终优先于游戏。
+- **一键往返**：`Ctrl+]` 进入或离开游戏；不会结束正在运行的 Codex/Claude 会话。
+- **两行也能玩**：Codex 中可将 80×8 的微型构图放在输入框正上方两行。
+- **多档渲染**：Kitty Graphics、彩色 Braille、半块字符逐级降级。
+- **本地优先**：无需账户、daemon 或运行时服务端；存档保存在本机。
+- **可扩展**：内置动作、网格和落块三类游戏，也支持本地 JavaScript Cartridge。
+- **为终端失败而设计**：resize、备用屏、背压、信号退出和 worker 崩溃都有恢复路径。
 
 ```text
 ┌──────────────────── coding CLI ────────────────────┐
-│  agent 正在运行；你的输入、滚屏和快捷键照常工作     │
-│  ⠈⠙⠦ 火柴快斩 / 贪吃蛇 / 落块（仅两行）          │
+│  agent 正在运行；输入、滚屏与快捷键仍属于 CLI       │
+│  ⠈⠙⠦ 火柴快斩 / 贪吃蛇 / 落块（两行微型模式）     │
 ├──────────────────── Codex 输入框 ──────────────────┤
 └────────────────────────────────────────────────────┘
 ```
 
-## 安装
+## 快速开始
+
+### 环境要求
+
+- Node ≥ 20（Node.js 20 或更高版本）
+- macOS、Linux，或 Windows WSL
+- 一个交互式终端；普通 UTF-8 + ANSI 终端即可使用字符渲染
+
+### 安装
 
 ```sh
-npm i -g github:PrometheusTT/moyu
+npm install --global moyu-game
+moyu doctor
 ```
 
-需要 **Node ≥ 20**，支持 macOS、Linux 和 Windows WSL。发布包带编译产物和预编译 PTY，
-安装时不编译、不启动 daemon，也没有运行时网络请求。
+发布包包含编译后的 `dist/`，安装过程不需要 TypeScript、不执行构建脚本，也不会启动后台
+服务。需要验证尚未发布的默认分支时，也可以使用
+`npm install --global github:PrometheusTT/moyu`。
 
-## 开始玩
+升级或卸载：
+
+```sh
+npm install --global moyu-game@latest  # 升级到最新稳定版
+npm uninstall --global moyu-game       # 卸载
+```
+
+### 开始玩
 
 ```sh
 moyu -- codex          # 包住 Codex
 moyu -- claude         # 包住 Claude Code
-moyu play              # 不包 CLI，直接打开掌机
+moyu play              # 独立打开掌机
 moyu play snake        # 直接进入指定游戏
+moyu games list        # 查看可用 Cartridge
 ```
 
-外壳默认把输入完整交给 coding CLI：
+第一次建议先运行 `moyu play` 熟悉按键，再包裹正在使用的 coding CLI。
 
-| 按键 | 作用 |
-|---|---|
-| `Ctrl+]` | 一次按键进入或离开游戏；SSH 可直接透传，也不占用输入法切换键 |
-| `F12` | 兼容备用键，同样进入或离开 |
-| `Ctrl+Space` | Moyu 永不占用；原样交给 CLI / 输入法 |
-| `Esc` / `q` | 从游戏回到 CLI，不结束 agent 会话 |
-| `Ctrl+C` | 始终交给 coding CLI |
-| `Ctrl+G` | 始终交给 Codex/Claude，Moyu 不再占用 |
-| `Tab` | 游戏中切换 Cartridge |
-| `E` | 两行／展开切换，展开区域位于底部 |
-| `?` | 查看或关闭操作帮助，查看时游戏暂停 |
+## 操作
 
-火柴快斩使用 `A/D` 或方向键移动、空格跳跃、`J` 攻击。贪吃蛇与落块使用
-`WASD` 或方向键；落块可用空格直落。游戏状态会保存在 `~/.moyu/state/`。
-收起和查看帮助时暂停游戏，返回后接着玩；磁盘存档目前保留战绩，不保存整局进度。
+外壳默认把输入完整交给 coding CLI，只有明确进入游戏后，游戏键才由 Moyu 接管。
 
-## 图片画质与字符兼容
+| 按键 | 行为 |
+| --- | --- |
+| `Ctrl+]` | 进入或离开游戏；SSH 下也可直接透传 |
+| `F12` | `Ctrl+]` 的兼容备用键 |
+| `Esc` / `q` | 从游戏返回 CLI，不结束 agent 会话 |
+| `Tab` | 切换 Cartridge |
+| `E` | 在两行微型视图与展开视图之间切换 |
+| `?` | 显示或关闭帮助；帮助打开时暂停游戏 |
+| `WASD` / 方向键 | 移动；不同 Cartridge 会使用其中一部分 |
+| `J` / 空格 | 主动作、攻击、跳跃或直落，取决于当前游戏 |
+| `Ctrl+C` / `Ctrl+G` / `Ctrl+Space` | 始终交给 coding CLI，不被 Moyu 占用 |
 
-Moyu 有三层渲染能力：
+内置游戏：
 
-1. **Kitty Graphics**通过探测后提供真正 RGB 像素。火柴快斩直接按设备像素绘制，使用
-   独立镜头、连续轮廓和线性颜色空间的边缘覆盖率，不再先缩进 180×44 再放大。
-2. **彩色 Braille**是通用兼容档：一个终端字符承载 2×4 个点位。它只使用 Unicode 与 ANSI，
-   作为主流 UTF-8 终端的兼容路径。不同字体与行距仍需实机验证。内嵌画面继承终端的默认
-   前景与背景色，不会在输入框旁贴一块与主题不一致的黑色矩形。
-3. **半块字符**只作为明确指定的最低兼容档。
+- **Stick Slash / 火柴快斩**：移动、跳跃、攻击；十个 30 秒章节组成约五分钟的一轮。
+- **Snake / 贪吃蛇**：方向键或 WASD 转向。
+- **Blocks / 落块**：方向键或 WASD 移动，空格直落。
 
-字符兼容档不等于图片画质。当前完成的是原生像素升级第一阶段，iTerm2/Sixel 尚未接入，
-会在真实终端样片验收后实施。Termius 没有通过图片探测时仍使用字符档，不承诺 Kitty 级画质。
-`moyu play` 当前仍是独立字符模式；新像素路径在 `moyu -- codex` 和 `doctor --visual` 中使用。
+存档默认位于 `~/.moyu/state/`。收起游戏、查看帮助或隐藏画面时模拟会暂停，不会在恢复后
+突然追帧。
 
-`MOYU_TIER=graphics` 现在只是“优先尝试”：探测失败会安全回到 Braille，不会再向 Termius
-盲发图片协议导致空白。只有调试终端协议时才应使用严格覆盖：
+## 它如何工作
+
+Moyu 不模拟 shell。它启动一个真实 PTY，并在终端、宿主与内层 CLI 之间维护清晰的所有权：
+
+1. `bin/moyu` 选择源码或编译入口，并启动独立 supervisor。
+2. worker 在接管 raw mode、滚动区或 Kitty 图片前先提交 terminal lease。
+3. 内层 CLI 输出经过字节级透传，只重写必须限制在安全区域内的终端坐标。
+4. 游戏帧是可丢弃工作；stdout 拥塞时优先暂停游戏并保证 CLI 字节有序。
+5. worker 异常退出或被 `SIGKILL` 后，supervisor 使用最后确认的状态恢复终端。
+
+更完整的模块边界、生命周期和测试层级见 [架构说明](./docs/architecture.md)。不可协商的产品
+约束记录在 [PRODUCT.md](./PRODUCT.md)。
+
+## 渲染与兼容性
+
+| 档位 | 适用环境 | 特点 |
+| --- | --- | --- |
+| Kitty Graphics | Kitty、Ghostty、WezTerm 等兼容终端 | 原生 RGB 设备像素、最高画质 |
+| 彩色 Braille | 主流 UTF-8/ANSI 终端、SSH、Termius | 每字符 2×4 逻辑像素，通用默认回退 |
+| 半块字符 | 字形或协议能力受限的终端 | 每字符 1×2 逻辑像素，最低兼容档 |
+
+Moyu 会主动探测能力。探测明确失败时不会盲发图片协议；在 `tmux`/`screen` 中默认使用字符档。
+SSH 将宿主帧率降为 15 fps，本地默认为 30 fps。
+
+调试覆盖：
 
 ```sh
-MOYU_TIER=graphics moyu -- codex         # 安全尝试图片档
-MOYU_TIER=braille moyu -- codex          # 明确使用字符兼容档
-MOYU_THEME=light moyu -- codex           # 火柴快斩原生像素路径使用浅色画布
-MOYU_FORCE_GRAPHICS=1 moyu -- codex      # 严格强制；不支持的终端可能空白或乱码
-MOYU_REDUCE_MOTION=1 moyu -- codex       # 关闭震屏和闪白
-MOYU_OVERLAY=1 moyu -- my-codex-alias    # 自定义启动器也启用“输入框上方两行”识别
+MOYU_TIER=graphics moyu -- codex      # 优先尝试图片档，失败时安全回退
+MOYU_TIER=braille moyu -- codex       # 强制通用字符档
+MOYU_TIER=half moyu -- codex          # 强制最低兼容档
+MOYU_CELL=16x34 moyu -- codex         # 手动指定终端格像素
+MOYU_THEME=light moyu -- codex        # 原生像素浅色主题
+MOYU_REDUCE_MOTION=1 moyu -- codex    # 关闭震屏与闪白
+MOYU_OVERLAY=1 moyu -- my-codex       # 为自定义 Codex 启动器启用输入框识别
 ```
 
-本阶段仍保留 SSH 15 fps、本地 30 fps；统一背压和自适应调度属于下一阶段。
-字符游戏绘制在固定逻辑画布上，
-标准画面和 80×8 微型画面共享同一份角色、碰撞、姿态与游戏进度；微型画面会重新构图，
-而不是把完整场景硬压扁。Codex 中它固定贴在输入框上方两行；识别不到输入框的 CLI 会安全
-回退到底部两行。候场在右下角显示 `moyu  Ctrl+] 开玩`。
-字符人物保持一致的点阵笔触，棋盘使用连续块面；火柴快斩图片档直接绘制到目标像素。
-像素画布当前默认暗色，用 `MOYU_THEME=light` 明确切换，不会修改终端主题。
-可读性与终端验证记录见 [终端验收](docs/terminal-qa.md)。
+客户端实测状态、性能基线和人工验收步骤见 [终端兼容与视觉 QA](./docs/terminal-qa.md)。
 
 ## 可选的任务联动
 
-不装 hook 也能玩。想让任务完成时自动保存、回到 CLI，并在底栏留下完成标记：
+不安装 hook 也能完整游玩。启用后，任务开始、完成或需要确认时，Moyu 可以保存状态、交还
+输入焦点并更新候场标记。
 
 ```sh
-moyu setup                    # 安装已检测到的 Codex / Claude Code hook
-moyu install                  # 只预览将要修改什么
-moyu install --write          # 与 setup 等价，实际写入并先备份
-moyu install --uninstall --write
+moyu setup                         # 为检测到的 Codex / Claude Code 安装 hook
+moyu install                       # 只预览计划，不写文件
+moyu install --write               # 写入，并先备份原配置
+moyu install --uninstall --write   # 卸载 Moyu 自己添加的部分
 ```
 
-Codex 配置写入 `~/.codex/hooks.json`，Claude Code 配置写入 `~/.claude/settings.json`；
-已有配置会合并保留，实际修改前会生成带时间戳的备份。
+Codex 配置位于 `~/.codex/hooks.json`，Claude Code 配置位于 `~/.claude/settings.json`。
+安装器会合并而不是覆盖已有配置。hook 只追加时间戳和 `start` / `done` / `notify` 事件，不写入
+prompt、命令、输出、错误文本、文件路径或仓库名。
 
-hook 只向当前会话的事件文件追加 `时间戳 + start/done/notify`。它不写 prompt、命令输出、
-错误文本、命令、文件路径和仓库名。其他 agent CLI 可以调用 `moyu signal start` / `moyu signal done` 接入。
+Codex 首次加载新 hook 时会显示 `Hooks need review`；需要选择 `Trust all and continue` 才会生效。
 
-Codex 首次加载新 hook 会显示 `Hooks need review`；请选择 **`Trust all and continue`**，
-否则 Codex 会按安全策略保持 hook 禁用。Claude Code 不需要这一步。
+## Cartridge 游戏生态
 
-## Cartridge：把终端变成游戏社区
-
-当前内置三个不同类型的游戏：`stick-slash`、`snake`、`blocks`。宿主提供固定步长更新、
-逻辑帧缓冲、统一输入、任务事件、存档和多档终端渲染；游戏本身不接触终端转义序列。
+本地 Cartridge 是一个包含 `moyu.game.json` 和 ESM 入口的目录：
 
 ```sh
-moyu games list
-moyu games add ./my-game              # 先展示代码权限警告，不安装
-moyu games add ./my-game --yes        # 信任并安装到 ~/.moyu/games/
+moyu games add ./my-game          # 预览权限警告
+moyu games add ./my-game --yes    # 明确信任后安装
 moyu games remove my-game --yes
 ```
 
-Cartridge 目录包含 `moyu.game.json` 和一个 ESM 入口：
+> [!WARNING]
+> Cartridge 是受信任的本地 JavaScript 代码，不是沙箱。它拥有与 Moyu 进程相同的文件和网络
+> 权限。只安装你阅读过或信任来源的 Cartridge。
 
-```json
-{
-  "id": "my-game",
-  "name": "My Game",
-  "version": "1.0.0",
-  "apiVersion": 1,
-  "author": "you",
-  "description": "a tiny terminal game",
-  "entry": "index.mjs",
-  "viewport": { "width": 64, "height": 40 },
-  "microViewport": { "width": 80, "height": 8 },
-  "display": { "micro": true, "minRows": 6, "glyphs": "dots" },
-  "palette": ["#0c0d12", "#ecf0f8"],
-  "controls": [{ "action": "move", "label": "移动", "keys": ["WASD"] }]
-}
-```
+API v1 的 manifest、生命周期、画布接口、像素渲染和最小示例见
+[Cartridge 开发指南](./docs/cartridge-api.md)。
 
-入口默认导出 `{ create(context) }`；实例实现 `update(dt, input)` 与 `render(canvas)`，并可选实现
-两行专用的 `renderMicro(canvas)`、展开字符画面的 `renderExpanded(canvas)`，以及
-`onHostEvent(event)`、`serialize()`、`restore(state)`、`hud()`。`display.micro` 明确声明两行
-可玩，`minRows` 指定展开所需行数，`glyphs` 选择一致点阵或块面。未声明两行能力的游戏
-显示展开入口，不自动压缩。展开画布为 80×24，四行时为 80×16，应使用实际画布尺寸。
-另可实现 `renderPixels(canvas, context)`：`canvas.width/height` 是实际目标像素，支持
-`clear/pixel/rect/line/stroke/circle`；`context` 包含 `view: 'micro' | 'expanded'`、
-`interpolation: 0..1` 和 `theme: 'dark' | 'light'`。`stroke` 的宽度参数是半径，所有坐标均为设备像素。
-此路径只在图片档调用，不经过 `viewport` 缩放；未实现时保持旧卡带行为。
-本地 Cartridge 是**受信任的
-JavaScript 代码**，拥有当前用户进程的文件和网络权限；Moyu 会明确确认，但不会假装它是沙箱。
-
-## 诊断
+## 诊断与恢复
 
 ```sh
-moyu doctor             # Node、PTY、hook 与事件文件
-moyu doctor --caps      # 当前终端选择了 graphics / braille / half 中哪一档
-moyu doctor --gfx       # 仅用于验证 Kitty Graphics 链路
-moyu doctor --visual    # 实际像素动作对比：Tab 新旧、空格暂停、e 两/六行、l 深浅、Esc 退出
-moyu doctor --reset     # 花屏、光标丢失或被 kill -9 后恢复终端
+moyu doctor             # Node、PTY、hook 与事件文件状态
+moyu doctor --caps      # 显示 graphics / braille / half 选择结果
+moyu doctor --gfx       # 绕开探测，直接验证 Kitty 图片链路
+moyu doctor --visual    # 交互式原生像素动作对比
+moyu doctor --reset     # 无条件恢复常见终端模式并删除 Moyu 图片
 ```
 
-在 Termius 中看到 `braille` 表示当前使用通用字符绘制，并不代表画质已经通过实机验收。
-不同终端允许细节不同，但必须看清角色和动作。字符缺失、轮廓模糊或行距割裂都应作为
-兼容问题记录，不能只以“支持 Unicode”作为完成标准。
+遇到花屏、乱码、图片不显示、hook 不触发或 PTY 模块加载失败时，请查看
+[故障排查指南](./docs/troubleshooting.md)。提交终端兼容问题前，建议附上 `moyu doctor --caps`
+输出，并移除用户名、主机名、IP 和本地路径。
 
 ## 开发
 
+开发源码需要 Node.js 22.6 或更高版本；发布后的 `dist/` 仍支持 Node.js 20。
+
 ```sh
-npm test
-npm run typecheck
-npm run compile          # 更新提交到仓库的 dist/
-npm run bench
-node --experimental-strip-types scripts/visual-qa.mjs   # 真实字形与动画预览
-node --experimental-strip-types scripts/pixel-qa.mjs    # 实际 Kitty 载荷解码后的新旧像素预览
-node --experimental-strip-types scripts/codex-smoke.mjs # 本机 Codex 接入检查
-npm pack                 # 检查实际安装包
+git clone https://github.com/PrometheusTT/moyu.git
+cd moyu
+npm ci
+npm run check       # 类型检查 + 完整测试套件
+npm run compile     # 更新必须随仓库提交的 dist/
+npm run smoke       # source/dist PTY 启动检查
+npm pack --dry-run
 ```
 
-架构边界见 [PRODUCT.md](./PRODUCT.md)：`src/shell/` 只负责安全透传和屏幕所有权，
-`src/platform/` 是 Cartridge 宿主，`src/render/` 将同一逻辑画布输出到不同终端。
+贡献前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)。项目使用 MIT License，并要求所有社区互动
+遵守 [行为准则](./CODE_OF_CONDUCT.md)。安全问题请不要公开提交，参见
+[SECURITY.md](./SECURITY.md)。
+
+## 项目状态与路线
+
+已经完成：
+
+- 真实 PTY 外壳、终端 supervisor 与崩溃恢复
+- 三档渲染、原生 Kitty 像素路径和确定性视觉/性能基线
+- 三个内置 Cartridge 与本地 Cartridge API v1
+- Codex / Claude Code 可选任务事件联动
+
+仍在探索：
+
+- 更多终端图片协议（例如 Sixel、iTerm2 inline images）
+- 更广泛的真实终端、SSH 和 WSL 人工兼容矩阵
+- Cartridge API 稳定化、示例模板与社区分发方式
+
+版本变化记录见 [CHANGELOG.md](./CHANGELOG.md)。功能建议请使用
+[Feature request](https://github.com/PrometheusTT/moyu/issues/new?template=feature_request.yml)。
 
 ## License
 
-MIT
+[MIT](./LICENSE) © 2026 Moyu contributors.

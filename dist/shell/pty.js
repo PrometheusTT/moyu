@@ -1,3 +1,4 @@
+import { scrubInternalEnv } from "./supervision.js";
 let cached = null;
 /**
  * 加载原生模块。失败时给一条**可执行**的错误信息 —— 原生模块加载失败的默认报错
@@ -32,7 +33,7 @@ export class PtyHost {
         const cols = Math.max(1, Math.floor(opts.cols));
         const rows = Math.max(1, Math.floor(opts.rows));
         const env = {};
-        for (const [k, v] of Object.entries(opts.env ?? process.env)) {
+        for (const [k, v] of Object.entries(scrubInternalEnv(opts.env ?? process.env))) {
             if (v !== undefined)
                 env[k] = v;
         }

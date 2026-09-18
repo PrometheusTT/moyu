@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用帮助 / Support
+    url: https://github.com/PrometheusTT/moyu/blob/main/SUPPORT.md
+    about: 先查看诊断、常见问题和提交信息要求。
+  - name: 安全报告说明 / Security
+    url: https://github.com/PrometheusTT/moyu/blob/main/SECURITY.md
+    about: 命令执行、路径逃逸、隐私或信任边界问题请按安全策略私密提交。

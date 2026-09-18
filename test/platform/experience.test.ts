@@ -18,6 +18,13 @@ function recorder(micro = true, minRows = 4) {
   return { game: new Arcade('/tmp/moyu-no-events-qa', [module]), steps };
 }
 
+test('surface safely bounds missing or zero terminal geometry', () => {
+  const { game } = recorder();
+  const surface = new PlaySurface(), target = new BrailleTarget(12, 2);
+  assert.doesNotThrow(() => surface.render(game, target, 0, 0, 0));
+  assert.equal(typeof surface.render(game, target, Number.NaN, Number.NaN, Number.NaN), 'string');
+});
+
 test('help is visible before first input, remains without a timeout, and is removed by a real action', () => {
   const { game, steps } = recorder();
   const surface = new PlaySurface(), target = new BrailleTarget(40, 2);
@@ -42,6 +49,26 @@ test('held direction applies to every 60Hz step at both 15fps and 30fps; action 
     assert.equal(steps.length, Math.round(interval / (1000 / 60)));
     assert.ok(steps.every(s => s.right));
     assert.equal(steps.filter(s => s.primary).length, 1);
+  }
+});
+
+test('direction latches bridge the first repeat delay, then release quickly once repeats begin', () => {
+  for (const interval of [1000 / 15, 1000 / 30]) {
+    const first = recorder();
+    first.game.advance(1000); first.game.feed(Buffer.from('d'), 1000);
+    for (let now = 1000 + interval; now < 1340; now += interval) first.game.advance(now);
+    assert.ok(first.steps.length > 0);
+    assert.ok(first.steps.every(s => s.right), `${interval}ms 首按窗口中断`);
+    first.game.advance(1375);
+    assert.equal(first.steps.at(-1)?.right, false, `${interval}ms 首按窗口没有在 340ms 后释放`);
+
+    const repeated = recorder();
+    repeated.game.advance(2000); repeated.game.feed(Buffer.from('d'), 2000);
+    repeated.game.feed(Buffer.from('d'), 2250);
+    for (let now = 2000 + interval; now < 2399; now += interval) repeated.game.advance(now);
+    assert.ok(repeated.steps.filter(s => s.right).length > 1, `${interval}ms 重复流没有保持方向`);
+    repeated.game.advance(2435);
+    assert.equal(repeated.steps.at(-1)?.right, false, `${interval}ms 重复窗口没有在 150ms 后释放`);
   }
 });
 
@@ -76,7 +103,9 @@ test('hidden and help states pause simulation without catch-up on return', () =>
   game.advance(1000); game.feed(Buffer.from('j'), 1000); game.advance(1017);
   game.pause(); game.advance(5000); game.advance(9000);
   assert.equal(steps.length, 1);
-  game.resume(); game.feed(Buffer.from('j'), 10000); game.advance(10000); game.advance(10017);
+  game.resume();
+  assert.equal(game.showingInstructions, false, 'ordinary resume must return to the preserved scene');
+  game.feed(Buffer.from('j'), 10000); game.advance(10000); game.advance(10017);
   assert.equal(steps.length, 2);
   game.feed(Buffer.from('?'), 10020); game.advance(20000);
   assert.equal(steps.length, 2);

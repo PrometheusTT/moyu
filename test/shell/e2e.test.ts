@@ -4,6 +4,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { computeLayout, MICRO_GAME_ROWS } from '../../src/shell/regions.ts';
+import { appendSignal, type Signal } from '../../src/bridge/signal.ts';
+import { deleteImageSeq } from '../../src/render/graphics.ts';
 import { loadPty } from '../../src/shell/pty.ts';
 
 /**
@@ -16,7 +18,8 @@ import { loadPty } from '../../src/shell/pty.ts';
  */
 const COLS = 100;
 const ROWS = 40;
-const STANDBY = 'moyu  Ctrl+] 开玩';
+const STANDBY = '·';
+const ATTENTION = '•';
 
 /** 外壳启动时会算出来的布局。不写死数字 —— 常数改了这个测试要跟着改才对。 */
 const L = (() => {
@@ -76,6 +79,8 @@ type Session = {
   exited: Promise<{ exitCode: number }>;
   resize: (cols: number, rows: number) => void;
   signal: (sig: string) => void;
+  pauseOutput: () => void;
+  resumeOutput: () => void;
   pid: number;
   kill: () => void;
 };
@@ -107,15 +112,20 @@ function launchEnv(
  * `via: 'node'` 直接跑 main.ts；`via: 'sh'` 走 `bin/moyu`，用来测那层 sh 包装的 SIGKILL 兜底。
  * 走 sh 时必须让它自己管 MOYU_TAKEOVER_FLAG（清空会让兜底整个失效）。
  */
-async function launch(via: 'node' | 'sh' = 'node', extraEnv: NodeJS.ProcessEnv = {}): Promise<Session> {
+async function launch(
+  via: 'node' | 'sh' = 'node',
+  extraEnv: NodeJS.ProcessEnv = {},
+  wrapped?: string[],
+): Promise<Session> {
   const { spawn } = await loadPty();
   const root = new URL('../../', import.meta.url).pathname;
   const flags = ['--experimental-strip-types', '--disable-warning=ExperimentalWarning'];
-  const inner = [process.execPath, ...flags, `${root}test/fixtures/inner.ts`];
+  const inner = wrapped ?? [process.execPath, ...flags, `${root}test/fixtures/inner.ts`];
   const [file, args] = via === 'sh'
-    ? [`${root}bin/moyu`, ['--', ...inner]]
+    ? [process.execPath, [...flags, `${root}src/app/supervisor.ts`, `${root}src/app/main.ts`, '--', ...inner]]
     : [process.execPath, [...flags, `${root}src/app/main.ts`, '--', ...inner]];
   const env = launchEnv(via, process.env, extraEnv);
+  if (via === 'sh') delete env.MOYU_TAKEOVER_FLAG;
   const p = spawn(file, args, {
     cols: COLS, rows: ROWS, cwd: root, encoding: null, env,
     handleFlowControl: false,
@@ -125,6 +135,8 @@ async function launch(via: 'node' | 'sh' = 'node', extraEnv: NodeJS.ProcessEnv =
     onExit: (f: (e: { exitCode: number }) => void) => unknown;
     write: (d: string) => void;
     resize: (c: number, r: number) => void;
+    pause: () => void;
+    resume: () => void;
     kill: (s?: string) => void;
   };
 
@@ -153,6 +165,8 @@ async function launch(via: 'node' | 'sh' = 'node', extraEnv: NodeJS.ProcessEnv =
     send: (s) => { p.write(s); }, wire, waitFor, exited, pid: p.pid,
     resize: (c, r) => { p.resize(c, r); },
     signal: (sig) => { try { process.kill(p.pid, sig as NodeJS.Signals); } catch { /* 已退 */ } },
+    pauseOutput: () => { p.pause(); },
+    resumeOutput: () => { p.resume(); },
     kill: () => { p.kill('SIGKILL'); },
   };
 }
@@ -160,6 +174,90 @@ async function launch(via: 'node' | 'sh' = 'node', extraEnv: NodeJS.ProcessEnv =
 /** 抽出所有 CUP（绝对定位）的行号，按出现顺序。 */
 function cupRows(s: string): number[] {
   return [...s.matchAll(/\x1b\[(\d+);(\d+)H/g)].map((m) => Number(m[1]));
+}
+
+function inlineGameAt(s: string, row: number): boolean {
+  const expected = row - MICRO_GAME_ROWS;
+  let at = -1;
+  while ((at = s.indexOf('J 砍', at + 1)) >= 0) {
+    const rows = cupRows(s.slice(0, at));
+    if (rows.at(-1) === expected) return true;
+  }
+  return false;
+}
+
+function protectedSplit(s: string, innerRows: number): boolean {
+  let region = -1;
+  while ((region = s.indexOf(`\x1b[1;${innerRows}r`, region + 1)) >= 0) {
+    if (s.indexOf('J 砍', region) >= 0) return true;
+  }
+  return false;
+}
+
+function standbyPaint(s: string, marker = STANDBY, cols = COLS, rows = ROWS): boolean {
+  return s.includes(`\x1b[${rows};${Math.max(1, cols - 1)}H${marker}`);
+}
+
+async function establishComposer(s: Session, command = 'G'): Promise<void> {
+  const mark = s.wire().length;
+  s.send(command);
+  await s.waitFor((w) => w.slice(mark).includes('Ask Codex'), 'Codex 输入框初始签名');
+  if (command === 'G') {
+    const pending = s.wire().length;
+    s.send('f');
+    await s.waitFor((w) => w.slice(pending).includes('REFRESH-PENDING 1'), '输入框验证刷新已等待放行');
+    const intermediate = s.wire().length;
+    s.send('F');
+    await s.waitFor((w) => w.slice(intermediate).includes('INTERMEDIATE-ONLY'), '验证期间的独立 PTY 输出');
+    s.send('3');
+  }
+  await s.waitFor((w) => {
+    const tail = w.slice(mark);
+    return [...tail.matchAll(/Ask Codex/g)].length >= 2;
+  }, 'Codex 输入框验证重绘');
+}
+
+async function sessionEvents(s: Session): Promise<string> {
+  const mark = s.wire().length;
+  s.send('e');
+  const wire = await s.waitFor((w) => w.slice(mark).includes('EVENTS '), '当前会话事件路径');
+  const file = /EVENTS ([^\r\n]+)/.exec(wire.slice(mark))?.[1];
+  assert.ok(file, '内层没有拿到会话事件路径');
+  return file;
+}
+
+function signalSession(file: string, kind: Signal): number {
+  const at = Date.now();
+  appendSignal(kind, file);
+  return at;
+}
+
+function expectedFlood(): string {
+  let value = 'FLOOD-BEGIN|';
+  for (let i = 0; i < 256; i++) {
+    value += `${i.toString().padStart(4, '0')}:`
+      + String.fromCharCode(65 + (i % 26)).repeat(4096)
+      + '|';
+  }
+  return value + 'FLOOD-END|';
+}
+
+async function waitForTeeStall(file: string, minimum: number, done: string): Promise<Buffer> {
+  const deadline = Date.now() + 5000;
+  let lastSize = -1;
+  let unchangedSince = Date.now();
+  for (;;) {
+    const size = fs.statSync(file).size;
+    assert.ok(!fs.existsSync(done), `内层在原始旁路停住前已写完（tee ${size} 字节）`);
+    if (size !== lastSize) {
+      lastSize = size;
+      unchangedSince = Date.now();
+    } else if (size >= minimum && Date.now() - unchangedSince >= 250) {
+      return fs.readFileSync(file);
+    }
+    if (Date.now() > deadline) assert.fail(`原始旁路没有停住（最后 ${size} 字节）`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 test('a broken installed Cartridge cannot prevent the wrapped CLI from starting', async () => {
@@ -182,11 +280,56 @@ test('a broken installed Cartridge cannot prevent the wrapped CLI from starting'
   } finally { s.kill(); fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test('stdout backpressure preserves ordered CLI bytes and resumes service after drain', async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-flood-'));
+  const done = path.join(temp, 'done');
+  const tee = path.join(temp, 'inner.bin');
+  const s = await launch('node', { INNER_FLOOD_DONE_FILE: done, MOYU_TEE: tee });
+  let paused = false;
+  try {
+    await s.waitFor((w) => w.includes('INNER-READY'), '压力测试内层启动');
+    const expected = expectedFlood();
+    const teeMark = fs.statSync(tee).size;
+    s.pauseOutput();
+    paused = true;
+    const mark = s.wire().length;
+    s.send('P');
+    const stalled = (await waitForTeeStall(tee, teeMark + 'FLOOD-BEGIN|'.length, done)).subarray(teeMark);
+    const partial = stalled.toString('latin1');
+    assert.equal(s.wire().length, mark, '暂停外层读取后仍不受控地消费输出');
+    assert.ok(partial.length < expected.length, '外层阻塞时 Moyu 已经读完全部内层输出');
+    assert.equal(partial, expected.slice(0, partial.length), '停住的原始字节不是有序前缀');
+
+    s.resumeOutput();
+    paused = false;
+    const wire = await s.waitFor((w) => w.slice(mark).includes('FLOOD-END|') && fs.existsSync(done),
+      '压力输出完整排空', 8000);
+    const tail = wire.slice(mark);
+    const begin = tail.indexOf('FLOOD-BEGIN|');
+    const end = tail.indexOf('FLOOD-END|', begin) + 'FLOOD-END|'.length;
+    assert.ok(begin >= 0 && end >= 'FLOOD-END|'.length, '压力输出缺少边界标记');
+    assert.equal(tail.slice(begin, end), expected, '压力下终端侧 CLI 字节发生丢失、重复或乱序');
+    assert.equal(fs.readFileSync(tee).subarray(teeMark).toString('latin1'), expected,
+      '压力下原始内层字节发生丢失、重复或乱序');
+
+    const cli = s.wire().length;
+    s.send('p');
+    await s.waitFor((w) => w.slice(cli).includes('INNER-HELLO'), '排空后 CLI 恢复服务');
+  } finally {
+    if (paused) s.resumeOutput();
+    s.kill();
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test('默认只占一行，Ctrl+] 一键展开并用 Esc 返回', async () => {
   const s = await launch();
   try {
-    const start = await s.waitFor((w) => w.includes(STANDBY), '一行待机条');
+    const start = await s.waitFor((w) => standbyPaint(w), '一行待机条');
     assert.ok(start.includes(`\x1b[1;${ROWS - 1}r`), '待机时应该只给底部留一行');
+    assert.ok(standbyPaint(start), '待机符号必须位于倒数第二列，避开右下角延迟换行');
+    assert.ok(!start.includes(`\x1b[${ROWS};${COLS}H${STANDBY}`), '待机不得写右下角单元格');
+    assert.ok(!start.includes('moyu  Ctrl+] 开玩'), '待机不得暴露品牌或快捷键文案');
 
     const enter = s.wire().length;
     s.send('\x1d');
@@ -207,12 +350,23 @@ test('默认只占一行，Ctrl+] 一键展开并用 Esc 返回', async () => {
   } finally { s.kill(); }
 });
 
+test('stable standby has no frame loop output until an external transition invalidates it', async () => {
+  const s = await launch();
+  try {
+    await s.waitFor((w) => standbyPaint(w), '单格待机');
+    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const quiet = s.wire().length;
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    assert.equal(s.wire().slice(quiet), '', '稳定待机仍在周期性写终端字节');
+  } finally { s.kill(); }
+});
+
 test('Codex 中游戏覆盖在输入框正上方两行，退出后立即归还画面', async () => {
   const s = await launch('node', { MOYU_OVERLAY: '1' });
   try {
     await s.waitFor((w) => w.includes(STANDBY), '一行待机条');
-    s.send('i');
-    await s.waitFor((w) => w.includes('› Ask Codex'), 'Codex 输入框锚点');
+    await establishComposer(s);
 
     const enter = s.wire().length;
     s.send('\x1d');
@@ -246,22 +400,124 @@ test('Codex 中游戏覆盖在输入框正上方两行，退出后立即归还�
   } finally { s.kill(); }
 });
 
+test('verification keeps its proposal across intermediate PTY chunks', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '一行待机条');
+    await establishComposer(s, 'G');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(enter);
+      return inlineGameAt(tail, 12) || protectedSplit(tail, PLAY.innerRows);
+    }, '跨 marker chunk 验证后的浮层')).slice(enter);
+    assert.ok(inlineGameAt(playing, 12), 'SIGWINCH marker 不应清掉待验证的输入框 proposal');
+  } finally { s.kill(); }
+});
+
 test('both Codex prompt glyphs confirm the composer before using inline overlay', async () => {
-  for (const command of ['i', 'I']) {
+  for (const command of ['G', 'H']) {
     const s = await launch('node', { MOYU_OVERLAY: '1' });
     try {
       await s.waitFor((w) => w.includes(STANDBY), '一行待机条');
-      s.send(command);
-      await s.waitFor((w) => w.includes('Ask Codex'), 'Codex 输入框签名');
+      await establishComposer(s, command);
       const enter = s.wire().length;
       s.send('\x1d');
       const playing = (await s.waitFor((w) => {
         const tail = w.slice(enter);
-        return /\x1b\[(?:10|11);\d+H/.test(tail) && tail.includes('J 砍');
+        return inlineGameAt(tail, 12) || protectedSplit(tail, PLAY.innerRows);
       }, '确认后的输入框浮层')).slice(enter);
-      assert.ok(!playing.includes(`\x1b[1;${PLAY.innerRows}r`), `${command}: 不应退回底部分屏`);
+      assert.ok(inlineGameAt(playing, 12), `${command}: 应在输入框正上方绘制`);
+      assert.ok(!protectedSplit(playing, PLAY.innerRows), `${command}: 不应退回底部分屏`);
     } finally { s.kill(); }
   }
+});
+
+test('explicit refresh reacquires a composer that moved nearby', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    s.send('R');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    await s.waitFor((w) => inlineGameAt(w.slice(enter), 12), '首次输入框浮层');
+    const leave = s.wire().length;
+    s.send('\x1b');
+    await s.waitFor((w) => w.slice(leave).includes('\x1b[14;1H› Ask Codex'), '移动后的 refresh 重绘');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const reenter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => inlineGameAt(w.slice(reenter), 14),
+      '移动后的输入框浮层')).slice(reenter);
+    assert.ok(!inlineGameAt(playing, 12));
+  } finally { s.kill(); }
+});
+
+test('split refresh prefers the later real composer over transcript glyphs', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    s.send('2');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    await s.waitFor((w) => inlineGameAt(w.slice(enter), 12), '首次输入框浮层');
+    const leave = s.wire().length;
+    s.send('\x1b');
+    await s.waitFor((w) => {
+      const tail = w.slice(leave);
+      return tail.includes('› transcript before composer') && tail.includes('Ask Codex');
+    }, 'split refresh 两个候选');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const reenter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => inlineGameAt(w.slice(reenter), 12),
+      '真实输入框候选获胜')).slice(reenter);
+    assert.ok(!inlineGameAt(playing, 10), '较早的 transcript glyph 不得获胜');
+  } finally { s.kill(); }
+});
+
+test('a silent refresh expires without discarding a still-valid row', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    s.send('0');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    await s.waitFor((w) => inlineGameAt(w.slice(enter), 12), '首次输入框浮层');
+    const leave = s.wire().length;
+    s.send('\x1b');
+    await s.waitFor((w) => w.slice(leave).includes('SIGWINCH'), 'silent refresh 信号');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const reenter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(reenter);
+      return inlineGameAt(tail, 12) || protectedSplit(tail, PLAY.innerRows);
+    }, 'silent refresh 过期后重入')).slice(reenter);
+    assert.ok(inlineGameAt(playing, 12));
+  } finally { s.kill(); }
+});
+
+test('an exact static transcript cannot establish composer trust', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    const transcript = s.wire().length;
+    s.send('V');
+    await s.waitFor((w) => w.slice(transcript).includes('Ask Codex static transcript'), '静态精确签名');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(enter);
+      return protectedSplit(tail, PLAY.innerRows) || inlineGameAt(tail, 12);
+    }, '静态签名后的安全回退')).slice(enter);
+    assert.ok(protectedSplit(playing, PLAY.innerRows), '静态 transcript 不得建立输入框信任');
+    assert.ok(!inlineGameAt(playing, 12));
+  } finally { s.kill(); }
 });
 
 test('a prompt glyph in ordinary transcript falls back to the protected bottom split', async () => {
@@ -284,12 +540,136 @@ test('a prompt glyph in ordinary transcript falls back to the protected bottom s
   } finally { s.kill(); }
 });
 
-test('E expands to six protected rows, Tab selects a full board, and E returns inline', async () => {
+test('non-empty drafts reacquire after invalidation', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    const redraw = s.wire().length;
+    s.send('Dn');
+    await s.waitFor((w) => w.slice(redraw).includes('› draft text'), 'ED 后非空草稿重绘');
+    await s.waitFor((w) => [...w.slice(redraw).matchAll(/› draft text/g)].length >= 2,
+      '非空草稿验证重绘');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(enter);
+      return inlineGameAt(tail, 12) || protectedSplit(tail, PLAY.innerRows);
+    }, '非空草稿锚点重获')).slice(enter);
+    assert.ok(inlineGameAt(playing, 12));
+  } finally { s.kill(); }
+});
+
+test('same-write ED accepts only the post-boundary composer row', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    const repaint = s.wire().length;
+    s.send('o');
+    await s.waitFor((w) => w.slice(repaint).includes('ordered draft'), 'ED 后的新输入框');
+    await s.waitFor((w) => [...w.slice(repaint).matchAll(/› ordered draft/g)].length >= 2,
+      'ED 后输入框验证重绘');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(enter);
+      return inlineGameAt(tail, 14) || protectedSplit(tail, PLAY.innerRows);
+    }, 'ED 后输入框重获')).slice(enter);
+    assert.ok(inlineGameAt(playing, 14), '必须使用 ED 后的输入框坐标');
+    assert.ok(!inlineGameAt(playing, 8), 'ED 前 transcript 坐标不得存活');
+  } finally { s.kill(); }
+});
+
+test('ED without redraw invalidates the composer anchor', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    const erase = s.wire().length;
+    s.send('D');
+    await s.waitFor((w) => w.slice(erase).includes('ED-WITHOUT-REDRAW'), '无重绘 ED');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => protectedSplit(w.slice(enter), PLAY.innerRows),
+      '无锚点安全回退')).slice(enter);
+    assert.ok(!inlineGameAt(playing, 12), 'ED 前锚点不得继续使用');
+  } finally { s.kill(); }
+});
+
+test('a transcript glyph cannot satisfy an authorized repaint without a complete signature', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((wire) => wire.includes(STANDBY), '待机');
+    await establishComposer(s);
+    const repaint = s.wire().length;
+    s.send('Dw');
+    await s.waitFor((wire) => {
+      const tail = wire.slice(repaint);
+      return tail.includes('› ordinary repaint transcript') && tail.includes('SIGWINCH');
+    }, '不完整候选的验证刷新');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.equal([...s.wire().slice(repaint).matchAll(/› ordinary repaint transcript/g)].length, 1,
+      '静态 transcript 不应随验证刷新重画');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((wire) => {
+      const tail = wire.slice(enter);
+      return protectedSplit(tail, PLAY.innerRows) || inlineGameAt(tail, 13);
+    }, '不完整候选后的安全回退')).slice(enter);
+    assert.ok(!inlineGameAt(playing, 13), '只有完整 prompt 签名才能提交重绘坐标');
+  } finally { s.kill(); }
+});
+
+test('a split candidate cannot complete across an invalidation boundary', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    const stale = s.wire().length;
+    s.send('z');
+    await s.waitFor((w) => w.slice(stale).includes('Codex stale'), '跨 ED 的半截签名');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => protectedSplit(w.slice(enter), PLAY.innerRows),
+      '陈旧半截签名后的安全回退')).slice(enter);
+    assert.ok(!inlineGameAt(playing, 12));
+  } finally { s.kill(); }
+});
+
+test('expanded collapse waits for an authorized composer repaint', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    s.send('4');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    await s.waitFor((w) => inlineGameAt(w.slice(enter), 12), '首次输入框浮层');
+    let mark = s.wire().length;
+    s.send('e');
+    await s.waitFor((w) => w.slice(mark).includes('\x1b[1;34r'), '展开六行');
+    s.send('\x00');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    mark = s.wire().length;
+    s.send('e');
+    await s.waitFor((w) => w.slice(mark).includes('SIGWINCH'), '折叠刷新信号');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.ok(!inlineGameAt(s.wire().slice(mark), 12), '未授权重绘前不应恢复浮层');
+    const release = s.wire().length;
+    s.send('\x00');
+    await s.waitFor((w) => inlineGameAt(w.slice(release), 12), '授权重绘后恢复浮层');
+  } finally { s.kill(); }
+});
+
+test('E expands a full board, while an unsupported micro toggle returns input to the CLI', async () => {
   const s = await launch('node', { MOYU_OVERLAY: '1', MOYU_TIER: 'braille' });
   try {
     await s.waitFor(w => w.includes(STANDBY), '待机');
-    s.send('i');
-    await s.waitFor(w => w.includes('› Ask Codex'), '输入框');
+    await establishComposer(s);
     s.send('\x1d');
     await s.waitFor(w => w.includes('J 砍'), '首次帮助');
     let mark = s.wire().length;
@@ -303,12 +683,49 @@ test('E expands to six protected rows, Tab selects a full board, and E returns i
     await s.waitFor(w => /[\u2580-\u259f\u2800-\u28ff]/.test(w.slice(mark)), '完整棋盘');
     mark = s.wire().length;
     s.send('e');
-    await s.waitFor(w => w.slice(mark).includes('\x1b[1;39r') && /\x1b\[10;1H/.test(w.slice(mark))
-      && w.slice(mark).includes('E 展开'), '恢复两行入口及输入框锚点');
-    mark = s.wire().length;
-    s.send('\x1b');
-    await s.waitFor(w => w.slice(mark).includes(STANDBY) && w.slice(mark).includes('ORIGINAL-CONTEXT'), '退出后原内容恢复');
+    await s.waitFor(w => w.slice(mark).includes(STANDBY), '不支持两行时交还 CLI 并恢复待机');
+    const cli = s.wire().length;
+    s.send('p');
+    await s.waitFor(w => w.slice(cli).includes('INNER-HELLO'), '不支持两行时输入归还 CLI');
   } finally { s.kill(); }
+});
+
+test('alternate-screen transitions require post-boundary composer evidence', async () => {
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(s);
+    const swap = s.wire().length;
+    s.send('aA');
+    await s.waitFor((w) => {
+      const tail = w.slice(swap);
+      return tail.includes('ALT-SCREEN') && tail.includes('\x1b[?1049l')
+        && tail.lastIndexOf('Ask Codex') > tail.lastIndexOf('\x1b[?1049l');
+    }, '换屏边界后的输入框重绘');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const enter = s.wire().length;
+    s.send('\x1d');
+    const playing = (await s.waitFor((w) => {
+      const tail = w.slice(enter);
+      return inlineGameAt(tail, 12) || protectedSplit(tail, PLAY.innerRows);
+    }, '换屏后的输入框重获')).slice(enter);
+    assert.ok(inlineGameAt(playing, 12));
+  } finally { s.kill(); }
+
+  const stale = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await stale.waitFor((w) => w.includes(STANDBY), '待机');
+    await establishComposer(stale);
+    const swap = stale.wire().length;
+    stale.send('a');
+    await stale.waitFor((w) => w.slice(swap).includes('ALT-SCREEN'), '只进入备用屏');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const enter = stale.wire().length;
+    stale.send('\x1d');
+    const playing = (await stale.waitFor((w) => protectedSplit(w.slice(enter), PLAY.innerRows),
+      '无边界后证据的安全回退')).slice(enter);
+    assert.ok(!inlineGameAt(playing, 12));
+  } finally { stale.kill(); }
 });
 
 test('Codex 启动切入备用屏后会重建滚动区并重画待机条', async () => {
@@ -345,6 +762,23 @@ test('Codex inline TUI 用 ED 0 清屏后会再次重画待机条', async () => 
     }, 'inline 清屏后的待机条')).slice(mark);
     assert.ok(tail.indexOf(STANDBY) > tail.indexOf('CODEX-INLINE-CLEAR'),
       'ED 0 擦除以后必须重新绘制待机条');
+  } finally { s.kill(); }
+});
+
+test('a game-owned Kitty Escape release never reaches the wrapped CLI', async () => {
+  const s = await launch();
+  try {
+    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
+    s.send('\x1d');
+    await s.waitFor((w) => w.includes(`\x1b[1;${PLAY.innerRows}r`), '进入游戏');
+    const mark = s.wire().length;
+    s.send('\x1b[27;1:1u\x1b[27;3:3u');
+    await s.waitFor((w) => w.slice(mark).includes(STANDBY), 'Kitty Escape 返回待机');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.ok(!s.wire().slice(mark).includes('OTHERSEQ'), 'Kitty Escape release leaked into the inner PTY');
+    const check = s.wire().length;
+    s.send('p');
+    await s.waitFor((w) => w.slice(check).includes('INNER-HELLO'), '焦点已归还内层');
   } finally { s.kill(); }
 });
 
@@ -480,6 +914,17 @@ test('退出会杀掉忽略 SIGHUP 的内层孙进程', async () => {
   }
 });
 
+test('missing wrapped executable fails before terminal takeover with exit 127', async () => {
+  const command = 'moyu-command-that-does-not-exist-xyz';
+  const s = await launch('sh', {}, [command]);
+  try {
+    const e = await s.exited;
+    assert.equal(e.exitCode, 127);
+    assert.match(s.wire(), new RegExp(`找不到可执行命令 ${command}`));
+    assert.equal(s.wire().includes('\x1b[H\x1b[2J'), false, '缺命令时不应先接管或清空终端');
+  } finally { s.kill(); }
+});
+
 test('内层自己退出时外壳跟着退出并原样传出退出码', async () => {
   const s = await launch();
   try {
@@ -490,9 +935,19 @@ test('内层自己退出时外壳跟着退出并原样传出退出码', async ()
     assert.ok(s.wire().includes('\x1b[?25h'), '退出时没恢复光标可见性');
   } finally { s.kill(); }
 });
+test('内层被信号终止时外壳传出 128 + signal', async () => {
+  const s = await launch();
+  try {
+    await s.waitFor((w) => w.includes('INNER-READY'), '内层启动');
+    s.send('T');
+    const e = await s.exited;
+    assert.equal(e.exitCode, 143, '内层 SIGTERM 必须映射为 128+15');
+    assert.ok(s.wire().includes('\x1b[?25h'), '内层信号退出时没恢复光标可见性');
+  } finally { s.kill(); }
+});
 
 
-test('内层没弹干净的 kitty 标志由退出路径替它弹掉', async () => {
+ test('内层没弹干净的 kitty 标志由退出路径替它弹掉', async () => {
   // 内层被 SIGKILL 就不会自己弹。留在那儿的后果全落在用户的 shell 上：
   // 方向键变乱码、Ctrl+C 不再是 SIGINT。
   const s = await launch();
@@ -513,6 +968,52 @@ function layoutAt(cols: number, rows: number): { innerRows: number; gameTop: num
   return r.kind === 'split' ? { innerRows: r.layout.innerRows, gameTop: r.layout.gameTop } : null;
 }
 
+
+test('too-small yield never paints stale inline rows and keeps CLI focus on resume', async () => {
+  const TINY = 10;
+  const s = await launch('node', { MOYU_OVERLAY: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '待机');
+    s.send('B');
+    await establishComposer(s);
+    const initialRow = L.innerRows - 2;
+    const enter = s.wire().length;
+    s.send('\x1d');
+    await s.waitFor((w) => inlineGameAt(w.slice(enter), initialRow), '底部输入框上方的浮层');
+
+    const shrink = s.wire().length;
+    s.resize(COLS, TINY);
+    await s.waitFor((w) => {
+      const tail = w.slice(shrink);
+      return tail.includes(`WINCH ${COLS}x${TINY}`) && tail.includes(`\x1b[${TINY - 2};1H`)
+        && cupRows(tail).at(-1) === TINY - 2;
+    }, '让屏后内层拿到整屏并重绘输入框');
+    const yielded = s.wire().length;
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    const quiet = s.wire().slice(yielded);
+    assert.deepEqual(cupRows(quiet).filter((row) => row > TINY), [], '让屏期间还按旧布局画到屏幕外');
+    assert.ok(!quiet.includes('J 砍'), '让屏期间不应重启输入框浮层');
+
+    const resume = s.wire().length;
+    s.resize(COLS, ROWS);
+    await s.waitFor((w) => {
+      const tail = w.slice(resume);
+      return tail.includes(`\x1b[1;${L.innerRows}r`) && tail.includes(`WINCH ${COLS}x${L.innerRows}`);
+    }, '恢复一行候场分屏');
+    s.send('\x00');
+    const resumed = (await s.waitFor((w) => {
+      const tail = w.slice(resume);
+      return tail.includes(STANDBY) && tail.includes('ORIGINAL-CONTEXT')
+        && tail.includes('ORIGINAL-SEPARATOR');
+    }, '恢复后重获底部输入框并保持待机')).slice(resume);
+    assert.ok(!inlineGameAt(resumed, initialRow), 'resize 后不应自动重新取得游戏焦点');
+    assert.ok(!protectedSplit(resumed, L.innerRows), '恢复后不应自动开始底部分屏游戏');
+
+    const cli = s.wire().length;
+    s.send('p');
+    await s.waitFor((w) => w.slice(cli).includes('INNER-HELLO'), '恢复后键盘仍归 CLI');
+  } finally { s.kill(); }
+});
 
 test('终端小到放不下就收起游戏区，放大后自动回来', async () => {
   // 游戏条只要 1 行，所以"放不下"的门槛低到只剩 MIN_INNER_ROWS —— 10 行。
@@ -603,10 +1104,86 @@ test('正常退出时 bin/moyu 不重复还原（?1049l 会搬走用户 shell �
  * `graphics.test.ts` 只知道 `encode()` 吐出来的字节对不对，不知道它们最后被谁包着写出去。
  */
 const GFX_ENV = { MOYU_TIER: 'graphics', MOYU_CELL: '16x34' };
+test('task events hand active play back to the CLI within the host polling bound', async () => {
+  for (const kind of ['done', 'notify'] as const) {
+    const s = await launch();
+    try {
+      await s.waitFor((w) => w.includes(STANDBY), `${kind} 会话待机`);
+      const file = await sessionEvents(s);
+      const enter = s.wire().length;
+      s.send('\x1d');
+      await s.waitFor((w) => protectedSplit(w.slice(enter), PLAY.innerRows), `${kind} 会话进入游戏`);
 
+      const event = s.wire().length;
+      const at = signalSession(file, kind);
+      await s.waitFor((w) => w.slice(event).includes(ATTENTION), `${kind} 事件退回待机`, 1000);
+      assert.ok(Date.now() - at <= 400, `${kind} 事件超过 400ms 才让出游戏焦点`);
 
+      const cli = s.wire().length;
+      s.send('p');
+      await s.waitFor((w) => w.slice(cli).includes('INNER-HELLO'), `${kind} 事件后输入归 CLI`);
+      const quiet = s.wire().length;
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      assert.ok(!protectedSplit(s.wire().slice(quiet), PLAY.innerRows), `${kind} 事件后游戏不应自己重开`);
+    } finally { s.kill(); }
+  }
+});
 
+test('a task event is observed while fully yielded without recapturing focus after resize', async () => {
+  const TINY = 10;
+  const s = await launch();
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '让屏事件会话待机');
+    const file = await sessionEvents(s);
+    const shrink = s.wire().length;
+    s.resize(COLS, TINY);
+    await s.waitFor((w) => w.slice(shrink).includes(`WINCH ${COLS}x${TINY}`), '进入全屏让屏');
 
+    const yielded = s.wire().length;
+    const at = signalSession(file, 'done');
+    await new Promise((resolve) => setTimeout(resolve, 125));
+    assert.ok(Date.now() - at <= 400, '让屏状态下的事件等待超过轮询上限');
+    assert.ok(!s.wire().slice(yielded).includes(STANDBY), '让屏期间不应把待机画到内层全屏');
+
+    const resume = s.wire().length;
+    s.resize(COLS, ROWS);
+    await s.waitFor((w) => {
+      const tail = w.slice(resume);
+      return tail.includes(ATTENTION) && tail.includes(`\x1b[1;${L.innerRows}r`);
+    }, '事件状态在恢复分屏后出现');
+    const cli = s.wire().length;
+    s.send('p');
+    await s.waitFor((w) => w.slice(cli).includes('INNER-HELLO'), '让屏事件后输入保持归 CLI');
+  } finally { s.kill(); }
+});
+
+test('graphics task handoff deletes the live image before standby and stays quiet afterward', async () => {
+  const s = await launch('node', { ...GFX_ENV, MOYU_FORCE_GRAPHICS: '1' });
+  try {
+    await s.waitFor((w) => w.includes(STANDBY), '像素会话待机');
+    const file = await sessionEvents(s);
+    const enter = s.wire().length;
+    s.send('\x1d');
+    await s.waitFor((w) => w.slice(enter).includes('J 砍'), '像素游戏首次帮助');
+    s.send('j');
+    await s.waitFor((w) => w.slice(enter).includes('\x1b_G'), '像素游戏首帧');
+
+    const event = s.wire().length;
+    signalSession(file, 'done');
+    const handoff = (await s.waitFor((w) => {
+      const tail = w.slice(event);
+      return tail.includes(deleteImageSeq()) && tail.includes(ATTENTION);
+    }, '像素任务事件交还 CLI')).slice(event);
+    assert.ok(handoff.indexOf(deleteImageSeq()) < handoff.indexOf(ATTENTION), '必须先删像素图再画待机状态');
+
+    const cli = s.wire().length;
+    s.send('p');
+    await s.waitFor((w) => w.slice(cli).includes('INNER-HELLO'), '像素任务事件后输入归 CLI');
+    const quiet = s.wire().length;
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    assert.ok(!s.wire().slice(quiet).includes('\x1b_G'), '任务交还后不应继续发送 APC 图帧');
+  } finally { s.kill(); }
+});
 
 test('内层问屏幕尺寸时外壳自己回答，答的是上半屏而不是整窗（P9）', async () => {
   // 让终端回答会错两次：内层以为自己有 40 行（排版按整屏算），而它按整窗高度算出来的

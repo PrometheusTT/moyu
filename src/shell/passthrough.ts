@@ -44,23 +44,23 @@ export type PassthroughOptions = {
    */
   onSizeQuery?: (reply: string) => void;
   /**
-   * 内层进入/退出备用屏时回调。
+   * 内层进入/退出备用屏时回调。`offset` 是完整切屏序列之后在本次改写输出里的偏移。
    *
    * 上层要做的**不是**让屏，而是在切过去的新缓冲区上重设滚动区 + 全量重绘 ——
    * DECSTBM 是每缓冲区各自一份的，切过去之后新缓冲区的边距是默认的整屏。
    */
-  onAltScreen?: (on: boolean) => void;
+  onAltScreen?: (on: boolean, offset: number) => void;
   /** 内层请求了滚动区时回调（给的是它的**原始**请求值，未夹取）。 */
   onScrollRegion?: (top: number, bottom: number) => void;
   /**
-   * 内层发了 `ED 0` / `ED 2` / `ED 3` 时回调。
+   * 内层发了 `ED 0` / `ED 2` / `ED 3` 时回调。`offset` 是完整 ED 之后在本次输出里的偏移。
    *
    * 这个通知是**正确性要求**，不是优化：ED 不受滚动区约束。尤其 Codex inline TUI
    * 使用的裸 `CSI J` 就是 ED 0，会从内层光标一直擦到真实屏幕末尾，把底栏也擦掉。
    * 而我们的画布是差分编码的 —— 它以为屏幕上还是上一帧的内容，于是什么都不重发，
    * 游戏区就一直黑在那儿。上层收到这个回调必须 `canvas.invalidate()`。
    */
-  onDisplayErase?: () => void;
+  onDisplayErase?: (offset: number) => void;
 };
 
 /** CSI 参数缓冲上限。超过就认定是畸形/恶意序列，原样吐出去不再解析。 */
@@ -102,9 +102,9 @@ export class Passthrough {
   kittySet = false;
 
   private onSizeQuery: ((reply: string) => void) | undefined;
-  private onAltScreen: ((on: boolean) => void) | undefined;
+  private onAltScreen: ((on: boolean, offset: number) => void) | undefined;
   private onScrollRegion: ((top: number, bottom: number) => void) | undefined;
-  private onDisplayErase: (() => void) | undefined;
+  private onDisplayErase: ((offset: number) => void) | undefined;
 
   private state: ScanState = G_GROUND;
   /** 未完成的转义序列（含前导 ESC）。跨 chunk 续上靠它。 */
@@ -278,6 +278,7 @@ export class Passthrough {
     if (prefix === '?' && (final === 0x68 || final === 0x6c)) {
       const on = final === 0x68;
       const params = this.parseParams(seq, paramStart, paramEnd);
+      let changed = false;
       for (const p of params) {
         if (p === 1049 || p === 1047 || p === 47) {
           // 注意：真实终端把它当幂等的 set/reset，不是计数器。
@@ -285,11 +286,12 @@ export class Passthrough {
           // 但那个歧义真实终端本来就有，内层程序自己会重绘，我们跟着它就对。
           if (this.inAltScreen !== on) {
             this.inAltScreen = on;
-            this.onAltScreen?.(on);
+            changed = true;
           }
         }
       }
       this.emitPending(out);
+      if (changed) this.onAltScreen?.(on, out.length);
       return;
     }
 
@@ -353,8 +355,8 @@ export class Passthrough {
       const mode = params[0] === undefined || params[0] < 0 ? 0 : params[0];
       // ED 0 从当前光标擦到**真实屏幕**末尾，所以只要光标属于内层，它就必然擦掉
       // 我们位于下方的区域。ED 1 方向相反，不会碰到下方区域。
-      if (mode === 0 || mode === 2 || mode === 3) this.onDisplayErase?.();
       this.emitPending(out);
+      if (mode === 0 || mode === 2 || mode === 3) this.onDisplayErase?.(out.length);
       return;
     }
 

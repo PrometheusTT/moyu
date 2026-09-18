@@ -122,6 +122,42 @@ test('暂停时按砍键可以自己接着打（不必等下一个任务）', ()
   assert.equal(w.phase, 'fight');
 });
 
+test('暂停更新既不推进时间也不消耗随机流，砍键仍只负责重开', () => {
+  const w = mk(14);
+  w.taskStart();
+  w.taskDone();
+  while (w.phase === 'clear') w.step(STEP, NO_INTENT);
+  const time = w.time;
+  const pausedRng = w.rng.snapshot();
+  run(w, 10_000);
+  assert.equal(w.time, time);
+  assert.equal(w.rng.snapshot(), pausedRng);
+  w.step(STEP, { move: 0, jump: false, slash: true });
+  assert.equal(w.phase, 'fight');
+  assert.equal(w.time, time, '重开的按键本身不能偷偷推进一帧');
+  assert.equal(w.rng.snapshot(), 14, '重开要回到清屏前的 gameplay RNG，而不是保留特效消耗');
+});
+
+test('任务重开清掉上一场全部战斗瞬态但保留终身战绩', () => {
+  const w = mk(15);
+  w.taskStart();
+  w.kills = 12; w.bestCombo = 4;
+  w.respawn = 1; w.hitstop = 1; w.flash = 1;
+  w.shake = 3; w.shakeX = 2; w.shakeY = -1;
+  w.combo = 3; w.stepComboPeak = 3;
+  w.player.atk = 0.2; w.player.atkQueued = true; w.player.hurt = 0.3;
+  w.slashes.push({ x: 1, y: 1, r: 1, a0: 0, a1: 1, life: 1, max: 1, big: false });
+  w.taskDone();
+  w.taskStart();
+  assert.equal(w.phase, 'fight');
+  assert.equal(w.kills, 12); assert.equal(w.bestCombo, 4);
+  assert.equal(w.respawn, 0); assert.equal(w.hitstop, 0); assert.equal(w.flash, 0);
+  assert.equal(w.shake, 0); assert.equal(w.shakeX, 0); assert.equal(w.shakeY, 0);
+  assert.equal(w.combo, 0); assert.equal(w.stepComboPeak, 0);
+  assert.equal(w.slashes.length, 0);
+  assert.equal(w.player.atk, -1); assert.equal(w.player.atkQueued, false); assert.equal(w.player.hurt, 0);
+});
+
 test('挤成一团的杂兵会被一刀带走多个（连击的来源）', () => {
   // 同一刀命中多人是这个游戏最爽的瞬间，所以它是一条**行为要求**而不是巧合。
   const w = mk(17);

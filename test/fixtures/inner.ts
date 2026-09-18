@@ -11,8 +11,35 @@
  * 会被当成命令字符，而 `t` 恰好就是"问尺寸"那条命令 —— 自己把自己喂成死循环。
  */
 import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
 
 const out = (s: string): void => { process.stdout.write(s); };
+const FLOOD_RECORDS = 256;
+const FLOOD_PAYLOAD = 4096;
+let flooding = false;
+
+const floodRecord = (index: number): string =>
+  `${index.toString().padStart(4, '0')}:`
+  + String.fromCharCode(65 + (index % 26)).repeat(FLOOD_PAYLOAD)
+  + '|';
+
+const pressureFlood = async (): Promise<void> => {
+  if (flooding) return;
+  flooding = true;
+  const write = async (value: string): Promise<void> => {
+    if (process.stdout.write(value)) return;
+    await new Promise<void>((resolve) => { process.stdout.once('drain', resolve); });
+  };
+  try {
+    await write('FLOOD-BEGIN|');
+    for (let i = 0; i < FLOOD_RECORDS; i++) await write(floodRecord(i));
+    await write('FLOOD-END|');
+    const flag = process.env.INNER_FLOOD_DONE_FILE;
+    if (flag !== undefined) fs.writeFileSync(flag, 'done\n', { mode: 0o600 });
+  } finally {
+    flooding = false;
+  }
+};
 
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
@@ -21,9 +48,20 @@ process.stdin.resume();
 let pend = '';
 let composer = false;
 let composerGlyph = '›';
+let composerDraft = '';
+let composerBottom = false;
+let composerOffset = 0;
+let refreshMode: 'normal' | 'silent' | 'split' | 'gated' = 'normal';
+let composerRedrawPending = false;
+const prompt = (): string => `${composerGlyph}${composerDraft === '' ? ' Ask Codex' : ` ${composerDraft}`}`;
+const composerRow = (): number => composerBottom
+  ? Math.max(3, (process.stdout.rows ?? 39) - 2)
+  : 12 + composerOffset;
 const redrawComposer = (): void => {
-  out(`\x1b[10;1HORIGINAL-CONTEXT\x1b[11;1HORIGINAL-SEPARATOR\x1b[12;1H${composerGlyph} Ask Codex`);
+  const row = composerRow();
+  out(`\x1b[${row - 2};1HORIGINAL-CONTEXT\x1b[${row - 1};1HORIGINAL-SEPARATOR\x1b[${row};1H${prompt()}`);
 };
+const redrawComposerLater = (): void => { setTimeout(redrawComposer, 5); };
 
 process.stdin.on('data', (buf: Buffer) => {
   const s = pend + buf.toString('latin1');
@@ -51,12 +89,42 @@ function command(ch: string): void {
       // 普通输出。跟一条 CPR 风格的自报位置，方便测试知道内层认为自己在哪。
       out('INNER-HELLO\r\n');
       break;
+    case 'P':
+      // 约 1 MiB、可逐字节核对的输出；主动尊重 drain，才能把压力一路传回外壳的 PTY 暂停点。
+      void pressureFlood();
+      break;
     case 's':
       // 自报 ioctl 尺寸。这是 TIOCSWINSZ 是否真的生效的唯一可信证据。
       out(`SIZE ${process.stdout.columns}x${process.stdout.rows}\r\n`);
       break;
     case 'e':
       out(`EVENTS ${process.env.MOYU_EVENTS ?? ''}\r\n`);
+      break;
+    case 'E':
+      out(`PRIVATE ${Object.keys(process.env).filter((key) => key.startsWith('MOYU_INTERNAL_')
+        || key === 'NODE_CHANNEL_FD' || key === 'NODE_CHANNEL_SERIALIZATION_MODE'
+        || key === 'MOYU_TAKEOVER_FLAG').sort().join(',')}\r\n`);
+      break;
+    case 'f':
+      out(`REFRESH-PENDING ${composerRedrawPending ? 1 : 0}\r\n`);
+      break;
+    case 'B':
+      // 后续 composer 跟随 PTY 底部，专测 resize / yield 后的坐标重获。
+      composerBottom = true;
+      break;
+    case 'G':
+      // 初始签名先单独落一个 PTY write；验证 refresh 的重绘由测试显式放行，
+      // 从而保证中间至少经过一条不含 prompt 的输出。
+      composer = true; composerGlyph = '›'; composerDraft = '';
+      refreshMode = 'gated';
+      redrawComposerLater();
+      break;
+    case 'H':
+      composer = true; composerGlyph = '❯'; composerDraft = '';
+      redrawComposerLater();
+      break;
+    case 'F':
+      out('INTERMEDIATE-ONLY\r\n');
       break;
     case 'x': {
       // 启一个明确忽略 SIGHUP 的孙进程。外壳退出必须杀 PTY 的整个进程组，不能只 HUP 首进程。
@@ -83,17 +151,83 @@ function command(ch: string): void {
       out('\x1b[H\x1b[JCODEX-INLINE-CLEAR');
       break;
     case 'i':
-      composer = true; composerGlyph = '›'; redrawComposer();
+      composer = true; composerGlyph = '›'; composerDraft = ''; redrawComposerLater();
       break;
     case 'I':
-      composer = true; composerGlyph = '❯'; redrawComposer();
+      composer = true; composerGlyph = '❯'; composerDraft = ''; redrawComposerLater();
+      break;
+    case 'n':
+      composer = true; composerGlyph = '›'; composerDraft = 'draft text'; redrawComposerLater();
+      break;
+    case '0':
+      refreshMode = 'silent';
+      break;
+    case '1':
+      refreshMode = 'normal';
+      break;
+    case '2':
+      refreshMode = 'split';
+      break;
+    case '4':
+      refreshMode = 'gated';
+      break;
+    case 'R':
+      composerOffset = 2;
+      break;
+    case '\x00':
+      // 游戏焦点下的确定性放行；保持 gated，下一次 resize 仍须显式放行。
+      if (composerRedrawPending) {
+        composerRedrawPending = false;
+        redrawComposer();
+      }
+      break;
+    case '3':
+      if (composerRedrawPending) {
+        composerRedrawPending = false;
+        refreshMode = 'normal';
+        redrawComposer();
+      }
       break;
     case 'v':
       // 左边缘 prompt glyph 出现在普通 transcript；不应被当成 Codex composer。
       out('\x1b[10;1HORIGINAL-CONTEXT\x1b[11;1HORIGINAL-SEPARATOR\x1b[12;1H› ordinary transcript');
       break;
+    case 'w':
+      // 和旧坐标不同的一行 transcript glyph；不能借重绘许可冒充 composer。
+      out('\x1b[13;1H› ordinary repaint transcript');
+      break;
+    case 'V':
+      // 甚至完整的静态签名也只是 scrollback；只有 fresh repaint challenge 能建立身份。
+      composer = false;
+      out('\x1b[12;1H› Ask Codex static transcript');
+      break;
+    case 'o':
+      // 一次 write 内旧 prompt → ED → 新 prompt；边界后那一行才是活坐标。
+      composer = true; composerDraft = 'ordered draft'; composerOffset = 2;
+      out('\x1b[8;1H› Ask Codex\x1b[2J\x1b[14;1H› ordered draft');
+      break;
+    case 'D':
+      // ED 后不重画。旧坐标必须失效，不能靠 transcript 猜回来。
+      composer = false;
+      out('\x1b[2JED-WITHOUT-REDRAW');
+      break;
+    case 'r':
+      // repaint 中 transcript glyph 比真实 composer 先到，而且故意分成两个 PTY write。
+      if (composer) {
+        out('\x1b[10;1H› transcript before composer');
+        setTimeout(() => { out(`\x1b[12;1H${prompt()}`); }, 20);
+      }
+      break;
+    case 'z':
+      // 半截 exact candidate 后改变坐标世代；后半截不能跨 invalidation 建立信任。
+      composer = false;
+      out('\x1b[12;1H› Ask');
+      setTimeout(() => { out('\x1b[2J Codex stale'); }, 20);
+      break;
     case 'A':
+      // Leave alternate screen and repaint the live composer after the transition bytes.
       out('\x1b[?1049l');
+      if (composer) setTimeout(() => { redrawComposer(); }, 5);
       break;
     case 'k':
       // push kitty 键盘标志（1|4 = 消歧 + 备用键码），真实 claude 启动时就发这条。
@@ -113,6 +247,13 @@ function command(ch: string): void {
       // 真实程序问这个是为了排版和给图算尺寸 —— 答成整屏它就会溢进游戏区。
       out('\x1b[18t\x1b[16t\x1b[14t');
       break;
+    case 'T':
+      // 让首进程被真实信号终止；node-pty 把信号和 exitCode 分开报告。
+      process.kill(process.pid, 'SIGTERM');
+      break;
+    case '7':
+      // 数字 137 是普通退出码，不得被 supervisor 猜成 SIGKILL。
+      process.exit(137);
     case 'q':
       out('BYE\r\n');
       process.exit(7);
@@ -130,6 +271,24 @@ function command(ch: string): void {
 process.stdout.on('resize', () => { out(`WINCH ${process.stdout.columns}x${process.stdout.rows}\r\n`); });
 // overlay 退出使用同尺寸 SIGWINCH 请求 TUI 重绘；尺寸没变时 stdout resize 不一定触发，
 // 单独记录原始信号才能验证恢复请求确实送到了内层进程组。
-process.on('SIGWINCH', () => { out('SIGWINCH\r\n'); if (composer) redrawComposer(); });
+process.on('SIGWINCH', () => {
+  out('SIGWINCH\r\n');
+  if (!composer || refreshMode === 'silent') return;
+  if (refreshMode === 'gated') {
+    composerRedrawPending = true;
+    return;
+  }
+  if (refreshMode === 'split') {
+    setTimeout(() => {
+      out('\x1b[10;1H› transcript before composer');
+      setTimeout(() => { redrawComposer(); }, 20);
+    }, 5);
+    return;
+  }
+  redrawComposerLater();
+});
 
-out('INNER-READY\r\n');
+const privateEnv = Object.keys(process.env).filter((key) => key.startsWith('MOYU_INTERNAL_')
+  || key === 'NODE_CHANNEL_FD' || key === 'NODE_CHANNEL_SERIALIZATION_MODE'
+  || key === 'MOYU_TAKEOVER_FLAG').sort().join(',');
+out(`INNER-READY ${process.pid} ${process.ppid} PRIVATE=${privateEnv}\r\n`);
