@@ -184,14 +184,28 @@ test('three built-in cartridges cover action, grid, and falling blocks', () => {
   assert.ok(BUILTIN_GAMES.every((g) => g.manifest.apiVersion === 1));
 });
 
-test('Tab cycles cartridges through the shared host', () => {
+// 这些用例构造真的 Arcade，会从 MOYU_HOME 读存档。真人玩过火柴快斩后本机就有
+// 章节存档，restore 会让 hud() 显示"第 N 章完成"而不是游戏名 —— 不隔离的话，
+// "玩过游戏就 npm run check 挂"。给每个用例一个干净的临时 home。
+function withFreshHome<T>(fn: () => T): T {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-home-'));
+  const before = process.env.MOYU_HOME;
+  process.env.MOYU_HOME = dir;
+  try { return fn(); }
+  finally {
+    if (before === undefined) delete process.env.MOYU_HOME; else process.env.MOYU_HOME = before;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('Tab cycles cartridges through the shared host', () => withFreshHome(() => {
   const a = new Arcade('/tmp/moyu-no-events-test');
   assert.match(a.hud().left, /火柴快斩/);
   a.feed(Uint8Array.of(9)); assert.match(a.hud().left, /贪吃蛇/);
   a.feed(Uint8Array.of(9)); assert.match(a.hud().left, /落块/);
-});
+}));
 
-test('all cartridges render through the portable target', () => {
+test('all cartridges render through the portable target', () => withFreshHome(() => {
   const a = new Arcade('/tmp/moyu-no-events-test');
   const target = new BrailleTarget(60, 12);
   for (let game = 0; game < 3; game++) {
@@ -199,9 +213,9 @@ test('all cartridges render through the portable target', () => {
     assert.notEqual(target.encode(2), '', `cartridge ${game} did not render`);
     a.feed(Uint8Array.of(9)); target.invalidate();
   }
-});
+}));
 
-test('all built-ins have a legible two-row micro composition', () => {
+test('all built-ins have a legible two-row micro composition', () => withFreshHome(() => {
   const a = new Arcade('/tmp/moyu-no-events-test');
   const target = new BrailleTarget(40, 2);
   for (let game = 0; game < 3; game++) {
@@ -209,7 +223,7 @@ test('all built-ins have a legible two-row micro composition', () => {
     assert.notEqual(target.encode(2), '', `micro cartridge ${game} did not render`);
     a.feed(Uint8Array.of(9)); target.invalidate();
   }
-});
+}));
 
 function fullMicroFrame(arcade: Arcade, target: BrailleTarget): string {
   target.invalidate();
