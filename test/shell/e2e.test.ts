@@ -126,6 +126,13 @@ async function launch(
     : [process.execPath, [...flags, `${root}src/app/main.ts`, '--', ...inner]];
   const env = launchEnv(via, process.env, extraEnv);
   if (via === 'sh') delete env.MOYU_TAKEOVER_FLAG;
+  // 隔离存档：不给 MOYU_HOME / HOME 的用例，派一个干净的临时 home。否则真人玩过后
+  // 本机存档会被恢复（比如章节已通关，HUD 变"第 N 章完成"而不是血量），e2e 就飘了。
+  let scratchHome: string | undefined;
+  if (extraEnv.MOYU_HOME === undefined && extraEnv.HOME === undefined) {
+    scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-e2e-home-'));
+    env.MOYU_HOME = scratchHome;
+  }
   const p = spawn(file, args, {
     cols: COLS, rows: ROWS, cwd: root, encoding: null, env,
     handleFlowControl: false,
@@ -167,7 +174,10 @@ async function launch(
     signal: (sig) => { try { process.kill(p.pid, sig as NodeJS.Signals); } catch { /* 已退 */ } },
     pauseOutput: () => { p.pause(); },
     resumeOutput: () => { p.resume(); },
-    kill: () => { p.kill('SIGKILL'); },
+    kill: () => {
+      p.kill('SIGKILL');
+      if (scratchHome !== undefined) try { fs.rmSync(scratchHome, { recursive: true, force: true }); } catch { /* best effort */ }
+    },
   };
 }
 
@@ -176,15 +186,14 @@ function cupRows(s: string): number[] {
   return [...s.matchAll(/\x1b\[(\d+);(\d+)H/g)].map((m) => Number(m[1]));
 }
 
-// 进游戏即活后，进入不再亮整页操作说明（那张 'J 砍' 说明页只在 Tab 换游戏时才闪一下），
-// 侧栏稳定文案变成 '… ? 帮助 · Esc 返回' / 窄档 '?帮助 Esc退'。'帮助' 是两档都在、
-// 且待机/内层都不会出现的干净标记 —— 用它证明"游戏画面在场"。
-const LIVE_PANEL = '帮助';
+// 进游戏即活后，进入不再亮整页说明（那张只在 Tab 换游戏时闪一下），操作提示改成常驻
+// 紧排一行；侧栏又窄，容易被截断。最稳的"游戏在场"标记是 HUD 里的血量读数 '血X/Y' ——
+// 它总在第一行、短到不会被截，且只在真正开打时出现（说明页/待机/内层都没有）。
+const LIVE_PANEL = '血';
 
 function inlineGameAt(s: string, row: number): boolean {
-  // 说明页时 'J 砍' 在浮层第 0 行（= inlineTop）；活场景时 '帮助' 落在第 1 行（hud 在第 0 行），
-  // 所以标记所在的绝对行比浮层顶多 1。
-  const expected = row - MICRO_GAME_ROWS + 1;
+  // HUD（含 '血'）画在浮层第 0 行 = inlineTop。
+  const expected = row - MICRO_GAME_ROWS;
   let at = -1;
   while ((at = s.indexOf(LIVE_PANEL, at + 1)) >= 0) {
     const rows = cupRows(s.slice(0, at));
@@ -343,9 +352,9 @@ test('默认只占一行，Ctrl+] 一键展开并用 Esc 返回', async () => {
     const playing = await s.waitFor((w) => {
       const tail = w.slice(enter);
       return tail.includes(`\x1b[1;${PLAY.innerRows}r`) && cupRows(tail).some((row) => row >= PLAY.gameTop)
-        && tail.includes('Esc 返回') && tail.includes(LIVE_PANEL);
+        && tail.includes(LIVE_PANEL);
     }, '展开游戏机');
-    assert.match(playing.slice(enter), /Esc 返回/, '进入时侧栏必须给出返回/帮助提示');
+    assert.match(playing.slice(enter), /血/, '进入时应直接是活的战斗画面（HUD 显示血量）');
     const begin = s.wire().length;
     s.send('j');
     await s.waitFor(w => /[\u2580-\u259f\u2800-\u28ff]/.test(w.slice(begin)), '操作后显示游戏');
@@ -379,7 +388,7 @@ test('Codex 中游戏覆盖在输入框正上方两行，退出后立即归还�
     s.send('\x1d');
     const playing = (await s.waitFor((w) => {
       const tail = w.slice(enter);
-      return /\x1b\[(?:10|11);\d+H/.test(tail) && tail.includes(LIVE_PANEL) && tail.includes('Esc 返回');
+      return /\x1b\[(?:10|11);\d+H/.test(tail) && tail.includes(LIVE_PANEL);
     }, '输入框上方两行游戏')).slice(enter);
     assert.ok(!playing.includes(`\x1b[1;${PLAY.innerRows}r`), 'overlay 不应 resize Codex 或改成底部分屏');
     assert.ok(playing.includes(`\x1b[${ROWS};1H\x1b[2K`), '进入时应清掉最底部候场提示');

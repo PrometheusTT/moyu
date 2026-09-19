@@ -598,8 +598,14 @@ export class Arcade {
     if (!this.playable()) return [m.name, this.displayRows <= 2
       ? `E 展开 · 需${this.minimumRows()}行 · Esc 返回`
       : `需${this.minimumRows()}行，请放大终端或使用 moyu play · Esc 返回`];
-    if (!this.instructions) return [slot.instance.hud?.() ?? m.name, 'E 大小 · ? 帮助 · Esc 返回'];
     const controls = m.controls.map((c) => `${c.keys[0] ?? ''} ${c.label}`).join(' · ');
+    // 进游戏即活后不再有整页说明，操作提示就得常驻第二行 —— 不然玩家根本不知道有
+    // 冲刺斩/旋斩这些键。侧栏窄（≈18 个汉字宽），所以用紧排（键紧贴标签、无 · 分隔），
+    // 把返回键让给外壳的 Ctrl+] / Esc（待机条已说明）。窄档 surface 仍会回退成 '?帮助 Esc退'。
+    if (!this.instructions) {
+      const compact = m.controls.map((c) => `${c.keys[0] ?? ''}${c.label}`).join(' ');
+      return [slot.instance.hud?.() ?? m.name, compact];
+    }
     return [`${m.name} · ${controls}`, 'E 大小 · Tab 换 · Esc 返回'];
   }
   get showingInstructions(): boolean { return this.instructions || !this.playable(); }
