@@ -176,10 +176,17 @@ function cupRows(s: string): number[] {
   return [...s.matchAll(/\x1b\[(\d+);(\d+)H/g)].map((m) => Number(m[1]));
 }
 
+// 进游戏即活后，进入不再亮整页操作说明（那张 'J 砍' 说明页只在 Tab 换游戏时才闪一下），
+// 侧栏稳定文案变成 '… ? 帮助 · Esc 返回' / 窄档 '?帮助 Esc退'。'帮助' 是两档都在、
+// 且待机/内层都不会出现的干净标记 —— 用它证明"游戏画面在场"。
+const LIVE_PANEL = '帮助';
+
 function inlineGameAt(s: string, row: number): boolean {
-  const expected = row - MICRO_GAME_ROWS;
+  // 说明页时 'J 砍' 在浮层第 0 行（= inlineTop）；活场景时 '帮助' 落在第 1 行（hud 在第 0 行），
+  // 所以标记所在的绝对行比浮层顶多 1。
+  const expected = row - MICRO_GAME_ROWS + 1;
   let at = -1;
-  while ((at = s.indexOf('J 砍', at + 1)) >= 0) {
+  while ((at = s.indexOf(LIVE_PANEL, at + 1)) >= 0) {
     const rows = cupRows(s.slice(0, at));
     if (rows.at(-1) === expected) return true;
   }
@@ -189,7 +196,7 @@ function inlineGameAt(s: string, row: number): boolean {
 function protectedSplit(s: string, innerRows: number): boolean {
   let region = -1;
   while ((region = s.indexOf(`\x1b[1;${innerRows}r`, region + 1)) >= 0) {
-    if (s.indexOf('J 砍', region) >= 0) return true;
+    if (s.indexOf(LIVE_PANEL, region) >= 0) return true;
   }
   return false;
 }
@@ -336,9 +343,9 @@ test('默认只占一行，Ctrl+] 一键展开并用 Esc 返回', async () => {
     const playing = await s.waitFor((w) => {
       const tail = w.slice(enter);
       return tail.includes(`\x1b[1;${PLAY.innerRows}r`) && cupRows(tail).some((row) => row >= PLAY.gameTop)
-        && tail.includes('Esc 返回') && tail.includes('J 砍');
+        && tail.includes('Esc 返回') && tail.includes(LIVE_PANEL);
     }, '展开游戏机');
-    assert.match(playing.slice(enter), /J 砍/, '进入时必须明确显示操作');
+    assert.match(playing.slice(enter), /Esc 返回/, '进入时侧栏必须给出返回/帮助提示');
     const begin = s.wire().length;
     s.send('j');
     await s.waitFor(w => /[\u2580-\u259f\u2800-\u28ff]/.test(w.slice(begin)), '操作后显示游戏');
@@ -372,7 +379,7 @@ test('Codex 中游戏覆盖在输入框正上方两行，退出后立即归还�
     s.send('\x1d');
     const playing = (await s.waitFor((w) => {
       const tail = w.slice(enter);
-      return /\x1b\[(?:10|11);\d+H/.test(tail) && tail.includes('J 砍') && tail.includes('Esc 返回');
+      return /\x1b\[(?:10|11);\d+H/.test(tail) && tail.includes(LIVE_PANEL) && tail.includes('Esc 返回');
     }, '输入框上方两行游戏')).slice(enter);
     assert.ok(!playing.includes(`\x1b[1;${PLAY.innerRows}r`), 'overlay 不应 resize Codex 或改成底部分屏');
     assert.ok(playing.includes(`\x1b[${ROWS};1H\x1b[2K`), '进入时应清掉最底部候场提示');
@@ -530,7 +537,7 @@ test('a prompt glyph in ordinary transcript falls back to the protected bottom s
     s.send('\x1d');
     const playing = (await s.waitFor((w) => {
       const tail = w.slice(enter);
-      return tail.includes(`\x1b[1;${PLAY.innerRows}r`) && tail.includes('J 砍');
+      return tail.includes(`\x1b[1;${PLAY.innerRows}r`) && tail.includes(LIVE_PANEL);
     }, '受保护的底部分屏')).slice(enter);
     assert.ok(!/\x1b\[(?:10|11);1H\x1b\[2K/.test(playing), '不能清掉 transcript 上方两行');
     const leave = s.wire().length;
@@ -671,7 +678,7 @@ test('E expands a full board, while an unsupported micro toggle returns input to
     await s.waitFor(w => w.includes(STANDBY), '待机');
     await establishComposer(s);
     s.send('\x1d');
-    await s.waitFor(w => w.includes('J 砍'), '首次帮助');
+    await s.waitFor(w => w.includes(LIVE_PANEL), '进入即活');
     let mark = s.wire().length;
     s.send('e');
     await s.waitFor(w => w.slice(mark).includes('\x1b[1;34r'), '六行展开');
@@ -992,7 +999,7 @@ test('too-small yield never paints stale inline rows and keeps CLI focus on resu
     await new Promise((resolve) => setTimeout(resolve, 160));
     const quiet = s.wire().slice(yielded);
     assert.deepEqual(cupRows(quiet).filter((row) => row > TINY), [], '让屏期间还按旧布局画到屏幕外');
-    assert.ok(!quiet.includes('J 砍'), '让屏期间不应重启输入框浮层');
+    assert.ok(!quiet.includes(LIVE_PANEL), '让屏期间不应重启输入框浮层');
 
     const resume = s.wire().length;
     s.resize(COLS, ROWS);
@@ -1164,9 +1171,8 @@ test('graphics task handoff deletes the live image before standby and stays quie
     const file = await sessionEvents(s);
     const enter = s.wire().length;
     s.send('\x1d');
-    await s.waitFor((w) => w.slice(enter).includes('J 砍'), '像素游戏首次帮助');
-    s.send('j');
-    await s.waitFor((w) => w.slice(enter).includes('\x1b_G'), '像素游戏首帧');
+    // 进游戏即活：图形档进入直接出第一张 APC 图，不再先亮说明页、也不用先按键起步。
+    await s.waitFor((w) => w.slice(enter).includes('\x1b_G'), '像素游戏进入即出首帧');
 
     const event = s.wire().length;
     signalSession(file, 'done');

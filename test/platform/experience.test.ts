@@ -41,6 +41,27 @@ test('help is visible before first input, remains without a timeout, and is remo
   assert.match(first, /[\u2580-\u259f\u2800-\u28ff]/);
 });
 
+test('进游戏即活：enter() 当场收起说明，无需按键世界就推进并渲染', () => {
+  const { game, steps } = recorder();
+  const surface = new PlaySurface(), target = new BrailleTarget(40, 2);
+  // Ctrl+] 进游戏（main.ts 里唯一 enter() 调用点走的就是这条）。
+  game.enter();
+  assert.equal(game.showingInstructions, false, '进游戏后不应停在说明页');
+  // 一个键都没按，世界照样出步、场景照样画出来。
+  game.advance(1000); game.advance(1000 + 1000 / 30 + 0.001);
+  assert.ok(steps.length > 0, '进游戏后世界应自行推进，而不是等按键');
+  assert.match(surface.render(game, target, 10, 60, 2), /[▀-▟⠀-⣿]/,
+    '进游戏后应直接渲染场景，而不是空白说明底');
+});
+
+test('太小放不下时 enter() 不硬开：showingInstructions 仍为真，交给让出逻辑', () => {
+  const { game } = recorder(); // 默认 minRows=4
+  game.setDisplay(3, 'braille'); // 3 行：非 micro 路径且 < minRows → playable() 假
+  game.enter();
+  assert.equal(game.playable(), false);
+  assert.equal(game.showingInstructions, true, '放不下时不应假装进入了活场景');
+});
+
 test('held direction applies to every 60Hz step at both 15fps and 30fps; action fires once', () => {
   for (const interval of [1000 / 15, 1000 / 30]) {
     const { game, steps } = recorder();

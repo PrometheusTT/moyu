@@ -626,6 +626,14 @@ export class Arcade {
     enter() {
         this.statusValue = 'idle';
         this.pendingAction = null;
+        // 进游戏即活：世界立刻推进并渲染，不再拦一张"按键才开始"的空白说明页。
+        // 控制提示留在侧栏（? 帮助 / Esc 返回），? 仍随时叫出完整说明。太小放不下时
+        // playable() 为假，showingInstructions 自然回到 true，让出/返回逻辑照旧接管。
+        // Tab 换游戏仍先亮一次新游戏的操作（next 里置 instructions=true），因为那是没见过的新键位。
+        if (this.playable()) {
+            this.instructions = false;
+            this.resetClock();
+        }
     }
     get status() { return this.statusValue; }
     takeAction() {
