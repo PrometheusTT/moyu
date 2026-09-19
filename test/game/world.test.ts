@@ -231,3 +231,61 @@ test('玩家不会走出画布', () => {
   run(w, 60 * 12, () => ({ move: 1, jump: false, slash: false }));
   assert.ok(w.player.x <= w.w - 2, `玩家跑到了 x=${w.player.x}`);
 });
+
+test('冲刺斩：向前窜一段、带碎路上的杂兵，全程无敌', () => {
+  const w = new World(7, { automaticSpawns: false });
+  w.resize(120, 40);
+  w.taskStart();
+  w.spawnFormation({ kind: 'single', side: 'right' });
+  const e = w.enemies[0]!;
+  e.x = w.player.x + w.fh * 0.6;   // 落在冲刺路径上
+  e.y = w.player.y;
+  w.player.face = 1;
+  const x0 = w.player.x;
+  w.step(STEP, { move: 0, jump: false, slash: false, dash: true });
+  assert.equal(w.kills, 1, '冲刺没有把身前的杂兵带碎');
+  assert.equal(w.enemies.length, 0);
+  assert.ok(w.player.invuln > 0, '冲刺全程应有无敌帧');
+  run(w, 8);
+  assert.ok(w.player.x > x0 + w.fh, `冲刺位移不够（${(w.player.x - x0).toFixed(1)}）`);
+});
+
+test('冲刺斩有冷却：刚冲完立刻再按不生效', () => {
+  const w = new World(8, { automaticSpawns: false });
+  w.resize(120, 40);
+  w.taskStart();
+  w.player.face = 1;
+  w.step(STEP, { move: 0, jump: false, slash: false, dash: true });
+  run(w, 14);                       // 冲刺动作结束（0.18s），冷却仍在
+  const x1 = w.player.x;
+  w.spawnFormation({ kind: 'single', side: 'right' });
+  w.enemies.at(-1)!.x = w.player.x + w.fh * 0.5;
+  w.enemies.at(-1)!.y = w.player.y;
+  w.step(STEP, { move: 0, jump: false, slash: false, dash: true });
+  assert.equal(w.kills, 0, '冷却期内冲刺不该触发');
+  run(w, 6);
+  assert.ok(Math.abs(w.player.x - x1) < w.fh, '冷却期内不该再窜出去');
+});
+
+test('旋斩：一圈杂兵全砍飞，留下接近整圈的刀光；冷却内不连放', () => {
+  const w = new World(9, { automaticSpawns: false });
+  w.resize(120, 40);
+  w.taskStart();
+  w.spawnFormation({ kind: 'pincer' });
+  for (const e of w.enemies) { e.x = w.player.x + (e.face > 0 ? -1 : 1) * w.fh * 0.9; e.y = w.player.y; }
+  const around = w.enemies.length;
+  assert.ok(around >= 2, '需要两侧各一个杂兵');
+  const before = w.slashes.length;
+  w.step(STEP, { move: 0, jump: false, slash: false, spin: true });
+  assert.equal(w.kills, around, '旋斩没把一圈杂兵全带走');
+  const ring = w.slashes.at(-1)!;
+  assert.ok(w.slashes.length > before && Math.abs(ring.a1 - ring.a0) >= Math.PI * 1.9,
+    '旋斩应留下一道接近整圈的刀光');
+  run(w, 24);                       // 转完（0.34s），冷却仍在
+  const kills = w.kills;
+  w.spawnFormation({ kind: 'single', side: 'right' });
+  w.enemies.at(-1)!.x = w.player.x + w.fh * 0.5;
+  w.enemies.at(-1)!.y = w.player.y;
+  w.step(STEP, { move: 0, jump: false, slash: false, spin: true });
+  assert.equal(w.kills, kills, '冷却期内旋斩不该再触发');
+});

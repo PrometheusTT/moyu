@@ -12,7 +12,8 @@ function fighter(overrides: Partial<Fighter> = {}): Fighter {
   return {
     kind: 'player', x: 40, y: 20, vx: 0, vy: 0, h: 12, face: 1, onGround: true,
     hp: 4, walk: 0, anim: 0, atk: -1, atkHit: false, atkQueued: false, hurt: 0,
-    land: 0, invuln: 0, windup: -1, cool: 0, speed: 20, pose: {
+    land: 0, invuln: 0, windup: -1, cool: 0, speed: 20,
+    dashT: 0, dashCool: 0, spinT: 0, spinCool: 0, pose: {
       lean: 0, armA: 0, elbowA: 0, armB: 0, elbowB: 0, hipA: 0, kneeA: 0,
       hipB: 0, kneeB: 0, blade: 0, crouch: 0,
     }, armed: true, ...overrides,

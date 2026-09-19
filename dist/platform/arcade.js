@@ -12,7 +12,7 @@ import { LogicalCanvas } from "./canvas.js";
 import { drawMicroFighter } from "./micro-sprites.js";
 import { NativePixelCanvas } from "./pixel-canvas.js";
 import { paintPixelWorld, snapshotFighters } from "../render/pixel-scene.js";
-const EMPTY_INPUT = { left: false, right: false, up: false, down: false, jump: false, primary: false, secondary: false };
+const EMPTY_INPUT = { left: false, right: false, up: false, down: false, jump: false, primary: false, secondary: false, special: false };
 const BG = 0x090a0e, GRID = 0x151722, INK = 0xecf0f8, ACCENT = 0xe43834, AMBER = 0xa67c00;
 // 展开 braille 的战斗残留配色：暗红血迹、瘫地断肢的灰、杂兵碎块的棕。
 const STAIN = 0x68121a, DEAD = 0x5c5f6c, FOE = 0xb37b58;
@@ -28,6 +28,7 @@ class InputLatch {
     jump = false;
     primary = false;
     secondary = false;
+    special = false;
     hold(until, now) {
         return now + (now < until ? REPEAT_DIRECTION_MS : FIRST_DIRECTION_MS);
     }
@@ -83,7 +84,9 @@ class InputLatch {
                 this.primary = true;
             else if (b === 0x75)
                 this.secondary = true;
-            if ('ahdlswkjf;u '.includes(String.fromCharCode(b)))
+            else if (b === 0x69)
+                this.special = true;
+            if ('ahdlswkjf;ui '.includes(String.fromCharCode(b)))
                 played = true;
         }
         return played ? 'play' : null;
@@ -96,13 +99,13 @@ class InputLatch {
             right = this.lastHorizontal === 1;
         }
         const out = { left, right, up: this.up,
-            down: now < this.downUntil, jump: this.jump, primary: this.primary, secondary: this.secondary };
-        this.up = this.jump = this.primary = this.secondary = false;
+            down: now < this.downUntil, jump: this.jump, primary: this.primary, secondary: this.secondary, special: this.special };
+        this.up = this.jump = this.primary = this.secondary = this.special = false;
         return out;
     }
     clear() {
         this.leftUntil = this.rightUntil = this.downUntil = 0;
-        this.up = this.jump = this.primary = this.secondary = false;
+        this.up = this.jump = this.primary = this.secondary = this.special = false;
     }
 }
 class StickGame {
@@ -122,7 +125,8 @@ class StickGame {
         this.previous = snapshotFighters(this.world, this.scratch);
         this.scratch = previous;
         const intent = { move: input.left === input.right ? 0 : input.left ? -1 : 1,
-            jump: input.jump || input.up, slash: input.primary };
+            jump: input.jump || input.up, slash: input.primary,
+            dash: input.secondary === true, spin: input.special === true };
         if (this.director.result !== null && input.primary
             && this.director.nextChapter(this.world)) {
             this.reduceMotion();
@@ -540,7 +544,7 @@ function manifest(id, name, description, viewport) {
         display: { micro: id === 'stick-slash', minRows: id === 'stick-slash' ? 4 : 6, glyphs: id === 'stick-slash' ? 'dots' : 'blocks' },
         palette: ['#090a0e', '#ecf0f8', '#e43834', '#a67c00'],
         controls: id === 'stick-slash'
-            ? [{ action: 'move', label: '移动', keys: ['A/D', '方向键'] }, { action: 'primary', label: '砍', keys: ['J'] }, { action: 'jump', label: '跳', keys: ['空格'] }]
+            ? [{ action: 'move', label: '移动', keys: ['A/D', '方向键'] }, { action: 'primary', label: '砍', keys: ['J'] }, { action: 'jump', label: '跳', keys: ['空格'] }, { action: 'secondary', label: '冲刺斩', keys: ['U'] }, { action: 'special', label: '旋斩', keys: ['I'] }]
             : id === 'snake' ? [{ action: 'move', label: '方向', keys: ['WASD', '方向键'] }]
                 : [{ action: 'move', label: '移动', keys: ['A/D'] }, { action: 'primary', label: '旋转', keys: ['J'] }, { action: 'down', label: '下落', keys: ['S'] }, { action: 'jump', label: '直落', keys: ['空格'] }] };
 }

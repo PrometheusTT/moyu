@@ -101,7 +101,7 @@ test('overlapping horizontal holds use the most recently pressed direction', () 
   game.advance(1017);
   assert.deepEqual(steps.at(-1), {
     left: true, right: false, up: false, down: false,
-    jump: false, primary: false, secondary: false,
+    jump: false, primary: false, secondary: false, special: false,
   });
 
   game.feed(Buffer.from('d'), 1020);

@@ -18,6 +18,8 @@ export type GameManifest = {
 export type GameInput = {
   left: boolean; right: boolean; up: boolean; down: boolean;
   jump: boolean; primary: boolean; secondary: boolean;
+  /** 第三动作键（旋斩等）。可选：老的输入构造省略它即视为未按。 */
+  special?: boolean;
 };
 
 export type GameCanvas = {

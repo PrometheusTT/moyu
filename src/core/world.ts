@@ -27,9 +27,13 @@ export type Intent = {
   move: -1 | 0 | 1;
   jump: boolean;
   slash: boolean;
+  /** 冲刺斩：朝身前窜一段，路上的杂兵全带碎。可选：省略视为未按。 */
+  dash?: boolean;
+  /** 旋斩：原地 360° 扫倒一圈。可选：省略视为未按。 */
+  spin?: boolean;
 };
 
-export const NO_INTENT: Intent = { move: 0, jump: false, slash: false };
+export const NO_INTENT: Intent = { move: 0, jump: false, slash: false, dash: false, spin: false };
 
 /** 'title' 等第一刀，'fight' 打，'clear' 清屏技放完，'paused' 等下一个任务。 */
 export type Phase = 'title' | 'fight' | 'clear' | 'paused';
@@ -63,6 +67,14 @@ export type Fighter = {
   windup: number;
   cool: number;
   speed: number;
+  /** 冲刺斩进行中剩余（秒）；<= 0 = 没在冲。 */
+  dashT: number;
+  /** 冲刺斩冷却剩余（秒）。 */
+  dashCool: number;
+  /** 旋斩进行中剩余（秒）；<= 0 = 没在转。 */
+  spinT: number;
+  /** 旋斩冷却剩余（秒）。 */
+  spinCool: number;
   pose: Pose;
   armed: boolean;
 };
@@ -103,6 +115,13 @@ const PLAYER_HP = 4;
 
 /** 落地压扁的持续时间。30fps 下约 3 帧 —— 少于这个数就一闪而过看不见（见 `poseLand`）。 */
 const LAND_TIME = 0.1;
+
+/** 冲刺斩：窜出的持续时间与冷却。短促、可连用，是走位也是进攻。 */
+const DASH_TIME = 0.18;
+const DASH_COOL = 0.5;
+/** 旋斩：转一圈的持续时间与冷却。范围技，冷却明显更长。 */
+const SPIN_TIME = 0.34;
+const SPIN_COOL = 1.1;
 
 export class World {
   w = 80;
@@ -323,12 +342,14 @@ export class World {
   /**
    * 玩家最高速度。**下限跟场地宽度挂钩**，不只跟身高挂钩。
    *
-   * 条形模式里身高只有 3 像素、场地却有 40 像素宽：`fh × 2.4 = 7.2 像素/秒`
-   * 意味着横穿场地要五秒半，走起来像在爬。所以再压一条"约 2.6 秒能横穿一趟"的下限。
-   * 半屏 / 全屏尺寸下 `fh × 2.4` 本来就更大，这条不生效（160 宽 × 身高 26 → 62.4 对 61.5）。
+   * 条形模式里身高只有 3 像素、场地却有 40 像素宽，光靠 `fh ×` 走起来像爬，
+   * 所以压一条"约 1.7 秒横穿一趟"的下限。半屏 / 全屏尺寸下 `fh ×` 那项本来就更大。
+   *
+   * 数值整体比最初调快了一档（用户反馈"走路太慢"）：身高项 2.4→3.0、横穿项 2.6→2.0。
+   * 杂兵速度按玩家速度的比例派生，所以提速不改双方的相对追逐关系，只是整体更跟手。
    */
   private playerSpeed(): number {
-    return Math.max(this.fh * 2.4, this.w / 2.6);
+    return Math.max(this.fh * 3.0, this.w / 2.0);
   }
 
   private makePlayer(): Fighter {
@@ -337,6 +358,7 @@ export class World {
       h: this.fh, face: 1, onGround: true, hp: PLAYER_HP,
       walk: 0, anim: 0, atk: -1, atkHit: false, atkQueued: false,
       hurt: 0, land: 0, invuln: 0.6, windup: -1, cool: 0, speed: this.playerSpeed(),
+      dashT: 0, dashCool: 0, spinT: 0, spinCool: 0,
       pose: poseIdle(0), armed: true,
     };
   }
@@ -346,10 +368,45 @@ export class World {
     p.anim += dt;
     if (p.hurt > 0) p.hurt -= dt;
     if (p.invuln > 0) p.invuln -= dt;
+    if (p.dashCool > 0) p.dashCool -= dt;
+    if (p.spinCool > 0) p.spinCool -= dt;
+
+    // 冲刺斩进行中：全程维持向前的冲量、每帧收割身上的杂兵，其它输入一律屏蔽。
+    if (p.dashT > 0) {
+      p.dashT -= dt;
+      p.vx = p.face * this.playerSpeed() * 3.4;
+      this.resolveDash(p);
+      this.integrate(dt, p);
+      p.pose = this.poseFor(p);
+      return;
+    }
+    // 旋斩进行中：定身把这一圈转完（判定在起手那一下已经结算）。
+    if (p.spinT > 0) {
+      p.spinT -= dt;
+      p.vx *= Math.exp(-dt * 12);
+      this.integrate(dt, p);
+      p.pose = this.poseFor(p);
+      return;
+    }
 
     // 攻击中不能改朝向、不能主动移动 —— 挥刀是一次承诺，能中途转向的话
     // 就变成了"无脑乱挥都能中"，挥空的惩罚也就没了。
     const busy = p.atk >= 0 && p.atk < 0.46;
+
+    // 技能优先于普通攻击：不在挥刀硬直里、且冷却好了才放。
+    if (input.spin && !busy && p.atk < 0 && p.onGround && p.spinCool <= 0) {
+      this.startSpin(p);
+      this.integrate(dt, p);
+      p.pose = this.poseFor(p);
+      return;
+    }
+    if (input.dash && !busy && p.atk < 0 && p.dashCool <= 0) {
+      this.startDash(p);
+      this.resolveDash(p);
+      this.integrate(dt, p);
+      p.pose = this.poseFor(p);
+      return;
+    }
 
     if (input.slash) {
       if (p.atk < 0) { p.atk = 0; p.atkHit = false; }
@@ -382,6 +439,67 @@ export class World {
     }
 
     p.pose = this.poseFor(p);
+  }
+
+  /** 冲刺斩起手：定住方向窜出去，给足穿过全程的无敌帧，取消手上的普通刀。 */
+  private startDash(p: Fighter): void {
+    p.dashT = DASH_TIME;
+    p.dashCool = DASH_COOL;
+    p.atk = -1; p.atkHit = false; p.atkQueued = false;
+    p.vx = p.face * this.playerSpeed() * 3.4;
+    p.invuln = Math.max(p.invuln, DASH_TIME + 0.08);
+  }
+
+  /** 冲刺途中把贴到身上的杂兵带碎。不给顿帧 —— 顿帧会冻住冲刺，冲刺要的是"一穿到底"。 */
+  private resolveDash(p: Fighter): void {
+    let hit = 0;
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const e = this.enemies[i]!;
+      if (Math.abs(e.x - p.x) > this.fh * 0.7) continue;
+      if (e.y - e.h > p.y + this.fh * 0.15 || e.y < p.y - this.fh * 1.05) continue;
+      this.dismember(e, e.y - e.h * this.rng.range(0.4, 0.7), p.face, 1.2);
+      this.enemies.splice(i, 1);
+      hit++;
+    }
+    if (hit > 0) {
+      this.kills += hit; this.taskKills += hit; this.combo += hit;
+      this.stepComboPeak = Math.max(this.stepComboPeak, this.combo);
+      this.comboT = 1.6;
+      if (this.combo > this.bestCombo) this.bestCombo = this.combo;
+      this.shake = Math.min(3.2, this.shake + 0.7 + hit * 0.3);
+    }
+  }
+
+  /** 旋斩起手：定身、把一圈范围内的杂兵全朝外侧砍飞，留一道整圈刀光。 */
+  private startSpin(p: Fighter): void {
+    p.spinT = SPIN_TIME;
+    p.spinCool = SPIN_COOL;
+    p.atk = -1; p.atkHit = false; p.atkQueued = false;
+    const reach = this.fh * 1.55;
+    let hit = 0;
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const e = this.enemies[i]!;
+      if (Math.abs(e.x - p.x) > reach) continue;
+      if (e.y - e.h > p.y + this.fh * 0.2 || e.y < p.y - this.fh * 1.15) continue;
+      this.dismember(e, e.y - e.h * this.rng.range(0.35, 0.7), e.x >= p.x ? 1 : -1, 1.35);
+      this.enemies.splice(i, 1);
+      hit++;
+    }
+    // 整圈刀光：a0→a1 跨满一圈，渲染层照现有的弧线画法扫一整周。
+    this.slashes.push({
+      x: p.x, y: p.y - this.fh * 0.55, r: reach * 0.95,
+      a0: -Math.PI, a1: Math.PI, life: 0.22, max: 0.22, big: true,
+    });
+    if (hit > 0) {
+      this.kills += hit; this.taskKills += hit; this.combo += hit;
+      this.stepComboPeak = Math.max(this.stepComboPeak, this.combo);
+      this.comboT = 1.6;
+      if (this.combo > this.bestCombo) this.bestCombo = this.combo;
+      this.hitstop = Math.min(0.09, 0.05 + hit * 0.01);
+      this.shake = Math.min(3.4, this.shake + 1.0 + hit * 0.3);
+    } else {
+      this.shake = Math.min(3.4, this.shake + 0.5);
+    }
   }
 
   /** 一刀的判定。命中的每一个杂兵都当场砍碎。 */
@@ -458,6 +576,7 @@ export class World {
       atk: -1, atkHit: false, atkQueued: false, hurt: 0, land: 0, invuln: 0,
       windup: -1, cool: this.rng.range(0, 0.5),
       speed: this.playerSpeed() * this.rng.range(0.35, 0.56),
+      dashT: 0, dashCool: 0, spinT: 0, spinCool: 0,
       pose: poseIdle(0), armed: false,
     };
   }
@@ -627,6 +746,9 @@ export class World {
   }
 
   private poseFor(f: Fighter): Pose {
+    // 冲刺是前倾的突进，旋斩是快速扫刀 —— 都借用挥刀姿态，省一套骨架美术。
+    if (f.dashT > 0) return poseSlash(0.45);
+    if (f.spinT > 0) return poseSlash(clamp(1 - f.spinT / SPIN_TIME, 0, 1));
     if (f.atk >= 0) return poseSlash(clamp(f.atk / 0.62, 0, 1));
     if (f.windup >= 0) return poseWindup(clamp(1 - f.windup / 0.42, 0, 1));
     if (f.hurt > 0) return poseHurt(clamp(f.hurt / 0.35, 0, 1));
