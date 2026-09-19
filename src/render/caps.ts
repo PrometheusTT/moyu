@@ -243,7 +243,9 @@ export type ProbeIO = {
 export async function probeCaps(io: ProbeIO): Promise<Caps> {
   const env = io.env;
   const ssh = env.SSH_CONNECTION !== undefined && env.SSH_CONNECTION !== '';
-  const fps = ssh ? 15 : 30;
+  // 本地 60fps：渲染频率对齐 60Hz 模拟步，braille/half 不再每帧跳 1~2 个子步（那正是"卡卡"的来源）。
+  // SSH 仍 15fps —— 带宽比手感金贵，翻倍会拖垮远端。
+  const fps = ssh ? 15 : 60;
   const forced = env.MOYU_TIER === 'half' || env.MOYU_TIER === 'braille' || env.MOYU_TIER === 'graphics'
     ? env.MOYU_TIER : undefined;
   const envCell = parseCellEnv(env.MOYU_CELL);

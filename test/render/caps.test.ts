@@ -122,7 +122,7 @@ test('探到了：像素档 + 精确格像素 + leftover 交还宿主', async ()
   assert.equal(c.tier, 'graphics');
   assert.equal(c.cellW, 16);
   assert.equal(c.cellH, 34);
-  assert.equal(c.fps, 30);
+  assert.equal(c.fps, 60);
   assert.equal(Buffer.from(c.leftover).toString('latin1'), 'x', '用户抢跑打的字要交还');
   assert.equal(listeners.length, 0, '临时 listener 没摘掉 —— 之后每个按键都会被它读两遍');
 });

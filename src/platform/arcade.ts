@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { homedir } from 'node:os';
 import { SignalTail } from '../bridge/signal.ts';
 import { Rng } from '../core/rng.ts';
-import { World, type Intent } from '../core/world.ts';
+import { World, type Intent, type Piece } from '../core/world.ts';
 import { CHAPTER_COUNT, ChapterDirector, parseChapterCheckpoint } from '../core/chapter.ts';
 import { segments } from '../core/stick.ts';
 import { paintWorld } from '../render/scene.ts';
@@ -17,6 +17,8 @@ import type { GameCanvas, GameContext, GameInput, GameInstance, GameManifest, Ga
 
 const EMPTY_INPUT: GameInput = { left: false, right: false, up: false, down: false, jump: false, primary: false, secondary: false };
 const BG = 0x090a0e, GRID = 0x151722, INK = 0xecf0f8, ACCENT = 0xe43834, AMBER = 0xa67c00;
+// 展开 braille 的战斗残留配色：暗红血迹、瘫地断肢的灰、杂兵碎块的棕。
+const STAIN = 0x68121a, DEAD = 0x5c5f6c, FOE = 0xb37b58;
 const HOST_POLL_MS = 100;
 const FIRST_DIRECTION_MS = 340;
 const REPEAT_DIRECTION_MS = 150;
@@ -149,23 +151,58 @@ class StickGame implements GameInstance {
     this.scratch.clear();
   }
   renderExpanded(c: GameCanvas): void {
+    const w = this.world;
     c.clear(BG);
-    const scale = c.width / this.world.w;
+    const scale = c.width / w.w;
     const ground = c.height - 3;
-    const verticalScale = Math.min(scale, ground / this.world.ground);
-    for (const f of [...this.world.enemies, ...(this.world.respawn > 0 ? [] : [this.world.player])]) {
-      const color = f === this.world.player ? (f.hurt > 0 ? ACCENT : INK) : f.windup >= 0 ? ACCENT : 0xb37b58;
-      const body = { ...f, x: f.x * scale, y: ground - (this.world.ground - f.y) * verticalScale, h: f.h * verticalScale };
+    const verticalScale = Math.min(scale, ground / w.ground);
+    // 屏幕震动整场一起抖 —— 命中的"咚"一半靠它。竖直分量本就被 world 夹得很小。
+    const dx = w.shakeX;
+    const dy = w.shakeY;
+    const px = (x: number): number => (x + dx) * scale;
+    const py = (y: number): number => ground - (w.ground - (y + dy)) * verticalScale;
+
+    // 地上的血迹垫最底。
+    for (const key of w.stains) c.pixel(Math.round(px(key % 4096)), Math.round(py(Math.floor(key / 4096))), STAIN);
+
+    // 断肢：先躺平的（垫底），再飞着的。这是"砍碎"的回报，之前展开档整块丢了。
+    const drawPiece = (p: Piece): void => {
+      const color = p.rest ? DEAD : p.mine ? INK : FOE;
+      if (p.head) { c.rect(Math.round(px(p.x) - 1), Math.round(py(p.y) - 1), 2, 2, color); return; }
+      const vx = Math.cos(p.ang) * p.half;
+      const vy = Math.sin(p.ang) * p.half;
+      c.line(px(p.x - vx), py(p.y - vy), px(p.x + vx), py(p.y + vy), color);
+    };
+    for (const p of w.pieces) if (p.rest) drawPiece(p);
+    for (const p of w.pieces) if (!p.rest) drawPiece(p);
+
+    for (const f of [...w.enemies, ...(w.respawn > 0 ? [] : [w.player])]) {
+      const color = f === w.player ? (f.hurt > 0 ? ACCENT : INK) : f.windup >= 0 ? ACCENT : FOE;
+      const flash = w.hitstop > 0 && f.armed;   // 命中那几帧刀刃闪白
+      const body = { ...f, x: px(f.x), y: py(f.y), h: f.h * verticalScale };
       for (const s of segments(body)) {
         if (s.part === 'head') c.rect(Math.round(s.x0 - 1), Math.round(s.y0 - 1), 2, 2, color);
-        else c.line(s.x0, s.y0, s.x1, s.y1, s.part === 'blade' ? AMBER : color);
+        else c.line(s.x0, s.y0, s.x1, s.y1, s.part === 'blade' ? (flash ? INK : AMBER) : color);
       }
     }
-    if (this.world.respawn > 0) c.line(this.world.player.x * scale - 3, ground, this.world.player.x * scale + 3, ground, ACCENT);
-    if (this.world.hitstop > 0 && this.world.player.atk >= 0) {
-      const x = (this.world.player.x + this.world.player.face * this.world.fh * 1.15) * scale;
-      c.line(x, ground - 8, x, ground - 6, ACCENT);
+    if (w.respawn > 0) c.line(px(w.player.x) - 3, py(w.ground), px(w.player.x) + 3, py(w.ground), ACCENT);
+
+    // 刀光：沿圆弧采样几段连成弧线，挥出的前半段更亮。
+    for (const s of w.slashes) {
+      const bright = s.life / s.max > 0.5;
+      let ax = px(s.x + Math.cos(s.a0) * s.r);
+      let ay = py(s.y + Math.sin(s.a0) * s.r);
+      for (let i = 1; i <= 6; i++) {
+        const a = s.a0 + (s.a1 - s.a0) * i / 6;
+        const bx = px(s.x + Math.cos(a) * s.r);
+        const by = py(s.y + Math.sin(a) * s.r);
+        c.line(ax, ay, bx, by, bright ? INK : AMBER);
+        ax = bx; ay = by;
+      }
     }
+
+    // 血花盖在最上，和 paintWorld 一样的层序（血是盖在刀光和身体之上的）。
+    for (const b of w.blood) c.pixel(Math.round(px(b.x)), Math.round(py(b.y)), ACCENT);
   }
   serialize(): unknown {
     return { version: 1, kills: this.world.kills, bestCombo: this.world.bestCombo,
