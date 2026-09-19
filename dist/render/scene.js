@@ -83,8 +83,13 @@ export function paintWorld(p, w) {
         if (!q.rest)
             paintPiece(p, w, q, dx, dy, tint(q.mine ? BONE : PIECE_AIR, dim));
     for (const e of w.enemies) {
+        // 变种只改本色（尺寸本就由 h 驱动）：快刀手偏亮、重甲偏暗、boss 深红。
+        const base = e.tag === 'boss' ? mix(ACCENT, KEY, 0.32)
+            : e.tag === 'brute' ? mix(FOE, KEY, 0.4)
+                : e.tag === 'runner' ? mix(FOE, BONE, 0.32)
+                    : FOE;
         // 起手的杂兵整个人变红：这是它唯一的预警，看不见就等于偷袭。
-        const c = e.windup >= 0 ? mix(FOE, ACCENT, 0.55 + 0.45 * Math.sin(e.windup * 40)) : FOE;
+        const c = e.windup >= 0 ? mix(base, ACCENT, 0.55 + 0.45 * Math.sin(e.windup * 40)) : base;
         paintFighter(p, w, e, dx, dy, tint(c, dim), false);
     }
     if (w.respawn <= 0) {

@@ -1,6 +1,19 @@
 import { NO_INTENT } from "./world.js";
 export const CHAPTER_STEPS = 1800;
 export const CHAPTER_COUNT = 10;
+/** 每章一句剧情标题，在该章的"完成屏"上亮出（按 J 进下一章前的剧情节拍）。第 3/6/9 章是 boss 章。 */
+export const CHAPTER_TITLES = [
+    '巷口的第一刀',
+    '桥头的伏兵',
+    '断电的工厂', // boss
+    '雨夜的追逐',
+    '天台上的风',
+    '钟楼的守卫', // boss
+    '末班地铁',
+    '霓虹长街',
+    '老板的走廊', // boss
+    '加班的尽头',
+];
 export const OPENING_END = 180;
 export const ORDINARY_END = 720;
 export const PINCER_END = 1320;
@@ -32,6 +45,8 @@ export class ChapterDirector {
         this.seedValue = seed >>> 0;
     }
     get runSeed() { return this.seedValue; }
+    /** 当前章的剧情标题（供 HUD 开场横幅用）。 */
+    chapterTitle() { return CHAPTER_TITLES[this.chapter - 1] ?? ''; }
     start(world) {
         this.chapter = 1;
         this.saved = null;
@@ -114,8 +129,15 @@ export class ChapterDirector {
             return;
         }
         if (step >= PINCER_END) {
-            const interval = 150 - pressure * 15;
             const offset = step - PINCER_END;
+            // 每 3 章（第 3/6/9 章）的收尾段是 boss 战：开头挤出一个 boss（spawnBoss 满场会腾位，
+            // 保证一定出现），之后不再刷 fill —— 让玩家专心打 boss。第 1/4 章 %3≠0，日程断言不受影响。
+            if (this.chapter % 3 === 0) {
+                if (offset === 0)
+                    world.spawnBoss(this.side(this.chapter));
+                return;
+            }
+            const interval = 150 - pressure * 15;
             if (offset % interval === 0)
                 world.spawnFormation({ kind: 'fill', side: this.side(offset / interval + 23) });
         }

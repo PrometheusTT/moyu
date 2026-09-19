@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  CHAPTER_COUNT, CHAPTER_STEPS, OPENING_END, ORDINARY_END, PINCER_END,
+  CHAPTER_COUNT, CHAPTER_STEPS, CHAPTER_TITLES, OPENING_END, ORDINARY_END, PINCER_END,
   ChapterDirector, chapterBand, chapterPressure, parseChapterCheckpoint,
 } from '../../src/core/chapter.ts';
 import { Rng } from '../../src/core/rng.ts';
@@ -391,4 +391,44 @@ test('检查点解析只读取字段一次，敌意 getter 不能造成部分恢
   assert.equal(restored.director.checkpoint(), stable.checkpoint);
   assert.equal(restored.world.rng.snapshot(), stable.rng);
   assert.equal(restored.world.phase, stable.phase);
+});
+
+test('章节剧情标题：每章有名、随章推进、越界安全', () => {
+  assert.equal(CHAPTER_TITLES.length, CHAPTER_COUNT, '标题数必须等于章节数');
+  assert.ok(CHAPTER_TITLES.every((t) => typeof t === 'string' && t.length > 0), '有空标题');
+  const { world, director } = setup(42);
+  assert.equal(director.chapterTitle(), CHAPTER_TITLES[0], '第 1 章标题不对');
+  // 通关第 1 章后进第 2 章，标题跟着换。
+  while (director.result === null) director.step(world, STEP, { move: 0, jump: false, slash: false });
+  assert.equal(director.nextChapter(world), true);
+  assert.equal(director.chapterTitle(), CHAPTER_TITLES[1], '进第 2 章后标题没换');
+});
+
+test('boss 章（第 3 章）一定出 boss —— 即便收尾段那一刻满场（被动/满员也不静默丢失）', () => {
+  const { world, director } = setup(7);   // enemyLimit=3, automaticSpawns off
+  for (let c = 1; c < 3; c++) {
+    while (director.result === null) director.step(world, STEP, NO_INTENT);
+    director.nextChapter(world);
+  }
+  assert.equal(director.chapter, 3);
+  let sawBoss = false;
+  while (director.result === null) {
+    director.step(world, STEP, NO_INTENT);   // 全程被动 → 收尾段前大概率已满 3 个
+    if (world.enemies.some((e) => e.tag === 'boss')) sawBoss = true;
+    assert.ok(world.enemies.length <= 3, '出 boss 也不能超过 enemyLimit');
+  }
+  assert.ok(sawBoss, '第 3 章整章没出现 boss（招牌功能静默丢失）');
+});
+
+test('非 boss 章（第 1、2 章）不出 boss', () => {
+  const { world, director } = setup(7);
+  for (const c of [1, 2]) {
+    let boss = false;
+    while (director.result === null) {
+      director.step(world, STEP, NO_INTENT);
+      if (world.enemies.some((e) => e.tag === 'boss')) boss = true;
+    }
+    assert.equal(boss, false, `第 ${c} 章不该有 boss`);
+    director.nextChapter(world);
+  }
 });

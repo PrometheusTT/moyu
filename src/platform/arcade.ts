@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { homedir } from 'node:os';
 import { SignalTail } from '../bridge/signal.ts';
 import { Rng } from '../core/rng.ts';
-import { World, type Intent, type Piece } from '../core/world.ts';
+import { World, type Intent, type Piece, type EnemyTag } from '../core/world.ts';
 import { CHAPTER_COUNT, ChapterDirector, parseChapterCheckpoint } from '../core/chapter.ts';
 import { segments } from '../core/stick.ts';
 import { paintWorld } from '../render/scene.ts';
@@ -19,6 +19,13 @@ const EMPTY_INPUT: GameInput = { left: false, right: false, up: false, down: fal
 const BG = 0x090a0e, GRID = 0x151722, INK = 0xecf0f8, ACCENT = 0xe43834, AMBER = 0xa67c00;
 // 展开 braille 的战斗残留配色：暗红血迹、瘫地断肢的灰、杂兵碎块的棕。
 const STAIN = 0x68121a, DEAD = 0x5c5f6c, FOE = 0xb37b58;
+// 敌人变种本色：快刀手偏亮、重甲偏暗、boss 深红；其余走 FOE。
+const FOE_RUNNER = 0xd8b48a, FOE_BRUTE = 0x7a5236, FOE_BOSS = 0xc0473a;
+
+/** 字符档下按变种取本色（图形/braille 档在各自渲染器里用调色板混色）。导出供渲染回归测试锁定区分度。 */
+export function foeColor(tag: EnemyTag | undefined): number {
+  return tag === 'boss' ? FOE_BOSS : tag === 'brute' ? FOE_BRUTE : tag === 'runner' ? FOE_RUNNER : FOE;
+}
 const HOST_POLL_MS = 100;
 const FIRST_DIRECTION_MS = 340;
 const REPEAT_DIRECTION_MS = 150;
@@ -132,7 +139,7 @@ class StickGame implements GameInstance {
     const enemies = this.world.enemies;
     for (const f of enemies) {
       const x = px(f.x);
-      drawMicroFighter(c, f, x, 0xb37b58, AMBER);
+      drawMicroFighter(c, f, x, foeColor(f.tag), AMBER);
     }
     const playerX = px(this.world.player.x);
     if (this.world.respawn <= 0) drawMicroFighter(c, this.world.player, playerX, INK, AMBER,
@@ -179,7 +186,7 @@ class StickGame implements GameInstance {
     for (const p of w.pieces) if (!p.rest) drawPiece(p);
 
     for (const f of [...w.enemies, ...(w.respawn > 0 ? [] : [w.player])]) {
-      const color = f === w.player ? (f.hurt > 0 ? ACCENT : INK) : f.windup >= 0 ? ACCENT : FOE;
+      const color = f === w.player ? (f.hurt > 0 ? ACCENT : INK) : f.windup >= 0 ? ACCENT : foeColor(f.tag);
       const flash = w.hitstop > 0 && f.armed;   // 命中那几帧刀刃闪白
       const body = { ...f, x: px(f.x), y: py(f.y), h: f.h * verticalScale };
       for (const s of segments(body)) {
@@ -248,9 +255,12 @@ class StickGame implements GameInstance {
       if (result.chapter >= CHAPTER_COUNT && this.world.phase === 'fight' && checkpoint !== null) {
         return `五分钟完成 · ${checkpoint.score}分 · ${checkpoint.kills}击破 · 连击${checkpoint.bestCombo}`;
       }
+      // 章节完成屏是天然的剧情节拍（按 J 进下一章前）：亮出刚打完这章的标题。
+      // 保留"第N章完成"连续子串，HUD 正则（arcade.test）照旧匹配；标题追加在后面。
+      const title = this.director.chapterTitle();
       return this.world.phase === 'fight'
-        ? `第${result.chapter}章完成 · ${result.score}分 · J 下一章`
-        : `第${result.chapter}章完成 · ${result.score}分 · 等待下个任务`;
+        ? `第${result.chapter}章完成 · 『${title}』 · ${result.score}分 · J 下一章`
+        : `第${result.chapter}章完成 · 『${title}』 · ${result.score}分 · 等待下个任务`;
     }
     return `火柴快斩 ${this.director.chapter}/${CHAPTER_COUNT} · ${this.world.kills}击破 · ${this.world.respawn > 0 ? '重生中' : `血${this.world.player.hp}/4`}`;
   }

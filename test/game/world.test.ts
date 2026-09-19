@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { World, NO_INTENT, type Intent } from '../../src/core/world.ts';
+import { Rng } from '../../src/core/rng.ts';
 
 const STEP = 1 / 60;
 
@@ -288,4 +289,107 @@ test('旋斩：一圈杂兵全砍飞，留下接近整圈的刀光；冷却内�
   w.enemies.at(-1)!.y = w.player.y;
   w.step(STEP, { move: 0, jump: false, slash: false, spin: true });
   assert.equal(w.kills, kills, '冷却期内旋斩不该再触发');
+});
+
+test('杂兵变种：tag 确定、变种真的出现，且不额外消耗 RNG（保住确定性/字节预算）', () => {
+  // makeGrunt 恰好抽 5 个值：range,float,float,range,range。tag 只从已抽到的 h/speed 派生。
+  const w = new World(12345, { automaticSpawns: false });
+  w.resize(120, 40);
+  w.spawnFormation({ kind: 'single', side: 'right' });
+  const ref = new Rng(12345);
+  ref.range(0.78, 1.0); ref.float(); ref.float(); ref.range(0, 0.5); ref.range(0.35, 0.56);
+  assert.equal(w.rng.snapshot(), ref.snapshot(), 'makeGrunt 的 RNG 抽取序列被改动了 —— 会移位共享流');
+
+  const tagsFor = (seed: number): Array<string | undefined> => {
+    const g = new World(seed, { automaticSpawns: false }); g.resize(120, 40);
+    const out: Array<string | undefined> = [];
+    for (let i = 0; i < 200; i++) {
+      g.spawnFormation({ kind: 'single', side: 'right' });
+      out.push(g.enemies.at(-1)!.tag);
+      g.enemies.length = 0;
+    }
+    return out;
+  };
+  const a = tagsFor(999);
+  assert.deepEqual(a, tagsFor(999), 'tag 对同一种子不确定');
+  assert.ok(a.includes('brute') && a.includes('runner') && a.includes('grunt'),
+    `三种变种应都出现，实际：${[...new Set(a)].join(',')}`);
+});
+
+test('boss：多段血，砍满 hp 下才死，只在最后一击计 1 个击杀（计分安全）', () => {
+  const w = new World(3, { automaticSpawns: false });
+  w.resize(160, 44);
+  assert.equal(w.spawnBoss('right'), true);
+  const boss = w.enemies[0]!;
+  assert.equal(boss.tag, 'boss');
+  const need = boss.hp;
+  assert.ok(need >= 3, 'boss 应有多段血');
+  assert.ok(boss.h > Math.round(w.fh * 0.9), 'boss 应比杂兵大');
+  w.player.face = 1;
+  let swings = 0;
+  for (let s = 0; s < need + 3 && w.enemies.length > 0; s++) {
+    boss.x = w.player.x + w.fh * 0.6;   // 保持在刀程内（stagger 会把它击退）
+    boss.invuln = 0;                     // 跳过 stagger 无敌，专测多段血
+    w.hitstop = 0;                       // 跳过顿帧，否则 step 会整帧冻结
+    w.player.atk = 0.30; w.player.atkHit = false;
+    const before = w.kills;
+    w.step(1 / 60, { move: 0, jump: false, slash: false });
+    swings++;
+    if (w.enemies.length > 0) assert.equal(w.kills, before, `第 ${swings} 下不该计击杀（还没砍死）`);
+  }
+  assert.equal(w.enemies.length, 0, `砍了 ${swings} 下 boss 还没死`);
+  assert.equal(swings, need, `应恰好 ${need} 下砍死`);
+  assert.equal(w.kills, 1, 'boss 只应计 1 个击杀（计分公式安全）');
+});
+
+test('boss：一次冲刺不能把 boss 连成秒杀（stagger 无敌拦住多段命中）', () => {
+  const w = new World(4, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.spawnBoss('right');
+  const boss = w.enemies[0]!;
+  const need = boss.hp;
+  boss.x = w.player.x + w.fh * 0.4;
+  boss.y = w.player.y;
+  w.player.face = 1;
+  // 一次冲刺（DASH_TIME 内每帧重判），boss 只应掉 1 段血。
+  w.step(1 / 60, { move: 0, jump: false, slash: false, dash: true });
+  for (let i = 0; i < 11 && w.enemies.length > 0; i++) {
+    boss.x = w.player.x;               // 一直贴着，制造"每帧都在刀上"的极端情况
+    w.step(1 / 60, NO_INTENT);
+  }
+  assert.ok(w.enemies.length > 0, '一次冲刺把 boss 秒了 —— stagger 无敌没拦住');
+  assert.ok(boss.hp >= need - 1, `一次冲刺掉了 ${need - boss.hp} 段血，应最多 1 段`);
+  assert.equal(w.kills, 0, '冲刺没砍死 boss 却计了击杀');
+});
+
+test('boss：清屏波一击带走（任务完成的仪式性全清不看多段血）', () => {
+  const w = new World(5, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.spawnBoss('left');
+  const boss = w.enemies[0]!;
+  boss.x = w.player.x;                 // 波锋从玩家处向两边扫，必扫到
+  w.taskDone();
+  for (let i = 0; i < 400 && w.enemies.length > 0; i++) w.step(STEP, NO_INTENT);
+  assert.equal(w.enemies.length, 0, '清屏波没把 boss 带走');
+  assert.ok(w.kills >= 1, 'boss 被清屏波带走应计入击杀');
+});
+
+test('boss：前摇是更长的 BOSS_WINDUP，够得更远，打满会命中玩家', () => {
+  const w = new World(6, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.spawnBoss('right');
+  const boss = w.enemies[0]!;
+  boss.cool = 0;
+  const hp0 = w.player.hp;
+  let maxWindup = 0;
+  for (let i = 0; i < 120 && w.player.hp === hp0; i++) {
+    boss.x = w.player.x + w.fh * 1.0;  // near(boss 1.15) 内、命中(boss 1.4) 内
+    boss.y = w.player.y;
+    w.player.invuln = 0;               // 不靠无敌帧躲，专测命中
+    w.hitstop = 0;                     // 跳过顿帧冻结
+    w.step(STEP, NO_INTENT);
+    maxWindup = Math.max(maxWindup, boss.windup);
+  }
+  assert.ok(maxWindup > 0.42, `boss 前摇应比 grunt(0.42) 长，峰值 ${maxWindup.toFixed(2)}`);
+  assert.ok(w.player.hp < hp0, 'boss 打满前摇没能命中玩家（更宽命中距离失效？）');
 });

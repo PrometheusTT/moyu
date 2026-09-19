@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Arcade, BUILTIN_GAMES } from '../../src/platform/arcade.ts';
+import { Arcade, BUILTIN_GAMES, foeColor } from '../../src/platform/arcade.ts';
+import { CHAPTER_TITLES } from '../../src/core/chapter.ts';
 import { BrailleTarget } from '../../src/render/braille.ts';
 import { appendSignal } from '../../src/bridge/signal.ts';
 import * as fs from 'node:fs';
@@ -333,6 +334,7 @@ test('Stick Slash result-screen J cannot bypass task completion ownership', () =
   assert.equal(clearing.checkpoint, checkpoint, 'clear-wave kills must not rewrite the finished chapter');
   assert.ok((clearing.kills as number) >= (before.kills as number));
   assert.match(game.hud?.() ?? '', /第1章完成/);
+  assert.match(game.hud?.() ?? '', new RegExp(`『${CHAPTER_TITLES[0]}』`), '完成屏应亮出本章剧情标题');
   for (let i = 0; i < 300; i++) game.update(1 / 60, slash);
   assert.match(game.hud?.() ?? '', /等待下个任务/);
   game.onHostEvent?.('task-start');
@@ -584,4 +586,11 @@ test('task completion is silent, persistent in standby, and cleared when viewed'
     a.enter();
     assert.equal(a.status, 'idle');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('变种配色：grunt/runner/brute/boss 四色互不相同（字符档区分度不能塌）', () => {
+  const g = foeColor('grunt'), r = foeColor('runner'), b = foeColor('brute'), boss = foeColor('boss');
+  const set = new Set([g, r, b, boss]);
+  assert.equal(set.size, 4, `四种变种应产出四种不同颜色，实际：${[...set].map((c) => c.toString(16)).join(',')}`);
+  assert.equal(foeColor(undefined), g, '无 tag（老 Fighter/玩家）应安全回落到 grunt 本色');
 });

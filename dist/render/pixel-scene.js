@@ -87,10 +87,15 @@ export function paintPixelWorld(c, world, context, previous, result = false) {
         const body = interpolateFighter(fighter, previous?.get(fighter), context.interpolation);
         const segs = segments(body);
         const blink = body.invuln > 0 && Math.floor(body.invuln * 18) % 2 === 0;
+        // 变种本色：快刀手偏亮、重甲偏暗、boss 深红；其余走 foe。
+        const foeBase = body.tag === 'boss' ? mix(palette.accent, palette.key, 0.32)
+            : body.tag === 'brute' ? mix(palette.foe, palette.key, 0.4)
+                : body.tag === 'runner' ? mix(palette.foe, palette.hero, 0.3)
+                    : palette.foe;
         const base = body.hurt > 0 ? palette.accent
             : body.windup >= 0
-                ? mix(palette.foe, palette.accent, 0.55 + 0.45 * Math.sin(body.windup * 40))
-                : hero ? (blink ? palette.foe : palette.hero) : palette.foe;
+                ? mix(foeBase, palette.accent, 0.55 + 0.45 * Math.sin(body.windup * 40))
+                : hero ? (blink ? palette.foe : palette.hero) : foeBase;
         const hit = world.hitstop > 0 && body.armed;
         const radius = (seg) => seg.part === 'head' ? seg.r * scale
             : Math.max(0.55, body.h * scale / (seg.part === 'torso' ? 15 : seg.part === 'blade' ? 26 : 22)

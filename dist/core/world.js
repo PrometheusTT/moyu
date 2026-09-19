@@ -29,6 +29,12 @@ const DASH_COOL = 0.5;
 /** 旋斩：转一圈的持续时间与冷却。范围技，冷却明显更长。 */
 const SPIN_TIME = 0.34;
 const SPIN_COOL = 1.1;
+/** Boss：多段血、更大更慢、前摇更长的重击。只由章节导演在 boss 章生成。 */
+const BOSS_HP = 5;
+const BOSS_WINDUP = 0.7;
+const GRUNT_WINDUP = 0.42;
+/** 非致命命中后的短暂无敌，防止冲刺/旋斩在一次动作里把 boss 连成秒杀。 */
+const STAGGER_INVULN = 0.25;
 export class World {
     w = 80;
     h = 24;
@@ -123,7 +129,7 @@ export class World {
         for (const f of [this.player, ...this.enemies]) {
             f.x *= sx;
             f.y = this.ground;
-            f.h = f.kind === 'player' ? this.fh : Math.round(this.fh * 0.9);
+            f.h = f.kind === 'player' ? this.fh : Math.round(this.fh * (f.tag === 'boss' ? 1.3 : 0.9));
             f.speed = f.kind === 'player' ? this.playerSpeed() : f.speed * ratio;
         }
         for (const p of this.pieces) {
@@ -345,6 +351,19 @@ export class World {
         }
         p.pose = this.poseFor(p);
     }
+    /**
+     * 非致命命中：多段血的 boss 掉一段血、被打断前摇、短暂无敌 + 击退。
+     * 短无敌把"一次冲刺 11 帧重判"锁成一段血，否则 boss 会被一次冲刺直接连成秒杀。
+     * grunt（hp=1）永远走不到这里，所以一刀一个的行为逐字节不变。
+     */
+    staggerEnemy(e, dir) {
+        e.hp -= 1;
+        e.hurt = 0.3;
+        e.invuln = STAGGER_INVULN;
+        e.windup = -1;
+        e.cool = Math.max(e.cool, 0.45);
+        e.vx = dir * this.fh * 1.2;
+    }
     /** 冲刺斩起手：定住方向窜出去，给足穿过全程的无敌帧，取消手上的普通刀。 */
     startDash(p) {
         p.dashT = DASH_TIME;
@@ -358,12 +377,20 @@ export class World {
     /** 冲刺途中把贴到身上的杂兵带碎。不给顿帧 —— 顿帧会冻住冲刺，冲刺要的是"一穿到底"。 */
     resolveDash(p) {
         let hit = 0;
+        let staggered = 0;
         for (let i = this.enemies.length - 1; i >= 0; i--) {
             const e = this.enemies[i];
             if (Math.abs(e.x - p.x) > this.fh * 0.7)
                 continue;
             if (e.y - e.h > p.y + this.fh * 0.15 || e.y < p.y - this.fh * 1.05)
                 continue;
+            if (e.hp > 1) {
+                if (e.invuln <= 0) {
+                    this.staggerEnemy(e, p.face);
+                    staggered++;
+                }
+                continue;
+            }
             this.dismember(e, e.y - e.h * this.rng.range(0.4, 0.7), p.face, 1.2);
             this.enemies.splice(i, 1);
             hit++;
@@ -378,6 +405,9 @@ export class World {
                 this.bestCombo = this.combo;
             this.shake = Math.min(3.2, this.shake + 0.7 + hit * 0.3);
         }
+        else if (staggered > 0) {
+            this.shake = Math.min(3.2, this.shake + 0.6);
+        }
     }
     /** 旋斩起手：定身、把一圈范围内的杂兵全朝外侧砍飞，留一道整圈刀光。 */
     startSpin(p) {
@@ -388,13 +418,22 @@ export class World {
         p.atkQueued = false;
         const reach = this.fh * 1.55;
         let hit = 0;
+        let staggered = 0;
         for (let i = this.enemies.length - 1; i >= 0; i--) {
             const e = this.enemies[i];
             if (Math.abs(e.x - p.x) > reach)
                 continue;
             if (e.y - e.h > p.y + this.fh * 0.2 || e.y < p.y - this.fh * 1.15)
                 continue;
-            this.dismember(e, e.y - e.h * this.rng.range(0.35, 0.7), e.x >= p.x ? 1 : -1, 1.35);
+            const dir = e.x >= p.x ? 1 : -1;
+            if (e.hp > 1) {
+                if (e.invuln <= 0) {
+                    this.staggerEnemy(e, dir);
+                    staggered++;
+                }
+                continue;
+            }
+            this.dismember(e, e.y - e.h * this.rng.range(0.35, 0.7), dir, 1.35);
             this.enemies.splice(i, 1);
             hit++;
         }
@@ -414,6 +453,10 @@ export class World {
             this.hitstop = Math.min(0.09, 0.05 + hit * 0.01);
             this.shake = Math.min(3.4, this.shake + 1.0 + hit * 0.3);
         }
+        else if (staggered > 0) {
+            this.hitstop = 0.04;
+            this.shake = Math.min(3.4, this.shake + 0.8);
+        }
         else {
             this.shake = Math.min(3.4, this.shake + 0.5);
         }
@@ -423,6 +466,7 @@ export class World {
         const reach = this.fh * 1.15;
         const pivotY = p.y - this.fh * 0.72;
         let hit = 0;
+        let staggered = 0;
         // 从后往前删，命中多个就是多个 —— 挤成一团的杂兵被一刀带走是这游戏最爽的瞬间。
         for (let i = this.enemies.length - 1; i >= 0; i--) {
             const e = this.enemies[i];
@@ -432,6 +476,14 @@ export class World {
             // 竖直重叠：拿双方的身体区间比，跳劈砍不到脚下的人才合理。
             if (e.y - e.h > p.y + this.fh * 0.15 || e.y < p.y - this.fh * 1.05)
                 continue;
+            // 多段血的 boss 先掉血、被打断、短无敌；grunt 走不到这里（hp=1）。
+            if (e.hp > 1) {
+                if (e.invuln <= 0) {
+                    this.staggerEnemy(e, p.face);
+                    staggered++;
+                }
+                continue;
+            }
             // 越远砍得越低 —— 刀是扫下来的，边缘够到的是腿。
             const frac = clamp(dx / reach, 0, 1);
             const cutY = e.y - e.h * clamp(0.78 - frac * 0.5, 0.18, 0.88);
@@ -458,6 +510,11 @@ export class World {
             this.hitstop = Math.min(0.075, 0.045 + hit * 0.012 + this.combo * 0.002);
             this.shake = Math.min(2.8, this.shake + 0.85 + hit * 0.35);
         }
+        else if (staggered > 0) {
+            // 砍在 boss 身上没砍死也要有"咚"，否则打厚血像打棉花。
+            this.hitstop = 0.05;
+            this.shake = Math.min(2.8, this.shake + 0.7);
+        }
     }
     /* ── 杂兵 ──────────────────────────────────────────────────────── */
     /** 整队要么一起出现，要么一个都不出现；章节导演靠这个维持构图语义。 */
@@ -480,18 +537,57 @@ export class World {
         this.enemies.push(...made);
         return true;
     }
+    /**
+     * 生成一个 boss。**独立于 spawnFormation**：测试锁死了第 1/4 章的 spawnFormation 日程，
+     * boss 走单独入口就不会碰它。多段血、更大更慢，其余复用 makeGrunt（照常抽 5 个 RNG，
+     * 确定性成立；boss 只由导演在第 3/6/9 章生成，不进裸 World / 字节预算测试的路径）。
+     *
+     * boss 是特殊入场：满场就挤掉最先出现的一个杂兵给它腾位——否则玩家若在收尾段那一刻
+     * 放着 enemyLimit 个杂兵没清，boss 章会静默地整章没有 boss（招牌功能凭空消失）。
+     * 挤人不消耗 RNG、确定，且保证总数不超过 enemyLimit（≤3 的断言仍成立）。已有 boss 时不再生成。
+     */
+    spawnBoss(side) {
+        if (this.enemies.some((e) => e.tag === 'boss'))
+            return false;
+        while (this.enemies.length >= this.enemyLimit) {
+            const idx = this.enemies.findIndex((e) => e.tag !== 'boss');
+            if (idx < 0)
+                return false;
+            this.enemies.splice(idx, 1);
+        }
+        if (this.enemyLimit < 1)
+            return false;
+        const boss = this.makeGrunt(side);
+        boss.tag = 'boss';
+        boss.hp = BOSS_HP;
+        boss.h = Math.round(this.fh * 1.3);
+        boss.speed *= 0.6;
+        boss.cool = 0.6; // 入场先走两步，不立刻起手
+        this.enemies.push(boss);
+        return true;
+    }
     makeGrunt(side, index = 0, count = 1) {
         const fromLeft = side === 'left';
         const stacked = count > 1 ? (index - (count - 1) / 2) * this.fh * 0.24 : 0;
+        // 抽取顺序必须原样保留：h、walk、anim、cool、speed。任何插入/改动都会移位共享 RNG 流，
+        // 打挂确定性和字节预算测试。tag 只从**已抽到的** hRatio/spdRatio 纯算术派生，零新抽取。
+        const hRatio = this.rng.range(0.78, 1.0);
+        const walk = this.rng.float();
+        const anim = this.rng.float() * 3;
+        const cool = this.rng.range(0, 0.5);
+        const spdRatio = this.rng.range(0.35, 0.56);
+        const tag = hRatio >= 0.93 && spdRatio <= 0.45 ? 'brute'
+            : hRatio <= 0.85 && spdRatio >= 0.48 ? 'runner'
+                : 'grunt';
         return {
-            kind: 'grunt',
+            kind: 'grunt', tag,
             x: fromLeft ? -this.fh * 0.5 - stacked : this.w + this.fh * 0.5 + stacked,
-            y: this.ground, vx: 0, vy: 0, h: Math.round(this.fh * this.rng.range(0.78, 1.0)),
+            y: this.ground, vx: 0, vy: 0, h: Math.round(this.fh * hRatio),
             face: fromLeft ? 1 : -1, onGround: true, hp: 1,
-            walk: this.rng.float(), anim: this.rng.float() * 3,
+            walk, anim,
             atk: -1, atkHit: false, atkQueued: false, hurt: 0, land: 0, invuln: 0,
-            windup: -1, cool: this.rng.range(0, 0.5),
-            speed: this.playerSpeed() * this.rng.range(0.35, 0.56),
+            windup: -1, cool,
+            speed: this.playerSpeed() * spdRatio,
             dashT: 0, dashCool: 0, spinT: 0, spinCool: 0,
             pose: poseIdle(0), armed: false,
         };
@@ -510,22 +606,27 @@ export class World {
         e.anim += dt;
         if (e.cool > 0)
             e.cool -= dt;
+        // 被打断/砍击后的短无敌：grunt 恒为 0 → 无可观察变化、不碰 RNG；只有 boss 用得上。
+        if (e.invuln > 0)
+            e.invuln -= dt;
+        const boss = e.tag === 'boss';
         const p = this.player;
         const alive = this.respawn <= 0;
         const dx = p.x - e.x;
-        const near = Math.abs(dx) < this.fh * 0.85;
+        // boss 更大、够得更远，就从更远处收步起手，让前摇看得清。
+        const near = Math.abs(dx) < this.fh * (boss ? 1.15 : 0.85);
         if (e.windup >= 0) {
             e.windup -= dt;
             e.vx *= Math.exp(-dt * 14);
             if (e.windup <= 0) {
                 e.windup = -1;
                 e.cool = this.rng.range(0.9, 1.5);
-                if (alive && Math.abs(p.x - e.x) < this.fh * 1.05 && p.invuln <= 0)
+                if (alive && Math.abs(p.x - e.x) < this.fh * (boss ? 1.4 : 1.05) && p.invuln <= 0)
                     this.hurtPlayer(Math.sign(e.face));
             }
         }
         else if (alive && near && e.cool <= 0) {
-            e.windup = 0.42;
+            e.windup = boss ? BOSS_WINDUP : GRUNT_WINDUP;
             e.face = dx >= 0 ? 1 : -1;
         }
         else if (alive && this.phase !== 'clear') {
@@ -673,7 +774,7 @@ export class World {
         if (f.atk >= 0)
             return poseSlash(clamp(f.atk / 0.62, 0, 1));
         if (f.windup >= 0)
-            return poseWindup(clamp(1 - f.windup / 0.42, 0, 1));
+            return poseWindup(clamp(1 - f.windup / (f.tag === 'boss' ? BOSS_WINDUP : GRUNT_WINDUP), 0, 1));
         if (f.hurt > 0)
             return poseHurt(clamp(f.hurt / 0.35, 0, 1));
         if (!f.onGround)
