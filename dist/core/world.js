@@ -564,13 +564,18 @@ export class World {
             this.enemies.splice(i, 1);
             hit++;
         }
-        // 蹲斩低扫刀光压低、俯冲斩略微上抬，其余照旧。
-        const a0 = kind === 'sweep' ? -0.9 : -1.95;
-        const a1 = kind === 'sweep' ? 1.4 : 0.65;
+        // 刀光形状本身就是区分变招的第二信号（姿态之外）：
+        //   normal 斜扫、sweep 贴地宽弧、air 陡直下劈粗弧、lunge 近水平窄弧 + 多留两帧当前冲残影。
+        const arc = kind === 'sweep' ? { a0: -0.9, a1: 1.4 }
+            : kind === 'air' ? { a0: -2.4, a1: 0.15 }
+                : kind === 'lunge' ? { a0: -0.45, a1: 0.5 }
+                    : { a0: -1.95, a1: 0.65 };
+        const rMul = kind === 'air' ? 0.98 : 0.92;
+        const life = kind === 'lunge' ? 0.17 : 0.14;
         this.slashes.push({
-            x: p.x + p.face * this.fh * 0.1, y: pivotY, r: reach * 0.92,
-            a0: p.face > 0 ? a0 : Math.PI - a0, a1: p.face > 0 ? a1 : Math.PI - a1,
-            life: 0.14, max: 0.14, big: kind === 'sweep',
+            x: p.x + p.face * this.fh * 0.1, y: pivotY, r: reach * rMul,
+            a0: p.face > 0 ? arc.a0 : Math.PI - arc.a0, a1: p.face > 0 ? arc.a1 : Math.PI - arc.a1,
+            life, max: life, big: kind === 'sweep' || kind === 'air',
         });
         // 俯冲斩命中即向下砸 —— 把跳斩坐实成"从空中劈下来"。
         if (kind === 'air' && (hit > 0 || staggered > 0))
@@ -583,9 +588,16 @@ export class World {
             this.comboT = 1.6;
             if (this.combo > this.bestCombo)
                 this.bestCombo = this.combo;
-            // 顿帧随连击轻微加长，但有上限 —— 太长会从"有力"变成"卡"。
-            this.hitstop = Math.min(0.075, 0.045 + hit * 0.012 + this.combo * 0.002);
-            this.shake = Math.min(2.8, this.shake + 0.85 + hit * 0.35);
+            // 手感按变招分档：俯冲=砸地重顿、低扫=横向大震、前刺=脆快小顿+一记刺穿闪光、平砍照旧。
+            // 顿帧随连击轻微加长但有上限（太长会从"有力"变成"卡"）；所有变招保底 0.04（reduceMotion
+            // 会清 flash/shake，hitstop 是唯一幸存的命中反馈，不能被清零）。
+            const base = kind === 'air' ? 0.055 : kind === 'lunge' ? 0.045 : 0.045;
+            const cap = kind === 'air' ? 0.085 : 0.075;
+            this.hitstop = Math.max(0.04, Math.min(cap, base + hit * 0.012 + this.combo * 0.002));
+            const shakeAdd = kind === 'sweep' ? 1.1 : kind === 'air' ? 1.0 : kind === 'lunge' ? 0.6 : 0.85;
+            this.shake = Math.min(2.8, this.shake + shakeAdd + hit * 0.35);
+            if (kind === 'lunge')
+                this.flash = Math.max(this.flash, 0.12);
         }
         else if (staggered > 0) {
             // 砍在 boss 身上没砍死也要有"咚"，否则打厚血像打棉花。
@@ -955,7 +967,7 @@ export class World {
         if (f.spinT > 0)
             return poseSlash(clamp(1 - f.spinT / SPIN_TIME, 0, 1));
         if (f.atk >= 0)
-            return poseSlash(clamp(f.atk / 0.62, 0, 1));
+            return poseSlash(clamp(f.atk / 0.62, 0, 1), f.atkKind ?? 'normal');
         if (f.windup >= 0)
             return poseWindup(clamp(1 - f.windup / (f.tag === 'boss' ? BOSS_WINDUP : GRUNT_WINDUP), 0, 1));
         if (f.hurt > 0)

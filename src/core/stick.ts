@@ -229,38 +229,50 @@ export function poseAir(rise: boolean): Pose {
  *
  * 判定时机一个字都没动 —— 它在 `world.ts` 里按 `f.atk` 算，和姿态无关。
  */
-export function poseSlash(p: number): Pose {
-  const lunge = { hipA: 0.42, kneeA: 0.18, hipB: -0.34, kneeB: 0.30 };
+/**
+ * 挥出段（0.28..0.46）四种变招各自的**定格姿势**。命中判定就落在这一段里，也是刀在画面上
+ * 停留最久的一帧 —— 让每种变招在"砍到了"那一瞬有一眼可辨的剪影，是"组合技看得见"的核心：
+ *
+ *   normal 过顶横劈（原值，一字不改 → 斩击关键帧的可读性合同照旧绿）
+ *   air    俯冲下劈：收腿、刀陡朝斜下方戳，像从空中砸下来
+ *   sweep  蹲身低扫：整个人矮一截、宽蹲、刀压到近贴地扫腿
+ *   lunge  前刺突进：大幅前倾、深弓步、刀近水平前指，像击剑直刺
+ *
+ * 抬刀/收招两段四招共用（沿用 holdK 分段，保证每关键帧 ≥ 2.5 帧）；只有挥出段按 kind 分流。
+ */
+type SlashKind = 'normal' | 'air' | 'sweep' | 'lunge';
+const SLASH_SWING: Record<SlashKind, Pose> = {
+  normal: { lean: 0.32, armA: 1.62, elbowA: 0.12, armB: -0.24, elbowB: 0.30, hipA: 0.42, kneeA: 0.18, hipB: -0.34, kneeB: 0.30, blade: 1.95, crouch: 0.06 },
+  air:    { lean: 0.42, armA: 1.90, elbowA: 0.18, armB: -0.50, elbowB: 0.40, hipA: 0.60, kneeA: 0.90, hipB: -0.40, kneeB: 0.70, blade: 2.35, crouch: 0.12 },
+  sweep:  { lean: 0.20, armA: 1.72, elbowA: 0.10, armB: -0.20, elbowB: 0.30, hipA: 0.56, kneeA: 0.48, hipB: -0.56, kneeB: 0.48, blade: 2.55, crouch: 0.48 },
+  lunge:  { lean: 0.50, armA: 1.35, elbowA: 0.06, armB: -0.52, elbowB: 0.22, hipA: 0.72, kneeA: 0.52, hipB: -0.55, kneeB: 0.08, blade: 1.50, crouch: 0.06 },
+};
+
+export function poseSlash(p: number, kind: SlashKind = 'normal'): Pose {
+  const stance = { hipA: 0.42, kneeA: 0.18, hipB: -0.34, kneeB: 0.30 };
   if (p < 0.28) {
     const k = holdK(p / 0.28, 2);      // 抬刀：抬起 → 拉到头顶后方
     return {
       lean: -0.05 - k * 0.20,
       armA: 0.30 - k * 2.45, elbowA: 0.25 + k * 0.55,
       armB: -0.20 - k * 0.55, elbowB: 0.30,
-      ...lunge,
+      ...stance,
       blade: 0.95 - k * 3.55,
       crouch: 0.04 + k * 0.06,
     };
   }
   if (p < 0.46) {
-    // 挥出：**一个**姿势撑满整段。刀已经扫到前下方、手臂完全伸展 ——
-    // 这是"砍到了"那一下的定格，中间过程由刀光的圆弧和残影交代。
-    return {
-      lean: 0.32,
-      armA: 1.62, elbowA: 0.12,
-      armB: -0.24, elbowB: 0.30,
-      ...lunge,
-      blade: 1.95,
-      crouch: 0.06,
-    };
+    // 挥出：**一个**姿势撑满整段。这是"砍到了"那一下的定格，中间过程由刀光的圆弧和残影交代。
+    // 四种变招各有专属定格（见 SLASH_SWING）；返回副本，避免任何调用方就地改到共享对象。
+    return { ...SLASH_SWING[kind] };
   }
   const k = holdK((p - 0.46) / 0.54, 3);
   return {
     lean: 0.30 - k * 0.27,
     armA: 1.50 - k * 1.20, elbowA: 0.15 + k * 0.10,
     armB: -0.20, elbowB: 0.30,
-    hipA: lunge.hipA - k * 0.24, kneeA: 0.18 - k * 0.12,
-    hipB: lunge.hipB + k * 0.18, kneeB: 0.30 - k * 0.20,
+    hipA: stance.hipA - k * 0.24, kneeA: 0.18 - k * 0.12,
+    hipB: stance.hipB + k * 0.18, kneeB: 0.30 - k * 0.20,
     blade: 1.75 - k * 0.80,
     crouch: 0.06 - k * 0.04,
   };

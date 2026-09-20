@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { World, NO_INTENT, type Intent } from '../../src/core/world.ts';
+import { World, NO_INTENT, type Intent, type AttackKind } from '../../src/core/world.ts';
+import { poseSlash } from '../../src/core/stick.ts';
 import { Rng } from '../../src/core/rng.ts';
 
 const STEP = 1 / 60;
@@ -374,6 +375,63 @@ test('变招仍是一刀一个：蹲斩把一排贴身杂兵一起带走，各�
   assert.equal(w.kills, targets, '蹲斩应把贴身的一排杂兵一起带走');
   assert.equal(w.combo, targets, '每个都各计一次连击');
   assert.equal(w.enemies.length, 0, '杂兵仍是一刀一个（hp=1 直接砍碎）');
+});
+
+test('四种变招的挥出定格姿态两两可辨（不再共用同一个 poseSlash）', () => {
+  // 组合技"看得见"的核心：挥出段（atk≈0.36 落在 0.28..0.46）四招各有专属剪影。
+  const kinds: AttackKind[] = ['normal', 'air', 'sweep', 'lunge'];
+  const poses = kinds.map((kind) => poseSlash(0.36, kind));
+  // 每一对至少在 blade 角度或 crouch（蹲身低扫）或 hipA（弓步）上有肉眼可辨的差。
+  for (let i = 0; i < poses.length; i++) {
+    for (let j = i + 1; j < poses.length; j++) {
+      const a = poses[i]!, b = poses[j]!;
+      const diff = Math.abs(a.blade - b.blade) + Math.abs(a.crouch - b.crouch) + Math.abs(a.hipA - b.hipA);
+      assert.ok(diff > 0.25, `变招 ${kinds[i]} 与 ${kinds[j]} 的挥出定格太像（差 ${diff.toFixed(2)}）`);
+    }
+  }
+  // normal 分支必须字节级不变：斩击关键帧可读性合同（legibility.test）依赖它。
+  assert.deepEqual(poseSlash(0.36), poseSlash(0.36, 'normal'), 'normal 定格应与不传 kind 完全一致');
+});
+
+test('四种变招推出的刀光几何各不相同（刀光形状是区分变招的第二信号）', () => {
+  const probe = (kind: AttackKind): { a0: number; a1: number; big: boolean; life: number } => {
+    const w = new World(17, { automaticSpawns: false });
+    w.resize(160, 44);
+    w.taskStart();
+    w.enemies.length = 0;
+    const p = w.player;
+    p.face = 1; p.y = w.ground; p.onGround = true;
+    p.atkKind = kind; p.atk = 0.30; p.atkHit = false;
+    w.step(STEP, { move: 0, jump: false, slash: false });
+    const s = w.slashes.at(-1)!;
+    return { a0: s.a0, a1: s.a1, big: s.big, life: s.max };
+  };
+  const kinds: AttackKind[] = ['normal', 'air', 'sweep', 'lunge'];
+  const arcs = kinds.map(probe);
+  const key = (s: { a0: number; a1: number; big: boolean; life: number }): string =>
+    `${s.a0.toFixed(2)}|${s.a1.toFixed(2)}|${s.big}|${s.life.toFixed(2)}`;
+  const keys = new Set(arcs.map(key));
+  assert.equal(keys.size, 4, `四招刀光应各不相同，实得 ${keys.size} 种：${arcs.map(key).join(' / ')}`);
+});
+
+test('命中反馈 hitstop 恒 ≥ 0.04：reduceMotion 清掉 flash/shake 后顿帧仍在（每招都留手感）', () => {
+  const probe = (kind: AttackKind): number => {
+    const w = new World(19, { automaticSpawns: false });
+    w.resize(160, 44);
+    w.taskStart();
+    w.enemies.length = 0;
+    w.spawnFormation({ kind: 'single', side: 'right' });
+    const p = w.player;
+    p.face = 1; p.y = w.ground; p.onGround = true;
+    const e = w.enemies[0]!; e.x = p.x + w.fh * 0.6; e.y = w.ground;
+    p.atkKind = kind; p.atk = 0.30; p.atkHit = false;
+    w.step(STEP, { move: 0, jump: false, slash: false });
+    assert.equal(w.kills, 1, `${kind} 应砍死贴身杂兵`);
+    return w.hitstop;
+  };
+  for (const kind of ['normal', 'air', 'sweep', 'lunge'] as AttackKind[]) {
+    assert.ok(probe(kind) >= 0.04, `${kind} 命中后的 hitstop 应 ≥ 0.04（幸存反馈）`);
+  }
 });
 
 test('杂兵变种：tag 确定、变种真的出现，且不额外消耗 RNG（保住确定性/字节预算）', () => {
