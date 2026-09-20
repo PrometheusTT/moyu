@@ -291,6 +291,91 @@ test('旋斩：一圈杂兵全砍飞，留下接近整圈的刀光；冷却内�
   assert.equal(w.kills, kills, '冷却期内旋斩不该再触发');
 });
 
+test('跳斩：半空挥刀把判定带朝下放宽，够得到地面的人（普通刀够不到）', () => {
+  // A/B：同样几何下，普通刀在半空挥空，跳斩（air）能劈到地面的人。
+  const probe = (kind: 'normal' | 'air'): number => {
+    const w = new World(7, { automaticSpawns: false });
+    w.resize(160, 44);
+    w.taskStart();
+    w.enemies.length = 0;
+    w.spawnFormation({ kind: 'single', side: 'right' });
+    const e = w.enemies[0]!;
+    const p = w.player;
+    p.face = 1;
+    p.onGround = false; p.vy = 0; p.y = w.ground - w.fh * 1.4;   // 半空
+    e.x = p.x + w.fh * 0.6; e.y = w.ground;                       // 脚下的地面敌人
+    p.atk = 0.30; p.atkHit = false; p.atkKind = kind;             // 直接驱动判定帧（照 boss 测试的手法）
+    w.step(STEP, { move: 0, jump: false, slash: false });
+    return w.kills;
+  };
+  assert.equal(probe('normal'), 0, '半空普通挥刀本就够不到地面的人');
+  assert.equal(probe('air'), 1, '跳斩应把判定带朝下放宽，劈到地面的人');
+});
+
+test('蹲斩：蹲下挥刀触发低扫，且冷却内退回普通刀（不白嫖）', () => {
+  const w = new World(10, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.taskStart();
+  w.enemies.length = 0;
+  const p = w.player;
+  p.face = 1;
+  // 蹲下 + 砍 → sweep，进入冷却。
+  w.step(STEP, { move: 0, jump: false, slash: true, crouch: true });
+  assert.equal(p.atkKind, 'sweep', '蹲下挥刀应触发低扫');
+  assert.ok((p.sweepCool ?? 0) > 0, '蹲斩应进入冷却');
+  // 跑到这一刀收招结束（atk 回 -1），但冷却还没好。
+  for (let i = 0; i < 45 && p.atk >= 0; i++) w.step(STEP, NO_INTENT);
+  assert.ok(p.atk < 0, '第一刀应已收招');
+  const coolBefore = p.sweepCool ?? 0;
+  assert.ok(coolBefore > 0, '冷却应还没好');
+  // 冷却内再蹲下挥刀 → 退回普通刀，且不重置冷却。
+  w.step(STEP, { move: 0, jump: false, slash: true, crouch: true });
+  assert.equal(p.atkKind, 'normal', '冷却内蹲斩应退回普通刀');
+  assert.ok((p.sweepCool ?? 0) < coolBefore, '冷却内不该重置蹲斩冷却');
+});
+
+test('前冲斩：朝前挥刀带一步前冲，且冷却内退回普通刀', () => {
+  const w = new World(11, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.taskStart();
+  w.enemies.length = 0;
+  const p = w.player;
+  p.face = 1;
+  const x0 = p.x;
+  // 朝前（move===face）+ 砍 → lunge。
+  w.step(STEP, { move: 1, jump: false, slash: true });
+  assert.equal(p.atkKind, 'lunge', '朝前挥刀应触发前冲斩');
+  assert.ok((p.lungeCool ?? 0) > 0, '前冲斩应进入冷却');
+  run(w, 6);
+  assert.ok(p.x > x0, `前冲斩应带着人朝前挪一步（x0=${x0.toFixed(1)} → ${p.x.toFixed(1)}）`);
+  // 跑完这一刀，冷却还没好时再朝前挥刀 → 退回普通刀。
+  for (let i = 0; i < 40 && p.atk >= 0; i++) w.step(STEP, NO_INTENT);
+  assert.ok(p.atk < 0, '第一刀应已收招');
+  const coolBefore = p.lungeCool ?? 0;
+  assert.ok(coolBefore > 0, '冷却应还没好');
+  w.step(STEP, { move: 1, jump: false, slash: true });
+  assert.equal(p.atkKind, 'normal', '冷却内前冲斩应退回普通刀');
+});
+
+test('变招仍是一刀一个：蹲斩把一排贴身杂兵一起带走，各计一次击杀', () => {
+  const w = new World(13, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.taskStart();
+  w.enemies.length = 0;
+  w.spawnFormation({ kind: 'single', side: 'right' });
+  w.spawnFormation({ kind: 'single', side: 'right' });
+  const p = w.player;
+  p.face = 1; p.y = w.ground; p.onGround = true;
+  for (const e of w.enemies) { e.x = p.x + w.fh * 0.6; e.y = w.ground; }
+  const targets = w.enemies.length;
+  assert.ok(targets >= 2, '需要两个贴身杂兵');
+  p.atkKind = 'sweep'; p.atk = 0.30; p.atkHit = false;   // 直接驱动低扫的判定帧
+  w.step(STEP, { move: 0, jump: false, slash: false });
+  assert.equal(w.kills, targets, '蹲斩应把贴身的一排杂兵一起带走');
+  assert.equal(w.combo, targets, '每个都各计一次连击');
+  assert.equal(w.enemies.length, 0, '杂兵仍是一刀一个（hp=1 直接砍碎）');
+});
+
 test('杂兵变种：tag 确定、变种真的出现，且不额外消耗 RNG（保住确定性/字节预算）', () => {
   // makeGrunt 恰好抽 5 个值：range,float,float,range,range。tag 只从已抽到的 h/speed 派生。
   const w = new World(12345, { automaticSpawns: false });

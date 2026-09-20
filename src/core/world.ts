@@ -31,15 +31,20 @@ export type Intent = {
   dash?: boolean;
   /** 旋斩：原地 360° 扫倒一圈。可选：省略视为未按。 */
   spin?: boolean;
+  /** 蹲下（S/↓ 的缓冲窗）。挥刀时按住 → 低扫「蹲斩」。可选：省略视为未按。 */
+  crouch?: boolean;
 };
 
-export const NO_INTENT: Intent = { move: 0, jump: false, slash: false, dash: false, spin: false };
+export const NO_INTENT: Intent = { move: 0, jump: false, slash: false, dash: false, spin: false, crouch: false };
 
 /** 'title' 等第一刀，'fight' 打，'clear' 清屏技放完，'paused' 等下一个任务。 */
 export type Phase = 'title' | 'fight' | 'clear' | 'paused';
 
 /** 敌人变种：外观（颜色）+ 已有的尺寸/速度差异；boss 额外多段血。玩家不带 tag。 */
 export type EnemyTag = 'grunt' | 'runner' | 'brute' | 'boss';
+
+/** 挥刀的变招：由起手瞬间的世界状态决定（空中/蹲下/朝前），拳皇式组合技全靠它。 */
+export type AttackKind = 'normal' | 'air' | 'sweep' | 'lunge';
 
 export type Fighter = {
   kind: 'player' | 'grunt';
@@ -59,6 +64,8 @@ export type Fighter = {
   anim: number;
   /** 攻击已进行的秒数；-1 = 没在攻击 */
   atk: number;
+  /** 这一刀的变招：空中=air 俯冲、蹲下=sweep 低扫、朝前=lunge 前冲，否则 normal。玩家专用，省略视为 normal。 */
+  atkKind?: AttackKind;
   /** 这一刀的判定做过了没 —— 一刀只能判定一次 */
   atkHit: boolean;
   /** 输入缓冲：在收招段按了下一刀，收招结束立刻接上（连打的手感全靠它） */
@@ -80,6 +87,10 @@ export type Fighter = {
   spinT: number;
   /** 旋斩冷却剩余（秒）。 */
   spinCool: number;
+  /** 蹲斩（低扫）冷却剩余（秒）。玩家专用，省略视为 0（就绪）。 */
+  sweepCool?: number;
+  /** 前冲斩冷却剩余（秒）。玩家专用，省略视为 0（就绪）。 */
+  lungeCool?: number;
   pose: Pose;
   armed: boolean;
 };
@@ -127,6 +138,9 @@ const DASH_COOL = 0.7;
 /** 旋斩：转一圈的持续时间与冷却。范围技，冷却明显更长。 */
 const SPIN_TIME = 0.34;
 const SPIN_COOL = 1.6;
+/** 组合技冷却：蹲斩（低扫，横扫一排）比前冲斩（补位破距）范围更大，冷却也更长。 */
+const SWEEP_COOL = 0.9;
+const LUNGE_COOL = 0.7;
 
 /** Boss：多段血、更大更慢、前摇更长的重击。只由章节导演在 boss 章生成。 */
 const BOSS_HP = 5;
@@ -382,6 +396,8 @@ export class World {
     if (p.invuln > 0) p.invuln -= dt;
     if (p.dashCool > 0) p.dashCool -= dt;
     if (p.spinCool > 0) p.spinCool -= dt;
+    if ((p.sweepCool ?? 0) > 0) p.sweepCool = (p.sweepCool ?? 0) - dt;
+    if ((p.lungeCool ?? 0) > 0) p.lungeCool = (p.lungeCool ?? 0) - dt;
 
     // 冲刺斩进行中：全程维持向前的冲量、每帧收割身上的杂兵，其它输入一律屏蔽。
     if (p.dashT > 0) {
@@ -421,8 +437,18 @@ export class World {
     }
 
     if (input.slash) {
-      if (p.atk < 0) { p.atk = 0; p.atkHit = false; }
-      else if (p.atk > 0.46) p.atkQueued = true;   // 收招段按下 → 接下一刀
+      if (p.atk < 0) {
+        // 起手瞬间按世界状态选变招（终端无 key-up，只能读状态/缓冲窗，不是真同时按键）：
+        // 空中→air 俯冲；地面蹲下→sweep 低扫；地面朝前→lunge 前冲；否则 normal。
+        // sweep/lunge 是「强招」，各自扣冷却；冷却没好就退回 normal（普通刀永远能挥）。
+        if (!p.onGround) p.atkKind = 'air';
+        else if (input.crouch && (p.sweepCool ?? 0) <= 0) { p.atkKind = 'sweep'; p.sweepCool = SWEEP_COOL; }
+        else if (input.move !== 0 && input.move === p.face && (p.lungeCool ?? 0) <= 0) {
+          p.atkKind = 'lunge'; p.lungeCool = LUNGE_COOL;
+          p.vx = p.face * this.playerSpeed() * 1.6;   // 起手一步前冲，随后被 busy 夹速收住 → 前倾破距感
+        } else p.atkKind = 'normal';
+        p.atk = 0; p.atkHit = false;
+      } else if (p.atk > 0.46) p.atkQueued = true;   // 收招段按下 → 接下一刀
     }
 
     if (!busy) {
@@ -447,6 +473,8 @@ export class World {
         p.atk = p.atkQueued ? 0 : -1;
         p.atkHit = false;
         p.atkQueued = false;
+        // 连打接的下一刀默认普通刀：变招要重新满足条件（强招还得重新扣冷却），杜绝白嫖低扫/前冲。
+        p.atkKind = 'normal';
       }
     }
 
@@ -536,35 +564,48 @@ export class World {
     }
   }
 
-  /** 一刀的判定。命中的每一个杂兵都当场砍碎。 */
+  /** 一刀的判定。命中的每一个杂兵都当场砍碎。变招（air/sweep/lunge）改的是够到的范围与手感。 */
   private resolveSlash(p: Fighter): void {
-    const reach = this.fh * 1.15;
-    const pivotY = p.y - this.fh * 0.72;
+    const kind: AttackKind = p.atkKind ?? 'normal';
+    // 蹲斩低扫够得最宽、前冲斩其次、普通/俯冲照旧。
+    const reach = this.fh * (kind === 'sweep' ? 1.5 : kind === 'lunge' ? 1.35 : 1.15);
+    // 俯冲斩：竖直判定带朝下大幅放宽 —— 否则跳在半空挥刀常够不到地面的人。
+    const lowGate = this.fh * (kind === 'air' ? 1.7 : 0.15);
+    // 蹲斩把刀光压到腿部，其余照旧从肩上扫下。
+    const pivotY = p.y - this.fh * (kind === 'sweep' ? 0.32 : 0.72);
+    // 蹲斩扫飞得更狠一点，一排贴身杂兵一起带走的观感。
+    const power = kind === 'sweep' ? 1.3 : 1;
     let hit = 0; let staggered = 0;
     // 从后往前删，命中多个就是多个 —— 挤成一团的杂兵被一刀带走是这游戏最爽的瞬间。
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i]!;
       const dx = (e.x - p.x) * p.face;
       if (dx < -this.fh * 0.35 || dx > reach) continue;
-      // 竖直重叠：拿双方的身体区间比，跳劈砍不到脚下的人才合理。
-      if (e.y - e.h > p.y + this.fh * 0.15 || e.y < p.y - this.fh * 1.05) continue;
+      // 竖直重叠：拿双方的身体区间比，跳劈砍不到脚下的人才合理（俯冲斩放宽了下界）。
+      if (e.y - e.h > p.y + lowGate || e.y < p.y - this.fh * 1.05) continue;
       // 多段血的 boss 先掉血、被打断、短无敌；grunt 走不到这里（hp=1）。
       if (e.hp > 1) { if (e.invuln <= 0) { this.staggerEnemy(e, p.face); staggered++; } continue; }
-      // 越远砍得越低 —— 刀是扫下来的，边缘够到的是腿。
+      // 越远砍得越低 —— 刀是扫下来的，边缘够到的是腿；蹲斩本就贴地扫腿。
       const frac = clamp(dx / reach, 0, 1);
-      const cutY = e.y - e.h * clamp(0.78 - frac * 0.5, 0.18, 0.88);
-      this.dismember(e, cutY, p.face, 1);
+      const cutY = kind === 'sweep'
+        ? e.y - e.h * clamp(0.32 - frac * 0.14, 0.12, 0.4)
+        : e.y - e.h * clamp(0.78 - frac * 0.5, 0.18, 0.88);
+      this.dismember(e, cutY, p.face, power);
       this.enemies.splice(i, 1);
       hit++;
     }
 
-    const a0 = -1.95;
-    const a1 = 0.65;
+    // 蹲斩低扫刀光压低、俯冲斩略微上抬，其余照旧。
+    const a0 = kind === 'sweep' ? -0.9 : -1.95;
+    const a1 = kind === 'sweep' ? 1.4 : 0.65;
     this.slashes.push({
       x: p.x + p.face * this.fh * 0.1, y: pivotY, r: reach * 0.92,
       a0: p.face > 0 ? a0 : Math.PI - a0, a1: p.face > 0 ? a1 : Math.PI - a1,
-      life: 0.14, max: 0.14, big: false,
+      life: 0.14, max: 0.14, big: kind === 'sweep',
     });
+
+    // 俯冲斩命中即向下砸 —— 把跳斩坐实成"从空中劈下来"。
+    if (kind === 'air' && (hit > 0 || staggered > 0)) p.vy = Math.max(p.vy, this.fh * 10);
 
     if (hit > 0) {
       this.kills += hit;

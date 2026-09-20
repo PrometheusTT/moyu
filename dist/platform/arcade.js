@@ -132,7 +132,8 @@ class StickGame {
         this.scratch = previous;
         const intent = { move: input.left === input.right ? 0 : input.left ? -1 : 1,
             jump: input.jump || input.up, slash: input.primary,
-            dash: input.secondary === true, spin: input.special === true };
+            dash: input.secondary === true, spin: input.special === true,
+            crouch: input.down === true };
         if (this.director.result !== null && input.primary
             && this.director.nextChapter(this.world)) {
             this.reduceMotion();
@@ -558,7 +559,7 @@ function manifest(id, name, description, viewport) {
         display: { micro: id === 'stick-slash', minRows: id === 'stick-slash' ? 4 : 6, glyphs: id === 'stick-slash' ? 'dots' : 'blocks' },
         palette: ['#090a0e', '#ecf0f8', '#e43834', '#a67c00'],
         controls: id === 'stick-slash'
-            ? [{ action: 'move', label: '移动', keys: ['A/D', '方向键'] }, { action: 'primary', label: '砍', keys: ['J'] }, { action: 'jump', label: '跳', keys: ['空格'] }, { action: 'secondary', label: '冲刺斩', keys: ['U'] }, { action: 'special', label: '旋斩', keys: ['I'] }]
+            ? [{ action: 'move', label: '移动', keys: ['A/D', '方向键'] }, { action: 'primary', label: '砍', keys: ['J'] }, { action: 'jump', label: '跳', keys: ['空格'] }, { action: 'secondary', label: '冲刺斩', keys: ['U'] }, { action: 'special', label: '旋斩', keys: ['I'] }, { action: 'primary', label: '变招·跳/蹲/前+砍', keys: ['空格/S/D', 'J'] }]
             : id === 'snake' ? [{ action: 'move', label: '方向', keys: ['WASD', '方向键'] }]
                 : [{ action: 'move', label: '移动', keys: ['A/D'] }, { action: 'primary', label: '旋转', keys: ['J'] }, { action: 'down', label: '下落', keys: ['S'] }, { action: 'jump', label: '直落', keys: ['空格'] }] };
 }
