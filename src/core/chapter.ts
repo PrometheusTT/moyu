@@ -16,6 +16,23 @@ export const CHAPTER_TITLES: readonly string[] = [
   '老板的走廊',   // boss
   '加班的尽头',
 ];
+/**
+ * 每章一句收尾旁白，在该章"完成屏"上跟在标题后面亮出 —— 把"下班路被加班堵死、
+ * 一路劈到老板走廊"的剧情落到文字上（第 3/6/9 章打 boss，旁白也对上那三场硬仗）。
+ */
+export const CHAPTER_STORY: readonly string[] = [
+  '下班的路被堵死了，那就自己劈开一条。',
+  '他们从加班群里追出来，桥这头没一个是熟人。',
+  '拉闸的是主管，黑暗里他比谁都怕挨这一刀。',       // boss
+  '雨把霓虹冲成一片红，跑在前头的还是那张考勤表。',
+  '站得越高，越看得清这座城把人熬成了什么样。',
+  '钟敲十二下，守夜的老规矩今晚被砍停了。',         // boss
+  '末班车不等人，可今晚它得等我把这节车厢清空。',
+  '招牌一个接一个灭掉，长街尽头只剩那间还亮着的办公室。',
+  '走廊尽头那扇门后，坐着让所有人加班的那个人。',   // boss
+  '打完这最后一个，卡钟停了，天也亮了。',
+];
+
 export const OPENING_END = 180;
 export const ORDINARY_END = 720;
 export const PINCER_END = 1320;
@@ -73,6 +90,9 @@ export class ChapterDirector {
 
   /** 当前章的剧情标题（供 HUD 开场横幅用）。 */
   chapterTitle(): string { return CHAPTER_TITLES[this.chapter - 1] ?? ''; }
+
+  /** 当前章的收尾旁白（供 HUD 完成屏用）。 */
+  chapterStory(): string { return CHAPTER_STORY[this.chapter - 1] ?? ''; }
 
   start(world: World): void {
     this.chapter = 1;

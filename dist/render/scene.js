@@ -64,13 +64,19 @@ const R_BLADE = 1 / 26;
 const KEYLINE = 1;
 /** 本色笔的设备半径小于这个数就不描边。 */
 const KEYLINE_MIN_R = 1.1;
-/** 一帧。`p.vw × p.vh` 必须已经和 `w.w × w.h` 对上（app 负责在 resize 时同步）。 */
-export function paintWorld(p, w) {
+/**
+ * 一帧。`p.vw × p.vh` 必须已经和 `w.w × w.h` 对上（app 负责在 resize 时同步）。
+ * `scene` 是**可选**的每章氛围主题：给了就把天空/地面/杂兵掺一点色相、并在人身后画静态剪影；
+ * 不给（`undefined`）就是今日的裸画面，逐字节不变（渲染回归测试全走这条）。
+ */
+export function paintWorld(p, w, scene) {
     const dx = w.shakeX;
     const dy = w.shakeY;
     const dim = w.phase === 'paused' ? 0.45 : 1;
     const lift = w.flash > 0 ? Math.min(1, w.flash * 6) : 0;
-    paintBackdrop(p, w, dy, dim, lift);
+    paintBackdrop(p, w, dy, dim, lift, scene);
+    if (scene !== undefined)
+        paintProps(p, w, dx, dy, dim, scene);
     const sr = speckR(p);
     for (const key of w.stains) {
         speck(p, (key % 4096) + dx, Math.floor(key / 4096) + dy, sr, tint(STAIN, dim));
@@ -84,10 +90,13 @@ export function paintWorld(p, w) {
             paintPiece(p, w, q, dx, dy, tint(q.mine ? BONE : PIECE_AIR, dim));
     for (const e of w.enemies) {
         // 变种只改本色（尺寸本就由 h 驱动）：快刀手偏亮、重甲偏暗、boss 深红。
-        const base = e.tag === 'boss' ? mix(ACCENT, KEY, 0.32)
+        let base = e.tag === 'boss' ? mix(ACCENT, KEY, 0.32)
             : e.tag === 'brute' ? mix(FOE, KEY, 0.4)
                 : e.tag === 'runner' ? mix(FOE, BONE, 0.32)
                     : FOE;
+        // 每章给杂兵掺一点章节色相（boss 保持深红警示，不掺）。
+        if (scene !== undefined && e.tag !== 'boss')
+            base = mix(base, scene.foeTint, scene.foeMix);
         // 起手的杂兵整个人变红：这是它唯一的预警，看不见就等于偷袭。
         const c = e.windup >= 0 ? mix(base, ACCENT, 0.55 + 0.45 * Math.sin(e.windup * 40)) : base;
         paintFighter(p, w, e, dx, dy, tint(c, dim), false);
@@ -106,8 +115,8 @@ export function paintWorld(p, w) {
         paintWave(p, w, dx, dy);
 }
 /** 只有一块画布、不需要留着画笔的调用方（`demo` / `bench`）走这个。档位由 target 自己说。 */
-export function paintWorldTo(t, w) {
-    paintWorld(stripPainter(t), w);
+export function paintWorldTo(t, w, scene) {
+    paintWorld(stripPainter(t), w, scene);
 }
 /**
  * 天空 + 地面。
@@ -116,11 +125,14 @@ export function paintWorldTo(t, w) {
  * 像素档：逐设备行插值的平滑渐变 —— 一帧整幅重压，渐变不比色带贵，而它让暗色描边
  * 在任何高度上都有对比度可依。
  */
-function paintBackdrop(p, w, dy, dim, lift) {
+function paintBackdrop(p, w, dy, dim, lift, scene) {
     const g = w.ground + dy; // 地平线（虚拟行）
     const bands = SKY.length;
-    const top = mix(SKY[0], WAVE, lift * 0.35);
-    const bot = mix(SKY[bands - 1], WAVE, lift * 0.35);
+    // 每章往天空/地面掺一点色相：掺量克制，天空仍比描边 KEY 亮、玩家仍是全场最亮（见 theme.ts）。
+    const sky = (c) => scene === undefined ? c : mix(c, scene.skyTint, scene.skyMix);
+    const grd = (c) => scene === undefined ? c : mix(c, scene.groundTint, scene.groundMix);
+    const top = mix(sky(SKY[0]), WAVE, lift * 0.35);
+    const bot = mix(sky(SKY[bands - 1]), WAVE, lift * 0.35);
     if (p.t.tier === 'graphics') {
         const gDev = Math.min(p.t.pixelH, Math.max(0, Math.round(g * p.k)));
         // 一行一次 fillRect：68 次调用，比 43000 次 setPixel 便宜三个数量级。
@@ -133,15 +145,33 @@ function paintBackdrop(p, w, dy, dim, lift) {
             // 越靠近地平线越亮：地面在下方，光从上面来的话这里该反过来 ——
             // 但"下亮上暗"能把火柴人的轮廓从背景里托出来，可读性优先于物理。
             const i = Math.min(bands - 1, Math.floor((y / Math.max(1, g)) * bands));
-            band(p, y, y + 1, tint(mix(SKY[i], WAVE, lift * 0.35), dim));
+            band(p, y, y + 1, tint(mix(sky(SKY[i]), WAVE, lift * 0.35), dim));
         }
     }
     if (g >= 0 && g < w.h)
-        band(p, g, g + 1, tint(mix(GROUND_HI, WAVE, lift * 0.5), dim));
+        band(p, g, g + 1, tint(mix(grd(GROUND_HI), WAVE, lift * 0.5), dim));
     if (g + 1 < w.h)
-        band(p, g + 1, Math.min(w.h, g + 3), tint(GROUND, dim));
+        band(p, g + 1, Math.min(w.h, g + 3), tint(grd(GROUND), dim));
     if (g + 3 < w.h)
-        band(p, g + 3, w.h, tint(GROUND_LO, dim));
+        band(p, g + 3, w.h, tint(grd(GROUND_LO), dim));
+}
+/**
+ * 每章的静态剪影布景，画在人身后、天空之上。一律暗于人（`shade` 小 → 混向 KEY），
+ * 既不抢"最暗必是描边"的名额，也进不了 BONE 的四邻（人自带一圈 KEY 描边挡着）。
+ * 逐帧不变：半块档不产生帧差字节，像素档 deflate 几乎免费（见文件头背景约束）。
+ */
+function paintProps(p, w, dx, dy, dim, scene) {
+    const g = w.ground;
+    for (const prop of scene.props) {
+        // 布景色 = 天空色相往描边 KEY 压暗（shade 越小越暗），保证 ≥ KEY、退到背景里。
+        const color = tint(mix(KEY, scene.skyTint, 0.25 + prop.shade), dim);
+        const cx = prop.cx * w.w + dx;
+        const halfW = Math.max(0.5, prop.w * w.w * 0.5);
+        const topY = g - prop.top * g + dy;
+        rect(p, cx - halfW, Math.max(0, topY), cx + halfW, g + dy, color);
+        if (prop.dome)
+            disc(p, cx, topY, halfW, color);
+    }
 }
 /** 一整行（或几行）纯色。虚拟坐标，半开区间。 */
 function band(p, y0, y1, color) {

@@ -7,6 +7,7 @@ import { World, type Intent, type Piece, type EnemyTag } from '../core/world.ts'
 import { CHAPTER_COUNT, ChapterDirector, parseChapterCheckpoint } from '../core/chapter.ts';
 import { segments } from '../core/stick.ts';
 import { paintWorld } from '../render/scene.ts';
+import { sceneForChapter, type SceneTheme } from '../render/theme.ts';
 import { stripPainter } from '../render/painter.ts';
 import type { PixelTarget } from '../render/target.ts';
 import { LogicalCanvas } from './canvas.ts';
@@ -25,6 +26,15 @@ const FOE_RUNNER = 0xd8b48a, FOE_BRUTE = 0x7a5236, FOE_BOSS = 0xc0473a;
 /** 字符档下按变种取本色（图形/braille 档在各自渲染器里用调色板混色）。导出供渲染回归测试锁定区分度。 */
 export function foeColor(tag: EnemyTag | undefined): number {
   return tag === 'boss' ? FOE_BOSS : tag === 'brute' ? FOE_BRUTE : tag === 'runner' ? FOE_RUNNER : FOE;
+}
+
+/** 两个 0xRRGGBB 按 k 线性插值。给展开档的章节布景上色用（其余档在各自渲染器里混）。 */
+function mixRgb(a: number, b: number, k: number): number {
+  const t = k <= 0 ? 0 : k >= 1 ? 1 : k;
+  const r = Math.round(((a >>> 16) & 255) * (1 - t) + ((b >>> 16) & 255) * t);
+  const g = Math.round(((a >>> 8) & 255) * (1 - t) + ((b >>> 8) & 255) * t);
+  const bl = Math.round((a & 255) * (1 - t) + (b & 255) * t);
+  return (r << 16) | (g << 8) | bl;
 }
 const HOST_POLL_MS = 100;
 const FIRST_DIRECTION_MS = 340;
@@ -126,12 +136,16 @@ class StickGame implements GameInstance {
       this.world.flash = 0;
     }
   }
+  /** 当前章的氛围主题：把剧情落到画面（背景色 + 静态剪影布景）。 */
+  private scene(): SceneTheme {
+    return sceneForChapter(this.director.chapter);
+  }
   render(canvas: GameCanvas): void {
     if (!(canvas instanceof LogicalCanvas)) return;
-    paintWorld(stripPainter(canvas), this.world);
+    paintWorld(stripPainter(canvas), this.world, this.scene());
   }
   renderPixels(canvas: PixelCanvas, context: PixelRenderContext): void {
-    paintPixelWorld(canvas, this.world, context, this.previous, this.director.result !== null);
+    paintPixelWorld(canvas, this.world, context, this.previous, this.director.result !== null, this.scene());
   }
   renderMicro(c: GameCanvas): void {
     c.clear(BG);
@@ -171,6 +185,17 @@ class StickGame implements GameInstance {
     const dy = w.shakeY;
     const px = (x: number): number => (x + dx) * scale;
     const py = (y: number): number => ground - (w.ground - (y + dy)) * verticalScale;
+
+    // 每章静态剪影布景，垫在最底（人身后）—— 把剧情落到画面。混向 BG 保持暗，不抢主体。
+    const scene = this.scene();
+    for (const prop of scene.props) {
+      const color = mixRgb(BG, scene.skyTint, 0.35 + prop.shade);
+      const cx = px(prop.cx * w.w);
+      const halfW = Math.max(1, prop.w * w.w * 0.5 * scale);
+      const topY = py(w.ground - prop.top * w.ground);
+      const floorY = py(w.ground);
+      c.rect(Math.round(cx - halfW), Math.round(topY), Math.round(halfW * 2), Math.max(1, Math.round(floorY - topY)), color);
+    }
 
     // 地上的血迹垫最底。
     for (const key of w.stains) c.pixel(Math.round(px(key % 4096)), Math.round(py(Math.floor(key / 4096))), STAIN);
@@ -259,9 +284,10 @@ class StickGame implements GameInstance {
       // 章节完成屏是天然的剧情节拍（按 J 进下一章前）：亮出刚打完这章的标题。
       // 保留"第N章完成"连续子串，HUD 正则（arcade.test）照旧匹配；标题追加在后面。
       const title = this.director.chapterTitle();
+      const story = this.director.chapterStory();
       return this.world.phase === 'fight'
-        ? `第${result.chapter}章完成 · 『${title}』 · ${result.score}分 · J 下一章`
-        : `第${result.chapter}章完成 · 『${title}』 · ${result.score}分 · 等待下个任务`;
+        ? `第${result.chapter}章完成 · 『${title}』 · ${story} · ${result.score}分 · J 下一章`
+        : `第${result.chapter}章完成 · 『${title}』 · ${story} · ${result.score}分 · 等待下个任务`;
     }
     // 冷却指示追加在**最后**：`血X/4` 与 `火柴快斩` 都在它前面，窄屏只会裁掉指示器本身，
     // 护住 e2e 的 `血` 在场标记与 arcade.test 的 `火柴快斩`。就绪=▮，冷却中=▯。

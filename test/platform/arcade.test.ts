@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Arcade, BUILTIN_GAMES, foeColor } from '../../src/platform/arcade.ts';
-import { CHAPTER_TITLES } from '../../src/core/chapter.ts';
+import { CHAPTER_TITLES, CHAPTER_STORY } from '../../src/core/chapter.ts';
 import { BrailleTarget } from '../../src/render/braille.ts';
 import { appendSignal } from '../../src/bridge/signal.ts';
 import * as fs from 'node:fs';
@@ -353,6 +353,7 @@ test('Stick Slash result-screen J cannot bypass task completion ownership', () =
   assert.ok((clearing.kills as number) >= (before.kills as number));
   assert.match(game.hud?.() ?? '', /第1章完成/);
   assert.match(game.hud?.() ?? '', new RegExp(`『${CHAPTER_TITLES[0]}』`), '完成屏应亮出本章剧情标题');
+  assert.match(game.hud?.() ?? '', new RegExp(CHAPTER_STORY[0]!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), '完成屏应亮出本章收尾旁白');
   for (let i = 0; i < 300; i++) game.update(1 / 60, slash);
   assert.match(game.hud?.() ?? '', /等待下个任务/);
   game.onHostEvent?.('task-start');

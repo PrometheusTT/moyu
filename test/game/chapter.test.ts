@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  CHAPTER_COUNT, CHAPTER_STEPS, CHAPTER_TITLES, OPENING_END, ORDINARY_END, PINCER_END,
+  CHAPTER_COUNT, CHAPTER_STEPS, CHAPTER_TITLES, CHAPTER_STORY, OPENING_END, ORDINARY_END, PINCER_END,
   ChapterDirector, chapterBand, chapterPressure, parseChapterCheckpoint,
 } from '../../src/core/chapter.ts';
 import { Rng } from '../../src/core/rng.ts';
@@ -402,6 +402,16 @@ test('章节剧情标题：每章有名、随章推进、越界安全', () => {
   while (director.result === null) director.step(world, STEP, { move: 0, jump: false, slash: false });
   assert.equal(director.nextChapter(world), true);
   assert.equal(director.chapterTitle(), CHAPTER_TITLES[1], '进第 2 章后标题没换');
+});
+
+test('章节收尾旁白：每章一句、随章推进、越界安全', () => {
+  assert.equal(CHAPTER_STORY.length, CHAPTER_COUNT, '旁白数必须等于章节数');
+  assert.ok(CHAPTER_STORY.every((s) => typeof s === 'string' && s.length > 0), '有空旁白');
+  const { world, director } = setup(43);
+  assert.equal(director.chapterStory(), CHAPTER_STORY[0], '第 1 章旁白不对');
+  while (director.result === null) director.step(world, STEP, { move: 0, jump: false, slash: false });
+  assert.equal(director.nextChapter(world), true);
+  assert.equal(director.chapterStory(), CHAPTER_STORY[1], '进第 2 章后旁白没换');
 });
 
 test('boss 章（第 3 章）一定出 boss —— 即便收尾段那一刻满场（被动/满员也不静默丢失）', () => {

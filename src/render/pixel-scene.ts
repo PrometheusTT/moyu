@@ -1,6 +1,7 @@
 import { segments, type Pose, type Seg } from '../core/stick.ts';
 import type { Fighter, Piece, World } from '../core/world.ts';
 import type { PixelCanvas, PixelRenderContext } from '../platform/types.ts';
+import type { SceneTheme } from './theme.ts';
 
 export const PIXEL_PALETTES = {
   dark: {
@@ -61,7 +62,7 @@ export function pixelCamera(width: number, height: number, world: World, playerX
 
 /** A quiet, native-resolution combat scene; rendering never changes simulation or collision. */
 export function paintPixelWorld(c: PixelCanvas, world: World, context: PixelRenderContext,
-  previous?: FighterSnapshots, result = false): void {
+  previous?: FighterSnapshots, result = false, scene?: SceneTheme): void {
   const palette = PIXEL_PALETTES[context.theme];
   const reduced = process.env.MOYU_REDUCE_MOTION === '1';
   const dim = world.phase === 'paused' || result ? 0.5 : 1;
@@ -74,11 +75,15 @@ export function paintPixelWorld(c: PixelCanvas, world: World, context: PixelRend
   const x = (value: number): number => camera.x(value + dx);
   const y = (value: number): number => camera.y(value + dy);
   const ink = (color: number): number => tint(color, dim);
-  const bg = ink(mix(palette.bg, palette.wave, flash * 0.25));
+  // 每章往天空/地面掺一点色相；掺量克制，天空仍比描边亮、玩家仍是全场最亮（见 theme.ts）。
+  const skyBase = scene === undefined ? palette.bg : mix(palette.bg, scene.skyTint, scene.skyMix);
+  const floorBase = scene === undefined ? palette.floor : mix(palette.floor, scene.groundTint, scene.groundMix);
+  const bg = ink(mix(skyBase, palette.wave, flash * 0.25));
   c.clear(bg);
+  if (scene !== undefined) paintPixelProps(c, world, scene, x, y, scale, ink, palette.key, skyBase);
   const floorY = Math.floor(y(world.ground));
   c.rect(0, floorY, c.width, Math.max(1, Math.round(scale * 0.65)),
-    ink(mix(palette.floor, palette.wave, flash * 0.45)));
+    ink(mix(floorBase, palette.wave, flash * 0.45)));
 
   const speck = (worldX: number, worldY: number, color: number): void => {
     c.circle(x(worldX), y(worldY), Math.max(1, scale * 0.65), ink(color));
@@ -94,10 +99,12 @@ export function paintPixelWorld(c: PixelCanvas, world: World, context: PixelRend
     const segs = segments(body);
     const blink = body.invuln > 0 && Math.floor(body.invuln * 18) % 2 === 0;
     // 变种本色：快刀手偏亮、重甲偏暗、boss 深红；其余走 foe。
-    const foeBase = body.tag === 'boss' ? mix(palette.accent, palette.key, 0.32)
+    let foeBase = body.tag === 'boss' ? mix(palette.accent, palette.key, 0.32)
       : body.tag === 'brute' ? mix(palette.foe, palette.key, 0.4)
         : body.tag === 'runner' ? mix(palette.foe, palette.hero, 0.3)
           : palette.foe;
+    // 每章给杂兵掺一点章节色相（boss 保持深红警示，不掺）。
+    if (scene !== undefined && body.tag !== 'boss') foeBase = mix(foeBase, scene.foeTint, scene.foeMix);
     const base = body.hurt > 0 ? palette.accent
       : body.windup >= 0
         ? mix(foeBase, palette.accent, 0.55 + 0.45 * Math.sin(body.windup * 40))
@@ -141,6 +148,26 @@ export function paintPixelWorld(c: PixelCanvas, world: World, context: PixelRend
     const waveX = Math.round(world.player.x + side * world.waveR);
     c.rect(x(waveX) - 1, 0, 2, c.height, ink(palette.wave));
     c.rect(x(waveX + side) - 1, 0, 2, c.height, ink(palette.trail));
+  }
+}
+
+/**
+ * 每章的静态剪影布景，画在人身后、天空之上。混向描边 key（暗于人），退到背景里，
+ * 不抢"最暗"名额也进不了主体的四邻。逐帧不变 → 像素档 deflate 几乎免费。
+ */
+function paintPixelProps(c: PixelCanvas, world: World, scene: SceneTheme,
+  x: (value: number) => number, y: (value: number) => number, scale: number,
+  ink: (color: number) => number, key: number, skyBase: number): void {
+  const g = world.ground;
+  for (const prop of scene.props) {
+    const color = ink(mix(key, skyBase, 0.25 + prop.shade));
+    const cx = x(prop.cx * world.w);
+    const halfW = Math.max(1, prop.w * world.w * 0.5 * scale);
+    const topY = y(g - prop.top * g);
+    const floorY = y(g);
+    c.rect(Math.round(cx - halfW), Math.round(topY), Math.round(halfW * 2),
+      Math.max(1, Math.round(floorY - topY)), color);
+    if (prop.dome) c.circle(cx, topY, halfW, color);
   }
 }
 
