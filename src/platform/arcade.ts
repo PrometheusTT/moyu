@@ -262,7 +262,12 @@ class StickGame implements GameInstance {
         ? `第${result.chapter}章完成 · 『${title}』 · ${result.score}分 · J 下一章`
         : `第${result.chapter}章完成 · 『${title}』 · ${result.score}分 · 等待下个任务`;
     }
-    return `火柴快斩 ${this.director.chapter}/${CHAPTER_COUNT} · ${this.world.kills}击破 · ${this.world.respawn > 0 ? '重生中' : `血${this.world.player.hp}/4`}`;
+    // 冷却指示追加在**最后**：`血X/4` 与 `火柴快斩` 都在它前面，窄屏只会裁掉指示器本身，
+    // 护住 e2e 的 `血` 在场标记与 arcade.test 的 `火柴快斩`。就绪=▮，冷却中=▯。
+    const p = this.world.player;
+    const ready = (t: number): string => (t > 0 ? '▯' : '▮');
+    const skills = `冲${ready(p.dashCool)} 旋${ready(p.spinCool)}`;
+    return `火柴快斩 ${this.director.chapter}/${CHAPTER_COUNT} · ${this.world.kills}击破 · ${this.world.respawn > 0 ? '重生中' : `血${this.world.player.hp}/4`} · ${skills}`;
   }
 }
 

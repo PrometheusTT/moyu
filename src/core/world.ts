@@ -123,10 +123,10 @@ const LAND_TIME = 0.1;
 
 /** 冲刺斩：窜出的持续时间与冷却。短促、可连用，是走位也是进攻。 */
 const DASH_TIME = 0.18;
-const DASH_COOL = 0.5;
+const DASH_COOL = 0.7;
 /** 旋斩：转一圈的持续时间与冷却。范围技，冷却明显更长。 */
 const SPIN_TIME = 0.34;
-const SPIN_COOL = 1.1;
+const SPIN_COOL = 1.6;
 
 /** Boss：多段血、更大更慢、前摇更长的重击。只由章节导演在 boss 章生成。 */
 const BOSS_HP = 5;

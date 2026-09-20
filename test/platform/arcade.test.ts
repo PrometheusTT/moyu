@@ -206,6 +206,24 @@ test('Tab cycles cartridges through the shared host', () => withFreshHome(() => 
   a.feed(Uint8Array.of(9)); assert.match(a.hud().left, /落块/);
 }));
 
+test('live HUD 亮出技能冷却，且 火柴快斩/血 都在冷却指示之前', () => {
+  const game = stickGame();
+  const idle = game.hud?.() ?? '';
+  // 就绪态：两个技能都是 ▮。
+  assert.match(idle, /火柴快斩/);
+  assert.match(idle, /血\d\/4/);
+  assert.match(idle, /冲▮ 旋▮/, `就绪时应显示两个 ▮，实际：${idle}`);
+  // `火柴快斩` 和 `血` 必须排在冷却指示（冲…旋…）之前，窄屏裁切只裁掉尾部指示器。
+  assert.ok(idle.indexOf('火柴快斩') < idle.indexOf('冲'), '火柴快斩 应在冷却指示之前');
+  assert.ok(idle.indexOf('血') < idle.indexOf('冲'), '血量 应在冷却指示之前');
+
+  // 放一次冲刺斩（U=secondary）后，冲的指示应转为冷却中 ▯。
+  const dash = { left: false, right: false, up: false, down: false,
+    jump: false, primary: false, secondary: true };
+  game.update(1 / 60, dash);
+  assert.match(game.hud?.() ?? '', /冲▯/, '放完冲刺斩后冲的冷却应显示 ▯');
+});
+
 test('all cartridges render through the portable target', () => withFreshHome(() => {
   const a = new Arcade('/tmp/moyu-no-events-test');
   const target = new BrailleTarget(60, 12);
