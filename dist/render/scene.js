@@ -31,7 +31,7 @@
  */
 import { rgb } from "./canvas.js";
 import { arcStroke, disc, dot, rect, stripPainter, stroke } from "./painter.js";
-import { bodyOf } from "../core/world.js";
+import { bodyOf, bossPhase } from "../core/world.js";
 import { segments } from "../core/stick.js";
 const SKY = [rgb(12, 13, 18), rgb(17, 18, 25), rgb(23, 24, 33), rgb(30, 31, 42)];
 const GROUND_HI = rgb(64, 66, 82);
@@ -89,17 +89,26 @@ export function paintWorld(p, w, scene) {
         if (!q.rest)
             paintPiece(p, w, q, dx, dy, tint(q.mine ? BONE : PIECE_AIR, dim));
     for (const e of w.enemies) {
-        // 变种只改本色（尺寸本就由 h 驱动）：快刀手偏亮、重甲偏暗、boss 深红。
-        let base = e.tag === 'boss' ? mix(ACCENT, KEY, 0.32)
+        // 变种只改本色（尺寸本就由 h 驱动）：快刀手偏亮、重甲偏暗、boss 按阶段变色。
+        let base = e.tag === 'boss' ? bossBaseColor(e.hp)
             : e.tag === 'brute' ? mix(FOE, KEY, 0.4)
                 : e.tag === 'runner' ? mix(FOE, BONE, 0.32)
                     : FOE;
-        // 每章给杂兵掺一点章节色相（boss 保持深红警示，不掺）。
+        // 每章给杂兵掺一点章节色相（boss 保持阶段警示色，不掺）。
         if (scene !== undefined && e.tag !== 'boss')
             base = mix(base, scene.foeTint, scene.foeMix);
-        // 起手的杂兵整个人变红：这是它唯一的预警，看不见就等于偷袭。
+        // 冲撞中的 boss 在身后拖两层更暗的残影剪影 —— "看得见速度"。
+        if (e.tag === 'boss' && e.dashT > 0) {
+            for (const back of [0.45, 0.9]) {
+                const ghost = { ...e, x: e.x - e.face * w.fh * back };
+                paintFighter(p, w, ghost, dx, dy, tint(mix(base, KEY, 0.55), dim), false);
+            }
+        }
+        // 起手的敌人整个人变红：这是它唯一的预警，看不见就等于偷袭。
         const c = e.windup >= 0 ? mix(base, ACCENT, 0.55 + 0.45 * Math.sin(e.windup * 40)) : base;
         paintFighter(p, w, e, dx, dy, tint(c, dim), false);
+        if (e.tag === 'boss')
+            paintBossCrown(p, w, e, dx, dy, tint(c, dim));
     }
     if (w.respawn <= 0) {
         const f = w.player;
@@ -310,4 +319,23 @@ function mix(a, b, k) {
     const g = Math.round(((a >>> 8) & 255) * (1 - k) + ((b >>> 8) & 255) * k);
     const bl = Math.round((a & 255) * (1 - k) + (b & 255) * k);
     return rgb(r, g, bl);
+}
+/**
+ * Boss 按阶段变色：重压(5-4)深红、暴走(3-2)更亮更橙、困兽(1)去饱和灰红。
+ * 光看配色就能读出 boss 进到哪个阶段了。
+ */
+function bossBaseColor(hp) {
+    const phase = bossPhase(hp);
+    return phase === 1 ? mix(ACCENT, KEY, 0.32) // 深红
+        : phase === 2 ? mix(ACCENT, WAVE, 0.30) // 暴走：偏橙提亮
+            : mix(mix(ACCENT, KEY, 0.32), FOE, 0.4); // 困兽：去饱和灰红
+}
+/** Boss 头顶一顶小尖冠：强化"这是头目"的剪影辨识。 */
+function paintBossCrown(p, w, f, dx, dy, color) {
+    const cx = f.x + dx;
+    const topY = f.y - f.h + dy; // 头顶略上方
+    const s = w.fh * 0.18; // 冠的尺度随场景缩放
+    rect(p, cx - s, topY - s * 0.5, cx + s, topY, color); // 冠底座
+    for (const ox of [-s, 0, s])
+        disc(p, cx + ox, topY - s, s * 0.42, color); // 三个尖角
 }

@@ -231,3 +231,83 @@ export function poseWindup(k) {
         crouch: 0.04 + k * 0.10,
     };
 }
+/* ── Boss 专属姿态 ──────────────────────────────────────────────────
+ * boss 借用同一副骨架，但把角度做得比杂兵/玩家更夸张 —— 让每种招式在起手(windup)那一刻
+ * 就有一眼可辨的剪影，玩家能"预判它要冲/要扫/要劈"。只经 boss 渲染路径，不进裸 World 测试。
+ * 由 world.ts 的 poseFor 按 boss 的计时状态(dashT/spinT/windup)与"即将出的招"路由。 */
+/** Boss 前摇：按即将出的招各自蓄力。charge=大幅后仰蓄势、sweep=下沉屈膝回旋、melee/slam=举刀过顶。 */
+export function poseBossWindup(move, k) {
+    if (move === 'charge') {
+        // 极端后仰、双手收于身侧压低重心，像蓄力要窜出去。
+        return {
+            lean: -0.30 - k * 0.35,
+            armA: 0.30 - k * 0.55, elbowA: 0.55,
+            armB: -0.25 - k * 0.30, elbowB: 0.45,
+            hipA: 0.55 + k * 0.20, kneeA: 0.40 + k * 0.30,
+            hipB: -0.50 - k * 0.20, kneeB: 0.10,
+            blade: 0.70 + k * 0.20,
+            crouch: 0.10 + k * 0.22,
+        };
+    }
+    if (move === 'sweep') {
+        // 下沉、屈膝、刀横拉到身后一侧，蓄一整圈横扫。
+        return {
+            lean: 0.05 - k * 0.10,
+            armA: 0.30 + k * 0.90, elbowA: 0.30,
+            armB: -0.20 - k * 0.40, elbowB: 0.30,
+            hipA: 0.50 + k * 0.25, kneeA: 0.45 + k * 0.35,
+            hipB: -0.50 - k * 0.25, kneeB: 0.45 + k * 0.35,
+            blade: 0.95 + k * 1.30,
+            crouch: 0.20 + k * 0.30,
+        };
+    }
+    // melee/slam：举刀过顶后仰，蓄一记重劈（比玩家 poseSlash 的抬刀更大更慢）。
+    return {
+        lean: -0.15 - k * 0.30,
+        armA: 0.30 - k * 2.75, elbowA: 0.25 + k * 0.60,
+        armB: -0.20 - k * 0.60, elbowB: 0.30,
+        hipA: 0.34, kneeA: 0.18,
+        hipB: -0.30, kneeB: 0.22,
+        blade: 0.95 - k * 4.10,
+        crouch: 0.04 + k * 0.08,
+    };
+}
+/** Boss 冲撞：极端前倾冲刺姿、刀平举在前。`p` 0..1 越冲越前压。 */
+export function poseBossCharge(p) {
+    const k = holdK(p, 2);
+    return {
+        lean: 0.55 + k * 0.20,
+        armA: 1.30, elbowA: 0.05,
+        armB: -0.60, elbowB: 0.20,
+        hipA: 0.80, kneeA: 0.30,
+        hipB: -0.70, kneeB: 0.10,
+        blade: 1.45,
+        crouch: 0.14,
+    };
+}
+/** Boss 横扫：躯干大幅回旋，刀从一侧扫到另一侧。`p` 0..1 驱动刀角走整圈。 */
+export function poseBossSweep(p) {
+    return {
+        lean: 0.10,
+        armA: 1.70, elbowA: 0.10,
+        armB: -0.30, elbowB: 0.30,
+        hipA: 0.55, kneeA: 0.40,
+        hipB: -0.55, kneeB: 0.40,
+        // 刀从身后一路扫到身前下方（近整圈的横扫）。
+        blade: 0.6 + p * 2.4,
+        crouch: 0.30,
+    };
+}
+/** Boss 重劈落点：举刀过顶 → 下劈的定格（幅度比玩家更大更慢）。`p` 0..1。 */
+export function poseBossSlam(p) {
+    const k = holdK(p, 2);
+    return {
+        lean: 0.20 + k * 0.30,
+        armA: 0.30 + k * 1.70, elbowA: 0.10,
+        armB: -0.24, elbowB: 0.30,
+        hipA: 0.46, kneeA: 0.22,
+        hipB: -0.38, kneeB: 0.30,
+        blade: 0.5 + k * 1.85,
+        crouch: 0.06 + k * 0.06,
+    };
+}

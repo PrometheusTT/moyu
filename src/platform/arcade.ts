@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { homedir } from 'node:os';
 import { SignalTail } from '../bridge/signal.ts';
 import { Rng } from '../core/rng.ts';
-import { World, type Intent, type Piece, type EnemyTag } from '../core/world.ts';
+import { World, bossPhase, type Intent, type Piece, type EnemyTag } from '../core/world.ts';
 import { CHAPTER_COUNT, ChapterDirector, parseChapterCheckpoint } from '../core/chapter.ts';
 import { segments } from '../core/stick.ts';
 import { paintWorld } from '../render/scene.ts';
@@ -213,12 +213,21 @@ class StickGame implements GameInstance {
     for (const p of w.pieces) if (!p.rest) drawPiece(p);
 
     for (const f of [...w.enemies, ...(w.respawn > 0 ? [] : [w.player])]) {
-      const color = f === w.player ? (f.hurt > 0 ? ACCENT : INK) : f.windup >= 0 ? ACCENT : foeColor(f.tag);
+      // boss 按阶段变色（暴走偏橙、困兽去饱和），其余走变种本色。
+      const foe = f.tag === 'boss'
+        ? (bossPhase(f.hp) === 1 ? FOE_BOSS : bossPhase(f.hp) === 2 ? mixRgb(FOE_BOSS, AMBER, 0.5) : mixRgb(FOE_BOSS, DEAD, 0.45))
+        : foeColor(f.tag);
+      const color = f === w.player ? (f.hurt > 0 ? ACCENT : INK) : f.windup >= 0 ? ACCENT : foe;
       const flash = w.hitstop > 0 && f.armed;   // 命中那几帧刀刃闪白
       const body = { ...f, x: px(f.x), y: py(f.y), h: f.h * verticalScale };
       for (const s of segments(body)) {
         if (s.part === 'head') c.rect(Math.round(s.x0 - 1), Math.round(s.y0 - 1), 2, 2, color);
         else c.line(s.x0, s.y0, s.x1, s.y1, s.part === 'blade' ? (flash ? INK : AMBER) : color);
+      }
+      // boss 头顶尖冠：字符档也一眼认出头目。
+      if (f.tag === 'boss') {
+        const topX = px(f.x), topY = py(f.y - f.h * verticalScale);
+        c.rect(Math.round(topX - 1), Math.round(topY - 2), 3, 1, color);
       }
     }
     if (w.respawn > 0) c.line(px(w.player.x) - 3, py(w.ground), px(w.player.x) + 3, py(w.ground), ACCENT);

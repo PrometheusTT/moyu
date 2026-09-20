@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { World, NO_INTENT, type Intent, type AttackKind } from '../../src/core/world.ts';
+import { World, NO_INTENT, type Intent, type AttackKind, type Fighter } from '../../src/core/world.ts';
 import { poseSlash } from '../../src/core/stick.ts';
 import { Rng } from '../../src/core/rng.ts';
 
@@ -656,4 +656,80 @@ test('boss 战确定性：同种子跑穿三阶段逐字节一致（stepBoss 零
   assert.deepEqual(a, play(0xb0551), 'boss 战对同种子不确定 —— stepBoss 引入了随机流');
   assert.equal(a.sawCharge, true, '900 帧里没触发过冲撞（阶段二覆盖缺失）');
   assert.equal(a.sawSweep, true, '900 帧里没触发过横扫（阶段三覆盖缺失）');
+});
+
+test('boss 登场给节拍：一现身就闪光震屏顿一下（"来大的了"）', () => {
+  const w = new World(30, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.flash = 0; w.shake = 0; w.hitstop = 0;
+  assert.equal(w.spawnBoss('right'), true);
+  assert.ok(w.flash > 0, 'boss 登场应给一记闪光');
+  assert.ok(w.shake > 0, 'boss 登场应震屏');
+  assert.ok(w.hitstop > 0, 'boss 登场应顿一下');
+});
+
+test('boss 招式各自路由到专属姿态，三态互不相同（招式一眼可辨，不再复用玩家 poseSlash）', () => {
+  // poseFor 每帧把姿态写回 e.pose；这里在冲撞/横扫/前摇三种计时状态下各跑一帧读回姿态。
+  const poseIn = (setup: (b: Fighter) => void): Record<string, number> => {
+    const w = new World(31, { automaticSpawns: false });
+    w.resize(160, 44);
+    w.spawnBoss('right');
+    const boss = w.enemies[0]!;
+    boss.x = w.player.x + w.fh * 3;   // 拉开距离，别让这一帧的 AI 触发别的招/移动改写状态
+    boss.cool = 1;
+    setup(boss);
+    w.hitstop = 0;
+    w.step(STEP, NO_INTENT);
+    return { ...boss.pose } as unknown as Record<string, number>;
+  };
+  const charge = poseIn((b) => { b.dashT = 0.2; });
+  const sweep = poseIn((b) => { b.spinT = 0.2; });
+  const windup = poseIn((b) => { b.hp = 5; b.atkSeq = 0; b.windup = 0.4; });
+  const dist = (a: Record<string, number>, b: Record<string, number>): number =>
+    Object.keys(a).reduce((s, k) => s + Math.abs((a[k] ?? 0) - (b[k] ?? 0)), 0);
+  assert.ok(dist(charge, sweep) > 0.5, `冲撞与横扫姿态太像（差 ${dist(charge, sweep).toFixed(2)}）`);
+  assert.ok(dist(charge, windup) > 0.5, `冲撞与前摇姿态太像（差 ${dist(charge, windup).toFixed(2)}）`);
+  assert.ok(dist(sweep, windup) > 0.5, `横扫与前摇姿态太像（差 ${dist(sweep, windup).toFixed(2)}）`);
+});
+
+test('boss 重击（阶段一）留下下劈刀光：Phase1 也有"头目招式"的画面反馈', () => {
+  const w = new World(32, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.spawnBoss('right');
+  const boss = w.enemies[0]!;   // 满血 → Phase 1 → melee
+  boss.cool = 0;
+  w.player.invuln = 999;         // 别被打死中断出招
+  let sawSlashGrowth = false;
+  for (let i = 0; i < 120; i++) {
+    boss.x = w.player.x + w.fh * 1.0;
+    boss.y = w.player.y;
+    w.hitstop = 0;
+    const before = w.slashes.length;
+    w.step(STEP, NO_INTENT);
+    if (w.slashes.length > before) sawSlashGrowth = true;
+  }
+  assert.ok(sawSlashGrowth, 'boss 重击没留下任何刀光（Phase1 画面还是"啥都没有"）');
+});
+
+test('boss 跨阶段那一击额外顿帧；同阶段掉血不抬 hitstop', () => {
+  const w = new World(33, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.spawnBoss('right');
+  const boss = w.enemies[0]!;
+  w.player.face = 1;
+  const hitBoss = (): number => {
+    boss.x = w.player.x + w.fh * 0.6;
+    boss.y = w.player.y;
+    boss.invuln = 0;
+    w.hitstop = 0;
+    w.player.atk = 0.30; w.player.atkHit = false;
+    w.step(STEP, { move: 0, jump: false, slash: false });
+    return w.hitstop;
+  };
+  const same = hitBoss();          // hp 5→4：同阶段
+  assert.equal(boss.hp, 4);
+  const cross = hitBoss();         // hp 4→3：跨入 Phase 2
+  assert.equal(boss.hp, 3);
+  assert.ok(cross >= 0.08, `跨阶段那一击应额外顿帧（实得 ${cross.toFixed(3)}）`);
+  assert.ok(cross > same, '跨阶段顿帧应明显重于同阶段');
 });

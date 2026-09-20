@@ -19,7 +19,7 @@
  */
 
 import { Rng } from './rng.ts';
-import { poseAir, poseHurt, poseIdle, poseLand, poseSlash, poseWalk, poseWindup, segments, type Body, type Pose, type Seg } from './stick.ts';
+import { poseAir, poseBossCharge, poseBossSlam, poseBossSweep, poseBossWindup, poseHurt, poseIdle, poseLand, poseSlash, poseWalk, poseWindup, segments, type Body, type Pose, type Seg } from './stick.ts';
 
 /** 玩家每帧的意图。由输入层（latch）产出，模拟层不认识按键。 */
 export type Intent = {
@@ -53,7 +53,7 @@ type BossMove = 'melee' | 'charge' | 'sweep';
  * Boss 阶段随剩余血量收紧：5-4 重压、3-2 暴走、1 困兽。
  * 纯函数、零副作用，测试可直接对照。
  */
-function bossPhase(hp: number): 1 | 2 | 3 {
+export function bossPhase(hp: number): 1 | 2 | 3 {
   if (hp >= 4) return 1;
   if (hp >= 2) return 2;
   return 3;
@@ -283,7 +283,7 @@ export class World {
     for (const f of [this.player, ...this.enemies]) {
       f.x *= sx;
       f.y = this.ground;
-      f.h = f.kind === 'player' ? this.fh : Math.round(this.fh * (f.tag === 'boss' ? 1.3 : 0.9));
+      f.h = f.kind === 'player' ? this.fh : Math.round(this.fh * (f.tag === 'boss' ? 1.6 : 0.9));
       f.speed = f.kind === 'player' ? this.playerSpeed() : f.speed * ratio;
     }
     for (const p of this.pieces) { p.x *= sx; p.y *= sy; }
@@ -531,8 +531,10 @@ export class World {
       e.dashT = 0;
       e.spinT = 0;
       if (bossPhase(before) !== bossPhase(e.hp)) {
-        this.flash = Math.max(this.flash, 0.5);
-        this.shake = Math.min(4, this.shake + 1.4);
+        // 掉到 hp4/hp2 那两刀是"暴走/困兽"变招节拍：卡一帧再爆闪震屏，不可错过。
+        this.flash = Math.max(this.flash, 0.7);
+        this.shake = Math.min(4, this.shake + 2.0);
+        this.hitstop = Math.max(this.hitstop, 0.08);
       }
     }
   }
@@ -672,7 +674,8 @@ export class World {
       if (kind === 'lunge') this.flash = Math.max(this.flash, 0.12);
     } else if (staggered > 0) {
       // 砍在 boss 身上没砍死也要有"咚"，否则打厚血像打棉花。
-      this.hitstop = 0.05;
+      // 用 max 而非直接赋值：跨阶段那一刀在 staggerEnemy 里已抬到 0.08，别被这里覆盖回 0.05。
+      this.hitstop = Math.max(this.hitstop, 0.05);
       this.shake = Math.min(2.8, this.shake + 0.7);
     }
   }
@@ -718,10 +721,15 @@ export class World {
     const boss = this.makeGrunt(side);
     boss.tag = 'boss';
     boss.hp = BOSS_HP;
-    boss.h = Math.round(this.fh * 1.3);
+    boss.h = Math.round(this.fh * 1.6);   // 明显高出一排杂兵一头，进场就压场
     boss.speed *= 0.6;
     boss.cool = 0.6;   // 入场先走两步，不立刻起手
     this.enemies.push(boss);
+    // 登场节拍：boss 一现身就闪光震屏顿一下——"摸鱼切进来"也能在 0.5 秒内读到"来大的了"。
+    // 纯 VFX 字段、零 RNG；hitstop 是 reduceMotion 下唯一幸存的反馈。
+    this.flash = Math.max(this.flash, 0.6);
+    this.shake = Math.min(4, this.shake + 1.6);
+    this.hitstop = Math.max(this.hitstop, 0.06);
     return true;
   }
 
@@ -878,6 +886,7 @@ export class World {
       e.face = p.x >= e.x ? 1 : -1;
       e.dashT = BOSS_CHARGE_TIME;
       this.shake = Math.min(3.4, this.shake + 0.6);
+      this.hitstop = Math.max(this.hitstop, 0.05);   // 起手顿一下让突进更爆
       if (alive) this.resolveBossCharge(e);
       return;
     }
@@ -887,6 +896,11 @@ export class World {
         x: e.x, y: e.y - this.fh * 0.6, r: this.fh * BOSS_SWEEP_REACH_FH * 0.95,
         a0: -Math.PI, a1: Math.PI, life: 0.24, max: 0.24, big: true,
       });
+      // 再叠一道更大半径、更短寿命的地面冲击环当"冲击波"——横扫看得见范围。
+      this.slashes.push({
+        x: e.x, y: e.y - this.fh * 0.2, r: this.fh * BOSS_SWEEP_REACH_FH * 1.25,
+        a0: -Math.PI, a1: Math.PI, life: 0.14, max: 0.14, big: true,
+      });
       this.hitstop = Math.max(this.hitstop, 0.04);
       this.shake = Math.min(3.6, this.shake + 1.0);
       if (alive && Math.abs(p.x - e.x) < this.fh * BOSS_SWEEP_REACH_FH && p.invuln <= 0) {
@@ -894,7 +908,15 @@ export class World {
       }
       return;
     }
-    // 近战重击：贴身瞬时判定（沿用 grunt 的做法，boss 够得更远）。
+    // 近战重击：贴身瞬时判定（沿用 grunt 的做法，boss 够得更远）。追加落点顿帧 + 一道刀尖下劈刀光，
+    // 让 Phase 1 的重击也有"头目招式"的分量（之前只有 hurtPlayer，画面上啥都没有）。
+    this.slashes.push({
+      x: e.x + e.face * this.fh * 0.6, y: e.y - this.fh * 0.9, r: this.fh * 1.1,
+      a0: e.face > 0 ? -2.2 : Math.PI + 2.2, a1: e.face > 0 ? 0.3 : Math.PI - 0.3,
+      life: 0.16, max: 0.16, big: true,
+    });
+    this.shake = Math.min(3.6, this.shake + 0.9);
+    this.hitstop = Math.max(this.hitstop, 0.06);
     if (alive && Math.abs(p.x - e.x) < this.fh * 1.4 && p.invuln <= 0) this.hurtPlayer(Math.sign(e.face));
   }
 
@@ -1023,6 +1045,18 @@ export class World {
   }
 
   private poseFor(f: Fighter): Pose {
+    // Boss 走专属姿态：冲撞/横扫/前摇各有夸张剪影，让玩家能从起手预判招式。
+    // 放在玩家/杂兵的通用分支之前——玩家/grunt 不带 boss tag，永不命中，裸 World 逐字节不变。
+    if (f.tag === 'boss') {
+      if (f.dashT > 0) return poseBossCharge(clamp(1 - f.dashT / BOSS_CHARGE_TIME, 0, 1));
+      if (f.spinT > 0) return poseBossSweep(clamp(1 - f.spinT / BOSS_SWEEP_TIME, 0, 1));
+      if (f.windup >= 0) {
+        const move = bossMoveFor(bossPhase(f.hp), f.atkSeq ?? 0);
+        const k = clamp(1 - f.windup / BOSS_WINDUP, 0, 1);
+        // Phase 1 的重击走"举刀过顶下劈"观感（poseBossSlam 的前摇即其抬刀段）。
+        return move === 'melee' ? poseBossSlam(k * 0.5) : poseBossWindup(move, k);
+      }
+    }
     // 冲刺是前倾的突进，旋斩是快速扫刀 —— 都借用挥刀姿态，省一套骨架美术。
     if (f.dashT > 0) return poseSlash(0.45);
     if (f.spinT > 0) return poseSlash(clamp(1 - f.spinT / SPIN_TIME, 0, 1));

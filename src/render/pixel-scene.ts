@@ -1,5 +1,5 @@
-import { segments, type Pose, type Seg } from '../core/stick.ts';
-import type { Fighter, Piece, World } from '../core/world.ts';
+import { segments, type Body, type Pose, type Seg } from '../core/stick.ts';
+import { bossPhase, type Fighter, type Piece, type World } from '../core/world.ts';
 import type { PixelCanvas, PixelRenderContext } from '../platform/types.ts';
 import type { SceneTheme } from './theme.ts';
 
@@ -94,21 +94,15 @@ export function paintPixelWorld(c: PixelCanvas, world: World, context: PixelRend
   for (const piece of world.pieces) if (!piece.rest) drawPiece(c, world, piece, x, y, scale,
     ink(palette.key), ink(piece.mine ? palette.hero : palette.pieceAir));
 
-  const draw = (fighter: Fighter, hero: boolean): void => {
-    const body = interpolateFighter(fighter, previous?.get(fighter), context.interpolation);
+  // Boss 按阶段变色：重压深红 / 暴走偏橙提亮 / 困兽去饱和灰红。
+  const bossColor = (hp: number): number => {
+    const phase = bossPhase(hp);
+    return phase === 1 ? mix(palette.accent, palette.key, 0.32)
+      : phase === 2 ? mix(palette.accent, palette.wave, 0.30)
+        : mix(mix(palette.accent, palette.key, 0.32), palette.foe, 0.4);
+  };
+  const drawBody = (body: Body, hero: boolean, base: number): void => {
     const segs = segments(body);
-    const blink = body.invuln > 0 && Math.floor(body.invuln * 18) % 2 === 0;
-    // 变种本色：快刀手偏亮、重甲偏暗、boss 深红；其余走 foe。
-    let foeBase = body.tag === 'boss' ? mix(palette.accent, palette.key, 0.32)
-      : body.tag === 'brute' ? mix(palette.foe, palette.key, 0.4)
-        : body.tag === 'runner' ? mix(palette.foe, palette.hero, 0.3)
-          : palette.foe;
-    // 每章给杂兵掺一点章节色相（boss 保持深红警示，不掺）。
-    if (scene !== undefined && body.tag !== 'boss') foeBase = mix(foeBase, scene.foeTint, scene.foeMix);
-    const base = body.hurt > 0 ? palette.accent
-      : body.windup >= 0
-        ? mix(foeBase, palette.accent, 0.55 + 0.45 * Math.sin(body.windup * 40))
-        : hero ? (blink ? palette.foe : palette.hero) : foeBase;
     const hit = world.hitstop > 0 && body.armed;
     const radius = (seg: Seg): number => seg.part === 'head' ? seg.r * scale
       : Math.max(0.55, body.h * scale / (seg.part === 'torso' ? 15 : seg.part === 'blade' ? 26 : 22)
@@ -123,6 +117,35 @@ export function paintPixelWorld(c: PixelCanvas, world: World, context: PixelRend
         c.stroke(x(seg.x1), y(seg.y1), x(seg.x1 - body.face * body.h * 0.26),
           y(seg.y1 + body.h * 0.1), Math.max(0.55, body.h * scale / 25), ink(palette.accent));
       }
+    }
+  };
+  const draw = (fighter: Fighter, hero: boolean): void => {
+    const body = interpolateFighter(fighter, previous?.get(fighter), context.interpolation);
+    const blink = body.invuln > 0 && Math.floor(body.invuln * 18) % 2 === 0;
+    // 变种本色：快刀手偏亮、重甲偏暗、boss 按阶段变色；其余走 foe。
+    let foeBase = body.tag === 'boss' ? bossColor(body.hp)
+      : body.tag === 'brute' ? mix(palette.foe, palette.key, 0.4)
+        : body.tag === 'runner' ? mix(palette.foe, palette.hero, 0.3)
+          : palette.foe;
+    // 每章给杂兵掺一点章节色相（boss 保持阶段警示色，不掺）。
+    if (scene !== undefined && body.tag !== 'boss') foeBase = mix(foeBase, scene.foeTint, scene.foeMix);
+    const base = body.hurt > 0 ? palette.accent
+      : body.windup >= 0
+        ? mix(foeBase, palette.accent, 0.55 + 0.45 * Math.sin(body.windup * 40))
+        : hero ? (blink ? palette.foe : palette.hero) : foeBase;
+    // 冲撞中的 boss 在身后拖两层更暗的残影剪影——"看得见速度"。
+    if (body.tag === 'boss' && body.dashT > 0) {
+      for (const back of [0.45, 0.9]) drawBody({ ...body, x: body.x - body.face * world.fh * back }, false, mix(base, palette.key, 0.55));
+    }
+    drawBody(body, hero, base);
+    // Boss 头顶小尖冠：强化"这是头目"的剪影辨识。
+    if (body.tag === 'boss') {
+      const s = world.fh * 0.18;
+      const topY = body.y - body.h;
+      const baseW = Math.max(2, Math.round(s * 2 * scale));
+      const baseH = Math.max(1, Math.round(s * 0.6 * scale));
+      c.rect(Math.round(x(body.x - s)), Math.round(y(topY)) - baseH, baseW, baseH, ink(base));
+      for (const ox of [-s, 0, s]) c.circle(x(body.x + ox), y(topY - s), Math.max(0.6, s * 0.42 * scale), ink(base));
     }
   };
   for (const enemy of world.enemies) draw(enemy, false);
