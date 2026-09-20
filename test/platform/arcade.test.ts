@@ -389,6 +389,35 @@ test('Stick Slash final HUD reports cumulative five-minute totals', () => {
   assert.doesNotMatch(hud, new RegExp(`五分钟完成 · ${finalResult.score}分 · ${finalResult.kills}击破`));
 });
 
+test('Stick Slash final screen restarts a fresh run on J instead of freezing', () => {
+  // 复现玩家反馈：打穿第 10 章后停在"五分钟完成"屏，按 J 完全卡住。
+  // 末章 nextChapter 返回 false，得靠 restartRun 兜底：J 应回到第 1 章重开，而不是冻结。
+  const game = stickGame(26);
+  const state = chapterOneCheckpoint(26);
+  const first = state.checkpoint as Record<string, unknown>;
+  const finalResult = { chapter: 10, score: 150, kills: 1, bestCombo: 1 };
+  const completed = {
+    ...first,
+    completed: 10,
+    score: (first.score as number) + 300 + finalResult.score,
+    kills: (first.kills as number) + 2 + finalResult.kills,
+    bestCombo: Math.max(first.bestCombo as number, 1),
+    result: finalResult,
+  };
+  game.restore?.({ version: 1, kills: completed.kills,
+    bestCombo: completed.bestCombo, checkpoint: completed });
+  assert.match(game.hud?.() ?? '', /五分钟完成/, '末章终局屏应先亮出五分钟完成');
+  assert.match(game.hud?.() ?? '', /J 再来一局/, '终局屏应给出再来一局的提示');
+
+  const none = { left: false, right: false, up: false, down: false,
+    jump: false, primary: false, secondary: false };
+  const slash = { ...none, primary: true };
+  game.update(1 / 60, slash);
+  const after = game.hud?.() ?? '';
+  assert.doesNotMatch(after, /五分钟完成/, '按 J 后不该再停在终局屏（卡死）');
+  assert.match(after, /火柴快斩 1\/10/, '按 J 应回到第 1 章重开新的一局');
+});
+
 test('cartridge random streams are independent of preceding factory consumption', () => {
   const observed: number[] = [];
   const healthy = cartridge('healthy-random', context => {

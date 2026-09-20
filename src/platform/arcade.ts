@@ -120,8 +120,9 @@ class StickGame implements GameInstance {
       jump: input.jump || input.up, slash: input.primary,
       dash: input.secondary === true, spin: input.special === true,
       crouch: input.down === true };
+    // 结算屏按 J：先试进下一章，进不了（已是末章终局）就再来一局 —— 否则会卡死在终局屏。
     if (this.director.result !== null && input.primary
-      && this.director.nextChapter(this.world)) {
+      && (this.director.nextChapter(this.world) || this.director.restartRun(this.world))) {
       this.reduceMotion();
       return;
     }
@@ -279,7 +280,7 @@ class StickGame implements GameInstance {
     if (result !== null) {
       const checkpoint = this.director.checkpoint();
       if (result.chapter >= CHAPTER_COUNT && this.world.phase === 'fight' && checkpoint !== null) {
-        return `五分钟完成 · ${checkpoint.score}分 · ${checkpoint.kills}击破 · 连击${checkpoint.bestCombo}`;
+        return `五分钟完成 · ${checkpoint.score}分 · ${checkpoint.kills}击破 · 连击${checkpoint.bestCombo} · J 再来一局`;
       }
       // 章节完成屏是天然的剧情节拍（按 J 进下一章前）：亮出刚打完这章的标题。
       // 保留"第N章完成"连续子串，HUD 正则（arcade.test）照旧匹配；标题追加在后面。

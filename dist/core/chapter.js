@@ -97,6 +97,17 @@ export class ChapterDirector {
         this.begin(world);
         return true;
     }
+    /**
+     * 通关第 10 章后按 J **再来一局**：回到第 1 章、清掉存档检查点重开。
+     * 只在"末章已结算"这个终局屏上生效（否则交给 nextChapter 进下一章）。
+     * 终身战绩（World 的 kills/bestCombo）由 `begin→beginChapter` 保留，不清零。
+     */
+    restartRun(world) {
+        if (this.result === null || this.chapter < CHAPTER_COUNT || world.phase !== 'fight')
+            return false;
+        this.start(world);
+        return true;
+    }
     checkpoint() {
         return this.saved;
     }
