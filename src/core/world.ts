@@ -176,6 +176,8 @@ const BOSS_WINDUP = 0.7;
 const GRUNT_WINDUP = 0.42;
 /** 非致命命中后的短暂无敌，防止冲刺/旋斩在一次动作里把 boss 连成秒杀。 */
 const STAGGER_INVULN = 0.25;
+/** 连击里程碑：跨过这些数时那一刀额外顿一记，"越连越沉"（只加顿帧，不改计分）。 */
+const MILESTONES = [5, 10, 15, 20];
 /** Boss 分阶段：满血(5-4)重压近战；暴走(3-2)加冲撞；困兽(1)加范围横扫。 */
 const BOSS_CHARGE_TIME = 0.3;   // 冲撞窜出的持续（比玩家冲刺略长，看得清）
 const BOSS_SWEEP_TIME = 0.34;   // 范围横扫（复用旋斩的时长/整圈刀光观感）
@@ -657,6 +659,7 @@ export class World {
     if (kind === 'air' && (hit > 0 || staggered > 0)) p.vy = Math.max(p.vy, this.fh * 10);
 
     if (hit > 0) {
+      const comboBefore = this.combo;
       this.kills += hit;
       this.taskKills += hit;
       this.combo += hit;
@@ -668,7 +671,11 @@ export class World {
       // 会清 flash/shake，hitstop 是唯一幸存的命中反馈，不能被清零）。
       const base = kind === 'air' ? 0.055 : kind === 'lunge' ? 0.045 : 0.045;
       const cap = kind === 'air' ? 0.085 : 0.075;
-      this.hitstop = Math.max(0.04, Math.min(cap, base + hit * 0.012 + this.combo * 0.002));
+      let stop = Math.max(0.04, Math.min(cap, base + hit * 0.012 + this.combo * 0.002));
+      // 连击里程碑（5/10/15）那一下额外顿一记，"越连越沉"——只加顿帧，不改 combo 数值、不加全屏
+      // flash（flash 会把背景抬进 legibility 描边隔离禁带并顶爆字节）。里程碑的视觉靠 HUD 连击数。
+      if (MILESTONES.some((m) => comboBefore < m && this.combo >= m)) stop = Math.min(0.09, stop + 0.03);
+      this.hitstop = stop;
       const shakeAdd = kind === 'sweep' ? 1.1 : kind === 'air' ? 1.0 : kind === 'lunge' ? 0.6 : 0.85;
       this.shake = Math.min(2.8, this.shake + shakeAdd + hit * 0.35);
       if (kind === 'lunge') this.flash = Math.max(this.flash, 0.12);

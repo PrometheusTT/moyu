@@ -105,6 +105,10 @@ class StickGame implements GameInstance {
   private readonly director: ChapterDirector;
   private previous: FighterSnapshots = new Map();
   private scratch: FighterSnapshots = new Map();
+  // 技能就绪脉冲：这些是渲染态、不进 world 快照，所以不扰动 world.test 的重放/确定性。
+  private prevDashCool = 0;
+  private prevSpinCool = 0;
+  private readyPulse = 0;
   constructor(seed: number) {
     this.world = new World(seed, { automaticSpawns: false });
     this.world.resize(180, 44);
@@ -127,6 +131,12 @@ class StickGame implements GameInstance {
       return;
     }
     this.director.step(this.world, dt, intent);
+    // 冷却跨过 0 的那一刻（>0 → <=0）起 0.25s 就绪脉冲；否则按 dt 衰减。
+    const p = this.world.player;
+    const crossed = (this.prevDashCool > 0 && p.dashCool <= 0) || (this.prevSpinCool > 0 && p.spinCool <= 0);
+    this.readyPulse = crossed ? 0.25 : Math.max(0, this.readyPulse - dt);
+    this.prevDashCool = p.dashCool;
+    this.prevSpinCool = p.spinCool;
     this.reduceMotion();
   }
   private reduceMotion(): void {
@@ -304,7 +314,12 @@ class StickGame implements GameInstance {
     const p = this.world.player;
     const ready = (t: number): string => (t > 0 ? '▯' : '▮');
     const skills = `冲${ready(p.dashCool)} 旋${ready(p.spinCool)}`;
-    return `火柴快斩 ${this.director.chapter}/${CHAPTER_COUNT} · ${this.world.kills}击破 · ${this.world.respawn > 0 ? '重生中' : `血${this.world.player.hp}/4`} · ${skills}`;
+    // 连击数插在血与冲之间（连打 ≥2 才显示，别抢常态注意力）；就绪脉冲只追加在**行尾**，
+    // 绝不写进 `冲▮ 旋▮` 之间——那个连续子串被 arcade.test 的 /冲▮ 旋▮/ 正则钉着。
+    const combo = this.world.combo >= 2 ? ` · 连击${this.world.combo}` : '';
+    const pulse = this.readyPulse > 0 ? ' 就绪✦' : '';
+    const life = this.world.respawn > 0 ? '重生中' : `血${this.world.player.hp}/4`;
+    return `火柴快斩 ${this.director.chapter}/${CHAPTER_COUNT} · ${this.world.kills}击破 · ${life}${combo} · ${skills}${pulse}`;
   }
 }
 

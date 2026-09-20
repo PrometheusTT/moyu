@@ -224,6 +224,31 @@ test('live HUD 亮出技能冷却，且 火柴快斩/血 都在冷却指示之�
   assert.match(game.hud?.() ?? '', /冲▯/, '放完冲刺斩后冲的冷却应显示 ▯');
 });
 
+test('live HUD：连击数插在血与冲之间、就绪脉冲只在行尾，`冲 旋` 子串始终完整', () => {
+  const game = stickGame(41);
+  assert.doesNotMatch(game.hud?.() ?? '', /连击/, '开局连击 0，不该显示连击数');
+  // 跑一段真实战斗（开局导演在右侧放一对杂兵，向右连劈能打出连击）。
+  const slash = { left: false, right: false, up: false, down: false, jump: false, primary: true, secondary: false };
+  const walk = { ...slash, primary: false, right: true };
+  let sawCombo = false;
+  for (let i = 0; i < 900; i++) {
+    game.update(1 / 60, i % 5 < 2 ? { ...slash, right: true } : walk);
+    const h = game.hud?.() ?? '';
+    // 不变式：无论何时，`冲X 旋X` 连续子串必须完整（arcade.test/e2e 的正则钉着它），
+    // 就绪脉冲 `就绪✦` 只能出现在它之后。
+    assert.match(h, /冲[▮▯] 旋[▮▯]/, `任何一帧 \`冲 旋\` 子串都应完整，实际：${h}`);
+    const pulse = h.indexOf('就绪');
+    if (pulse >= 0) assert.ok(pulse > h.indexOf('旋'), '就绪脉冲只能追加在冷却指示之后（行尾）');
+    const combo = h.match(/连击(\d+)/);
+    if (combo) {
+      sawCombo = true;
+      assert.ok(h.indexOf('血') < h.indexOf('连击'), '连击数应排在血量之后');
+      assert.ok(h.indexOf('连击') < h.indexOf('冲'), '连击数应排在冷却指示之前');
+    }
+  }
+  assert.ok(sawCombo, '900 帧向右连劈没能打出任何连击（连击数 HUD 未被覆盖）');
+});
+
 test('all cartridges render through the portable target', () => withFreshHome(() => {
   const a = new Arcade('/tmp/moyu-no-events-test');
   const target = new BrailleTarget(60, 12);

@@ -434,6 +434,37 @@ test('命中反馈 hitstop 恒 ≥ 0.04：reduceMotion 清掉 flash/shake 后顿
   }
 });
 
+test('连击里程碑：跨过第 5 连击那一刀额外顿帧，且不改 combo/bestCombo 数值', () => {
+  // 一刀一个杂兵地连打到跨过 5：里程碑那刀的 hitstop 应明显高于前一刀。
+  const w = new World(29, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.taskStart();
+  w.enemies.length = 0;
+  const p = w.player;
+  p.face = 1; p.y = w.ground; p.onGround = true;
+  const swing = (): number => {
+    w.enemies.length = 0;
+    w.spawnFormation({ kind: 'single', side: 'right' });
+    const e = w.enemies[0]!; e.x = p.x + w.fh * 0.6; e.y = w.ground;
+    // 五刀都在同一个 STEP 节奏内打完（5×1/60≈0.083s « 1.6s 连击窗），combo 天然不超时。
+    p.atkKind = 'normal'; p.atk = 0.30; p.atkHit = false;
+    w.hitstop = 0;
+    w.step(STEP, { move: 0, jump: false, slash: false });
+    return w.hitstop;
+  };
+  let prev = 0; let atFive = 0; let beforeFive = 0;
+  for (let n = 1; n <= 5; n++) {
+    const stop = swing();
+    if (n === 4) beforeFive = stop;
+    if (n === 5) atFive = stop;
+    prev = stop;
+  }
+  void prev;
+  assert.equal(w.combo, 5, '连打五刀应恰好 5 连击（里程碑不改数值）');
+  assert.equal(w.bestCombo, 5, 'bestCombo 应记到 5（里程碑不改数值）');
+  assert.ok(atFive > beforeFive, `跨过第 5 连击那刀应额外顿帧（第4刀 ${beforeFive.toFixed(3)} → 第5刀 ${atFive.toFixed(3)}）`);
+});
+
 test('杂兵变种：tag 确定、变种真的出现，且不额外消耗 RNG（保住确定性/字节预算）', () => {
   // makeGrunt 恰好抽 5 个值：range,float,float,range,range。tag 只从已抽到的 h/speed 派生。
   const w = new World(12345, { automaticSpawns: false });
