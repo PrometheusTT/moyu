@@ -20,6 +20,31 @@
 import { Rng } from "./rng.js";
 import { poseAir, poseHurt, poseIdle, poseLand, poseSlash, poseWalk, poseWindup, segments } from "./stick.js";
 export const NO_INTENT = { move: 0, jump: false, slash: false, dash: false, spin: false, crouch: false };
+/**
+ * Boss 阶段随剩余血量收紧：5-4 重压、3-2 暴走、1 困兽。
+ * 纯函数、零副作用，测试可直接对照。
+ */
+function bossPhase(hp) {
+    if (hp >= 4)
+        return 1;
+    if (hp >= 2)
+        return 2;
+    return 3;
+}
+/**
+ * 出招表：**确定性**地按 `seq` 轮换，零 RNG。
+ * - Phase 1：只近战（守住满血=长前摇近战的回归）。
+ * - Phase 2：近战 / 冲撞交替。
+ * - Phase 3：近战 / 冲撞 / 横扫三循环。
+ */
+function bossMoveFor(phase, seq) {
+    if (phase === 1)
+        return 'melee';
+    if (phase === 2)
+        return seq % 2 === 0 ? 'charge' : 'melee';
+    const pick = seq % 3;
+    return pick === 0 ? 'sweep' : pick === 1 ? 'charge' : 'melee';
+}
 const PLAYER_HP = 4;
 /** 落地压扁的持续时间。30fps 下约 3 帧 —— 少于这个数就一闪而过看不见（见 `poseLand`）。 */
 const LAND_TIME = 0.1;
@@ -38,6 +63,10 @@ const BOSS_WINDUP = 0.7;
 const GRUNT_WINDUP = 0.42;
 /** 非致命命中后的短暂无敌，防止冲刺/旋斩在一次动作里把 boss 连成秒杀。 */
 const STAGGER_INVULN = 0.25;
+/** Boss 分阶段：满血(5-4)重压近战；暴走(3-2)加冲撞；困兽(1)加范围横扫。 */
+const BOSS_CHARGE_TIME = 0.3; // 冲撞窜出的持续（比玩家冲刺略长，看得清）
+const BOSS_SWEEP_TIME = 0.34; // 范围横扫（复用旋斩的时长/整圈刀光观感）
+const BOSS_SWEEP_REACH_FH = 1.7;
 export class World {
     w = 80;
     h = 24;
@@ -382,12 +411,22 @@ export class World {
      * grunt（hp=1）永远走不到这里，所以一刀一个的行为逐字节不变。
      */
     staggerEnemy(e, dir) {
+        const before = e.hp;
         e.hp -= 1;
         e.hurt = 0.3;
         e.invuln = STAGGER_INVULN;
         e.windup = -1;
         e.cool = Math.max(e.cool, 0.45);
         e.vx = dir * this.fh * 1.2;
+        // 打断进行中的 boss 招式（挨打就收招），并在跨阶段那一下给一记闪光震屏当"暴走/困兽"节拍。
+        if (e.tag === 'boss') {
+            e.dashT = 0;
+            e.spinT = 0;
+            if (bossPhase(before) !== bossPhase(e.hp)) {
+                this.flash = Math.max(this.flash, 0.5);
+                this.shake = Math.min(4, this.shake + 1.4);
+            }
+        }
     }
     /** 冲刺斩起手：定住方向窜出去，给足穿过全程的无敌帧，取消手上的普通刀。 */
     startDash(p) {
@@ -647,24 +686,27 @@ export class World {
         // 被打断/砍击后的短无敌：grunt 恒为 0 → 无可观察变化、不碰 RNG；只有 boss 用得上。
         if (e.invuln > 0)
             e.invuln -= dt;
-        const boss = e.tag === 'boss';
+        // boss 走独立 AI（多阶段冲撞/横扫）；grunt 路径逐字节不变。
+        if (e.tag === 'boss') {
+            this.stepBoss(dt, e);
+            return;
+        }
         const p = this.player;
         const alive = this.respawn <= 0;
         const dx = p.x - e.x;
-        // boss 更大、够得更远，就从更远处收步起手，让前摇看得清。
-        const near = Math.abs(dx) < this.fh * (boss ? 1.15 : 0.85);
+        const near = Math.abs(dx) < this.fh * 0.85;
         if (e.windup >= 0) {
             e.windup -= dt;
             e.vx *= Math.exp(-dt * 14);
             if (e.windup <= 0) {
                 e.windup = -1;
                 e.cool = this.rng.range(0.9, 1.5);
-                if (alive && Math.abs(p.x - e.x) < this.fh * (boss ? 1.4 : 1.05) && p.invuln <= 0)
+                if (alive && Math.abs(p.x - e.x) < this.fh * 1.05 && p.invuln <= 0)
                     this.hurtPlayer(Math.sign(e.face));
             }
         }
         else if (alive && near && e.cool <= 0) {
-            e.windup = boss ? BOSS_WINDUP : GRUNT_WINDUP;
+            e.windup = GRUNT_WINDUP;
             e.face = dx >= 0 ? 1 : -1;
         }
         else if (alive && this.phase !== 'clear') {
@@ -685,6 +727,109 @@ export class World {
         }
         this.integrate(dt, e);
         e.pose = this.poseFor(e);
+    }
+    /**
+     * Boss AI：按剩余血量分三阶段，招式**确定性轮换**（用 `atkSeq` 计数，零新 RNG；
+     * 收招沿用 grunt 那处 `rng.range(0.9,1.5)`，每次出招恰好一抽，与 grunt 一致）。
+     * - Phase 1 重压（hp 5-4）：只有 `BOSS_WINDUP` 长前摇重击近战（守住满血=近战的回归测试）。
+     * - Phase 2 暴走（hp 3-2）：近战与**冲撞**交替；冲撞窜出、途中撞到玩家就伤。
+     * - Phase 3 困兽（hp 1）：再加**范围横扫**；一圈刀光，扫到玩家就伤。
+     * boss 借用 `dashT/spinT` 只作自身计时 + 让 poseFor 免费出姿态；玩家专属的 resolveDash/
+     * startSpin 以 this.player 扫 this.enemies，永不被敌人的 dashT/spinT 触发，隔离干净。
+     */
+    stepBoss(dt, e) {
+        const p = this.player;
+        const alive = this.respawn <= 0;
+        // 冲撞进行中：维持朝玩家的高速冲量，每帧判定撞到玩家没有。
+        if ((e.dashT ?? 0) > 0) {
+            e.dashT -= dt;
+            e.vx = e.face * e.speed * 6.5;
+            if (alive)
+                this.resolveBossCharge(e);
+            this.integrate(dt, e);
+            e.pose = this.poseFor(e);
+            return;
+        }
+        // 横扫进行中：定身把这一圈转完（判定在起手那一下已结算）。
+        if ((e.spinT ?? 0) > 0) {
+            e.spinT -= dt;
+            e.vx *= Math.exp(-dt * 12);
+            this.integrate(dt, e);
+            e.pose = this.poseFor(e);
+            return;
+        }
+        const dx = p.x - e.x;
+        const phase = bossPhase(e.hp);
+        // 冲撞够得远（跨半场），近战/横扫要贴身；起手门按「本次要出的招」放宽。
+        const move = bossMoveFor(phase, e.atkSeq ?? 0);
+        const engageReach = move === 'charge' ? this.fh * 5 : this.fh * 1.15;
+        const near = Math.abs(dx) < engageReach;
+        if (e.windup >= 0) {
+            e.windup -= dt;
+            e.vx *= Math.exp(-dt * 14);
+            if (e.windup <= 0) {
+                e.windup = -1;
+                e.cool = this.rng.range(0.9, 1.5); // 唯一一抽，和 grunt 同型
+                e.atkSeq = (e.atkSeq ?? 0) + 1;
+                this.launchBossMove(e, move);
+            }
+        }
+        else if (alive && near && e.cool <= 0) {
+            e.windup = BOSS_WINDUP;
+            e.face = dx >= 0 ? 1 : -1;
+        }
+        else if (alive && this.phase !== 'clear') {
+            e.face = dx >= 0 ? 1 : -1;
+            // 暴走/困兽提速：越残血逼得越紧。
+            const chase = phase === 1 ? 9 : 12;
+            e.vx += e.face * e.speed * chase * dt;
+            e.vx = clamp(e.vx, -e.speed * (phase === 1 ? 1 : 1.4), e.speed * (phase === 1 ? 1 : 1.4));
+        }
+        else {
+            e.vx *= Math.exp(-dt * 8);
+        }
+        this.integrate(dt, e);
+        e.pose = this.poseFor(e);
+    }
+    /** 执行 boss 招式：近战瞬时判定、冲撞设 dashT+冲量、横扫设 spinT+整圈刀光。 */
+    launchBossMove(e, move) {
+        const p = this.player;
+        const alive = this.respawn <= 0;
+        if (move === 'charge') {
+            e.face = p.x >= e.x ? 1 : -1;
+            e.dashT = BOSS_CHARGE_TIME;
+            this.shake = Math.min(3.4, this.shake + 0.6);
+            if (alive)
+                this.resolveBossCharge(e);
+            return;
+        }
+        if (move === 'sweep') {
+            e.spinT = BOSS_SWEEP_TIME;
+            this.slashes.push({
+                x: e.x, y: e.y - this.fh * 0.6, r: this.fh * BOSS_SWEEP_REACH_FH * 0.95,
+                a0: -Math.PI, a1: Math.PI, life: 0.24, max: 0.24, big: true,
+            });
+            this.hitstop = Math.max(this.hitstop, 0.04);
+            this.shake = Math.min(3.6, this.shake + 1.0);
+            if (alive && Math.abs(p.x - e.x) < this.fh * BOSS_SWEEP_REACH_FH && p.invuln <= 0) {
+                this.hurtPlayer(p.x >= e.x ? 1 : -1);
+            }
+            return;
+        }
+        // 近战重击：贴身瞬时判定（沿用 grunt 的做法，boss 够得更远）。
+        if (alive && Math.abs(p.x - e.x) < this.fh * 1.4 && p.invuln <= 0)
+            this.hurtPlayer(Math.sign(e.face));
+    }
+    /** 冲撞途中撞到玩家：一次冲撞只伤一下（玩家受击后 0.85s 无敌天然拦住重复）。 */
+    resolveBossCharge(e) {
+        const p = this.player;
+        if (p.invuln > 0)
+            return;
+        if (Math.abs(p.x - e.x) > this.fh * 1.05)
+            return;
+        if (p.y - p.h > e.y + this.fh * 0.15 || p.y < e.y - this.fh * 1.15)
+            return; // 跳起可躲
+        this.hurtPlayer(p.x >= e.x ? 1 : -1);
     }
     hurtPlayer(dir) {
         const p = this.player;

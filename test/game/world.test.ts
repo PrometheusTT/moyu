@@ -478,3 +478,124 @@ test('boss：前摇是更长的 BOSS_WINDUP，够得更远，打满会命中玩�
   assert.ok(maxWindup > 0.42, `boss 前摇应比 grunt(0.42) 长，峰值 ${maxWindup.toFixed(2)}`);
   assert.ok(w.player.hp < hp0, 'boss 打满前摇没能命中玩家（更宽命中距离失效？）');
 });
+
+test('boss 阶段一（满血）：只重击近战，绝不冲撞/横扫', () => {
+  const w = new World(20, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.spawnBoss('right');
+  const boss = w.enemies[0]!;
+  boss.cool = 0;
+  w.player.face = 1;
+  let usedDash = false; let usedSpin = false;
+  for (let i = 0; i < 240; i++) {
+    boss.x = w.player.x + w.fh * 1.0;   // 近战 engage 内
+    boss.y = w.player.y;
+    w.player.invuln = 999;               // 别让玩家被打死触发重生打断出招
+    w.hitstop = 0;
+    w.step(STEP, NO_INTENT);
+    if (boss.dashT > 0) usedDash = true;
+    if (boss.spinT > 0) usedSpin = true;
+  }
+  assert.equal(boss.hp, 5, '没人砍它，满血阶段不该掉血');
+  assert.ok(!usedDash, '满血 boss 不该冲撞（阶段一只近战）');
+  assert.ok(!usedSpin, '满血 boss 不该横扫（阶段一只近战）');
+});
+
+test('boss 阶段二（暴走）：发动冲撞窜出，撞到玩家就伤', () => {
+  const w = new World(21, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.spawnBoss('right');
+  const boss = w.enemies[0]!;
+  boss.hp = 3;              // 直接进 Phase 2
+  boss.atkSeq = 0;          // bossMoveFor(2,0) === 'charge'
+  boss.cool = 0;
+  boss.x = w.player.x + w.fh * 1.5;   // 近战够不到、冲撞才够得着
+  boss.y = w.player.y;
+  w.player.face = 1;
+  const hp0 = w.player.hp;
+  let charged = false;
+  for (let i = 0; i < 90 && w.player.hp === hp0; i++) {
+    w.player.invuln = 0;
+    w.hitstop = 0;
+    w.step(STEP, NO_INTENT);
+    if (boss.dashT > 0) charged = true;
+  }
+  assert.ok(charged, 'boss 阶段二没发动冲撞');
+  assert.ok(w.player.hp < hp0, '冲撞窜到玩家身上却没伤到');
+});
+
+test('boss 阶段三（困兽）：范围横扫留整圈刀光，扫到玩家就伤', () => {
+  const w = new World(22, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.spawnBoss('right');
+  const boss = w.enemies[0]!;
+  boss.hp = 1;              // 直接进 Phase 3
+  boss.atkSeq = 0;          // bossMoveFor(3,0) === 'sweep'
+  boss.cool = 0;
+  w.player.face = 1;
+  const hp0 = w.player.hp;
+  const ringsBefore = w.slashes.length;
+  let swept = false;
+  for (let i = 0; i < 90 && w.player.hp === hp0; i++) {
+    boss.x = w.player.x + w.fh * 1.0;   // 横扫 engage(1.15) 内、命中半径(1.7) 内
+    boss.y = w.player.y;
+    w.player.invuln = 0;
+    w.hitstop = 0;
+    w.step(STEP, NO_INTENT);
+    if (boss.spinT > 0) swept = true;
+  }
+  assert.ok(swept, 'boss 阶段三没发动横扫');
+  assert.ok(w.player.hp < hp0, '横扫罩住玩家却没伤到');
+  assert.ok(w.slashes.length > ringsBefore, '横扫没留下整圈刀光');
+});
+
+test('boss 阶段跃迁：跨阶段那一击给闪光，同阶段掉血不给（暴走/困兽节拍）', () => {
+  const w = new World(23, { automaticSpawns: false });
+  w.resize(160, 44);
+  w.spawnBoss('right');
+  const boss = w.enemies[0]!;
+  w.player.face = 1;
+  const hitBoss = (): void => {
+    boss.x = w.player.x + w.fh * 0.6;
+    boss.y = w.player.y;
+    boss.invuln = 0;         // 跳过 stagger 无敌，连着砍
+    w.hitstop = 0;
+    w.player.atk = 0.30; w.player.atkHit = false;
+    w.step(STEP, { move: 0, jump: false, slash: false });
+  };
+  // hp 5 → 4：仍在阶段一，不该闪。
+  w.flash = 0;
+  hitBoss();
+  assert.equal(boss.hp, 4);
+  assert.equal(w.flash, 0, '同阶段掉血不该触发阶段闪光');
+  // hp 4 → 3：跨入阶段二，应给一记闪光。
+  w.flash = 0;
+  hitBoss();
+  assert.equal(boss.hp, 3);
+  assert.ok(w.flash > 0, '跨阶段那一击应给闪光');
+});
+
+test('boss 战确定性：同种子跑穿三阶段逐字节一致（stepBoss 零新增 RNG，不移位共享流）', () => {
+  const play = (seed: number): Record<string, unknown> => {
+    const w = new World(seed, { automaticSpawns: false });
+    w.resize(160, 44);
+    w.spawnBoss('right');
+    const boss = w.enemies[0]!;
+    let sawCharge = false; let sawSweep = false;
+    for (let i = 0; i < 900; i++) {
+      if (i % 12 === 0) { boss.x = w.player.x + w.fh * 1.0; boss.cool = 0; }  // 逼它频繁出招
+      boss.y = w.player.y;
+      w.player.invuln = 999;               // 别让 boss 打死玩家中断出招节奏
+      if (i === 200) boss.hp = 3;          // 推进到暴走
+      if (i === 500) boss.hp = 1;          // 推进到困兽
+      w.step(STEP, NO_INTENT);
+      if (boss.dashT > 0) sawCharge = true;
+      if (boss.spinT > 0) sawSweep = true;
+    }
+    return { rng: w.rng.snapshot(), bx: boss.x, hp: boss.hp, sawCharge, sawSweep };
+  };
+  const a = play(0xb0551);
+  assert.deepEqual(a, play(0xb0551), 'boss 战对同种子不确定 —— stepBoss 引入了随机流');
+  assert.equal(a.sawCharge, true, '900 帧里没触发过冲撞（阶段二覆盖缺失）');
+  assert.equal(a.sawSweep, true, '900 帧里没触发过横扫（阶段三覆盖缺失）');
+});
