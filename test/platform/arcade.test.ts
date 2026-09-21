@@ -8,6 +8,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { GameInstance, GameModule } from '../../src/platform/types.ts';
+import { LogicalCanvas } from '../../src/platform/canvas.ts';
 
 function cartridge(id: string, create: GameModule['create']): GameModule {
   return {
@@ -384,6 +385,31 @@ test('Stick Slash result-screen J cannot bypass task completion ownership', () =
   game.onHostEvent?.('task-start');
   game.update(1 / 60, slash);
   assert.match(game.hud?.() ?? '', /2\/10/);
+});
+
+test('通关演出：章节 settle 起一记冲击波，战斗中不出现、脉冲散尽后收回', () => {
+  const game = stickGame(29);
+  const none = { left: false, right: false, up: false, down: false,
+    jump: false, primary: false, secondary: false };
+  const dye = (): number => {
+    // 展开档整帧非空像素数：冲击波盖在最上，会额外点亮一批像素。
+    const c = new LogicalCanvas(80, 24);
+    game.renderExpanded?.(c);
+    let lit = 0;
+    for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) if (c.getPixel(x, y) !== 0x090a0e) lit++;
+    return lit;
+  };
+  // 战斗途中（未 settle）：clearPulse 恒 0，没有冲击波。跑到第 1799 步仍在打。
+  for (let i = 0; i < 1799; i++) game.update(1 / 60, none);
+  assert.doesNotMatch(game.hud?.() ?? '', /第1章完成/, '第 1799 步应还没结算');
+  // 第 1800 步 settle：这一帧点亮冲击波。
+  game.update(1 / 60, none);
+  assert.match(game.hud?.() ?? '', /第1章完成/, '第 1800 步应已结算');
+  const atClear = dye();
+  // 让脉冲散尽（>1.1s），场景冻结不变，只有冲击波退场。
+  for (let i = 0; i < 90; i++) game.update(1 / 60, none);
+  const settled = dye();
+  assert.ok(atClear > settled, `通关瞬间应比散尽后更亮（冲击波在场）：${atClear} vs ${settled}`);
 });
 
 test('Stick Slash final HUD reports cumulative five-minute totals', () => {

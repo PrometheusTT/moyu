@@ -36,6 +36,56 @@ function mixRgb(a: number, b: number, k: number): number {
   const bl = Math.round((a & 255) * (1 - t) + (b & 255) * t);
   return (r << 16) | (g << 8) | bl;
 }
+
+/**
+ * 通关金色冲击波：章节 settle 后由 `clearPulse`(1→0) 驱动，给"打完一关"一记看得见的节拍。
+ * 高画布（展开/图形档）扩散两道亮环 + 几点上升金火星；矮画布（micro 两行条）改成从中心
+ * 向两边推开的亮柱扫光。纯渲染、只在结算屏（result!==null）出现——裸 World 的字节/可读性
+ * 测试没有 director/pulse，走不到这条路径；只用 line/pixel，`GameCanvas`/`PixelCanvas` 通用。
+ */
+function paintClearBurst(c: GameCanvas, pulse: number): void {
+  if (pulse <= 0) return;
+  const t = pulse <= 1 ? pulse : 1;
+  const progress = 1 - t;               // 0（刚过关）→ 1（散尽）
+  const bright = Math.pow(t, 0.6);      // 越扩越淡
+  if (c.height < 12) {
+    // 矮条：中心向两边推开的一对亮柱 + 顶行金色薄扫。
+    const cx = c.width / 2;
+    const spread = progress * (c.width / 2 + 2);
+    const color = mixRgb(AMBER, INK, bright);
+    for (const s of [-1, 1] as const) {
+      const bx = Math.round(cx + s * spread);
+      if (bx >= 0 && bx < c.width) c.line(bx, 0, bx, c.height - 1, color);
+    }
+    if (bright > 0.2) for (let x = 0; x < c.width; x++) c.pixel(x, 0, mixRgb(AMBER, INK, bright * 0.5));
+    return;
+  }
+  const cx = c.width / 2, cy = c.height * 0.46;
+  const maxR = Math.max(c.width, c.height) * 0.62;
+  for (const [rf, wf] of [[1, 1], [0.62, 0.6]] as const) {
+    const r = (0.12 + 0.88 * progress) * maxR * rf;
+    if (r < 1) continue;
+    const color = mixRgb(AMBER, INK, bright * wf);
+    const steps = Math.max(12, Math.round(r * 0.8));
+    let px = cx + r, py = cy;
+    for (let i = 1; i <= steps; i++) {
+      const a = (i / steps) * Math.PI * 2;
+      const nx = cx + Math.cos(a) * r, ny = cy + Math.sin(a) * r * 0.9;
+      c.line(px, py, nx, ny, color);
+      px = nx; py = ny;
+    }
+  }
+  if (bright > 0.15) {
+    const embers = Math.max(5, Math.round(c.width / 12));
+    for (let i = 0; i < embers; i++) {
+      const phase = ((i * 7) % embers) / embers;   // 打散，不排成一条线
+      const ex = (i + 0.5) / embers * c.width;
+      const ey = c.height * (0.92 - (progress + phase * 0.3) * 0.85);
+      if (ey >= 0) c.pixel(Math.round(ex), Math.round(ey), mixRgb(AMBER, INK, bright));
+    }
+  }
+}
+
 const HOST_POLL_MS = 100;
 const FIRST_DIRECTION_MS = 340;
 const REPEAT_DIRECTION_MS = 150;
@@ -109,6 +159,9 @@ class StickGame implements GameInstance {
   private prevDashCool = 0;
   private prevSpinCool = 0;
   private readyPulse = 0;
+  // 通关演出：章节 settle（result 从 null 翻成非空）的那一刻起一个 1→0 的脉冲，
+  // 在三档渲染里画一记金色冲击波。同样是纯渲染态、不进 world 快照。
+  private clearPulse = 0;
   constructor(seed: number) {
     this.world = new World(seed, { automaticSpawns: false });
     this.world.resize(180, 44);
@@ -127,10 +180,16 @@ class StickGame implements GameInstance {
     // 结算屏按 J：先试进下一章，进不了（已是末章终局）就再来一局 —— 否则会卡死在终局屏。
     if (this.director.result !== null && input.primary
       && (this.director.nextChapter(this.world) || this.director.restartRun(this.world))) {
+      this.clearPulse = 0;   // 翻页即收起上一关的通关冲击波，别糊进下一章开局。
       this.reduceMotion();
       return;
     }
+    const settledBefore = this.director.result !== null;
     this.director.step(this.world, dt, intent);
+    // 这一步刚把本章 settle → 点亮通关冲击波；否则按 dt 衰减（result 态下 world 不再步进，
+    // 靠这里自行退火）。1.1s 够读一记"过关"，又不至于糊到玩家按 J 之后。
+    if (!settledBefore && this.director.result !== null) this.clearPulse = 1;
+    else this.clearPulse = Math.max(0, this.clearPulse - dt / 1.1);
     // 冷却跨过 0 的那一刻（>0 → <=0）起 0.25s 就绪脉冲；否则按 dt 衰减。
     const p = this.world.player;
     const crossed = (this.prevDashCool > 0 && p.dashCool <= 0) || (this.prevSpinCool > 0 && p.spinCool <= 0);
@@ -145,6 +204,7 @@ class StickGame implements GameInstance {
       this.world.shakeX = 0;
       this.world.shakeY = 0;
       this.world.flash = 0;
+      this.clearPulse = 0;   // 通关冲击波也是"动"，减动模式下一并按下。
     }
   }
   /** 当前章的氛围主题：把剧情落到画面（背景色 + 静态剪影布景）。 */
@@ -157,6 +217,7 @@ class StickGame implements GameInstance {
   }
   renderPixels(canvas: PixelCanvas, context: PixelRenderContext): void {
     paintPixelWorld(canvas, this.world, context, this.previous, this.director.result !== null, this.scene());
+    paintClearBurst(canvas, this.clearPulse);
   }
   renderMicro(c: GameCanvas): void {
     c.clear(BG);
@@ -178,6 +239,7 @@ class StickGame implements GameInstance {
       const x = Math.round(px(this.world.player.x) + this.world.player.face * 11);
       c.pixel(x, 1, ACCENT); c.pixel(x + this.world.player.face, 2, ACCENT); c.pixel(x, 3, ACCENT);
     }
+    paintClearBurst(c, this.clearPulse);
   }
   onHostEvent(event: HostEvent): void {
     if (event === 'task-start' && this.world.phase !== 'fight') this.world.taskStart();
@@ -258,6 +320,8 @@ class StickGame implements GameInstance {
 
     // 血花盖在最上，和 paintWorld 一样的层序（血是盖在刀光和身体之上的）。
     for (const b of w.blood) c.pixel(Math.round(px(b.x)), Math.round(py(b.y)), ACCENT);
+    // 通关冲击波盖在最上：结算屏才亮，战斗中 clearPulse 恒 0。
+    paintClearBurst(c, this.clearPulse);
   }
   serialize(): unknown {
     return { version: 1, kills: this.world.kills, bestCombo: this.world.bestCombo,
