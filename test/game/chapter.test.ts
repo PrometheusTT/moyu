@@ -57,10 +57,12 @@ test('每章编队严格落在导演日程帧，种类、方向和压力间隔�
       x ^= x >>> 16; x = Math.imul(x, 0x7feb352d); x ^= x >>> 15;
       return (x >>> 0) % 2 === 0 ? 'left' : 'right';
     };
-    const ordinary = 180 - pressure * 15;
+    const ordinary = 140 - pressure * 12;
     for (let step = OPENING_END; step < ORDINARY_END; step += ordinary) {
       const slot = (step - OPENING_END) / ordinary;
-      expected.push({ step, formation: { kind: 'single', side: side(slot) } });
+      expected.push({ step, formation: slot % 2 === 0
+        ? { kind: 'pincer' }
+        : { kind: 'single', side: side(slot) } });
     }
     const pincer = 240 - pressure * 20;
     for (let step = ORDINARY_END; step < PINCER_END; step += pincer) {

@@ -170,9 +170,16 @@ export class ChapterDirector {
     const step = this.activeStep;
     const pressure = chapterPressure(this.chapter);
     if (step >= OPENING_END && step < ORDINARY_END) {
-      const interval = 180 - pressure * 15;
+      // 收紧间隔、隔一波来一记两面夹击：普通段不再是"一个一个慢慢挪过来、砍两下就没了"，
+      // 而是时不时左右各压上一个，逼出走位与连击，让每关中段真的像"打一场"。
+      // pincer 从两侧边缘走入（不贴身刷），满场则整队落空、绝不只刷一半（≤3 恒成立）。
+      const interval = 140 - pressure * 12;
       const offset = step - OPENING_END;
-      if (offset % interval === 0) world.spawnFormation({ kind: 'single', side: this.side(offset / interval) });
+      if (offset % interval !== 0) return;
+      const slot = offset / interval;
+      world.spawnFormation(slot % 2 === 0
+        ? { kind: 'pincer' }
+        : { kind: 'single', side: this.side(slot) });
       return;
     }
     if (step >= ORDINARY_END && step < PINCER_END) {
