@@ -8,6 +8,17 @@ import { appendSignal } from '../../src/bridge/signal.ts';
 
 const enc = new TextEncoder();
 
+test('不足一个模拟步时不消费攻击脉冲', () => {
+  const g = new Game({ events: false });
+  g.advance(1000);
+  g.feed(enc.encode('j'));
+  g.advance(1001);
+  assert.equal(g.world.phase, 'title');
+  g.advance(1018);
+  assert.equal(g.world.phase, 'fight');
+  assert.ok(g.world.player.atk >= 0);
+});
+
 /** 造一个用独立事件文件的 Game。`MOYU_EVENTS` 必须在构造**之前**设好。 */
 function mkGame(seed: number): { g: Game; file: string; done: () => void } {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-g-')), 'events.log');

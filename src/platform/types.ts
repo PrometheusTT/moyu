@@ -10,7 +10,7 @@ export type GameManifest = {
   /** 两字符行游戏条的专用逻辑分辨率。 */
   microViewport?: { width: number; height: number };
   /** 未声明时不把标准画面强压进两行。minRows 是展开模式最低可玩行数。 */
-  display?: { micro: boolean; minRows: number; glyphs?: 'dots' | 'blocks' };
+  display?: { micro: boolean; minRows: number; glyphs?: 'dots' | 'blocks'; responsive?: boolean };
   palette: string[];
   controls: Array<{ action: string; label: string; keys: string[] }>;
 };
@@ -20,6 +20,8 @@ export type GameInput = {
   jump: boolean; primary: boolean; secondary: boolean;
   /** 第三动作键（旋斩等）。可选：老的输入构造省略它即视为未按。 */
   special?: boolean;
+  /** 终端按顺序输入方向+动作，短窗口识别剑谱招式。 */
+  art?: import('../core/martial.ts').SwordArt;
 };
 
 export type GameCanvas = {
@@ -60,10 +62,16 @@ export interface GameInstance {
   renderExpanded?(canvas: GameCanvas): void;
   /** Optional native-resolution path. Old cartridges retain their existing framebuffer renderer. */
   renderPixels?(canvas: PixelCanvas, context: PixelRenderContext): void;
+  /** 宿主在绘制前配置视口；只响应尺寸变化，render 本身保持无副作用。 */
+  configureViewport?(width: number, height: number, tier: 'graphics' | 'braille' | 'half'): void;
   onHostEvent?(event: HostEvent): void;
   serialize?(): unknown;
   restore?(state: unknown): void;
   hud?(): string;
+  /** 常驻战斗摘要；不包含剑谱、成长履历等完整帮助内容。 */
+  combatHud?(rows: number): string[];
+  /** 展开侧栏与帮助页共用的游戏说明。 */
+  details?(): string[];
 }
 
 export interface GameModule {

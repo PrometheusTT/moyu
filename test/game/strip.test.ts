@@ -116,7 +116,7 @@ test('走完整块场地的时间与画布尺寸无关（速度原来按身高�
   const demo = crossFrames(160, 78);
   for (const [name, f] of [['条形', strip], ['全屏', demo]] as const) {
     assert.ok(f > 0, `${name}：20 秒都没走到对面`);
-    assert.ok(f >= 60 * 2 && f <= 60 * 6, `${name}：走完一趟用了 ${(f / 60).toFixed(1)}s，不在 2~6 秒之间`);
+    assert.ok(f >= 60 * 1.5 && f <= 60 * 2.5, `${name}：走完一趟用了 ${(f / 60).toFixed(1)}s，不在 1.5~2.5 秒之间`);
   }
   // 身高从 26 掉到 3 是 8.7 倍，所以这条容差只要不离谱就能抓住"速度跟着身高缩"这个回归。
   assert.ok(
@@ -129,7 +129,7 @@ test('全屏那一端的手感常数一个都没变（兜底公式写错的典�
   const w = new World(23);
   w.resize(160, 78);
   assert.equal(w.fh, 26);
-  assert.equal(w.player.speed, 80, '全屏速度 = max(fh×3.0, w/2.0) = max(78, 80)');
+  assert.equal(w.player.speed, 78, '全屏速度只跟身高走 = fh×3.0 = 78，战场加宽不提速');
   assert.ok(Math.abs(w.jumpV - 140.4) < 1e-9, `jumpV=${w.jumpV}`);
   const s = new World(23);
   s.resize(120, 40);

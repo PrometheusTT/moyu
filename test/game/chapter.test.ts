@@ -9,12 +9,58 @@ import { NO_INTENT, World, type Intent, type SpawnFormation } from '../../src/co
 
 const STEP = 1 / 60;
 
-function setup(seed = 1): { world: World; director: ChapterDirector } {
+test('最后一敌被满气连式击杀后，等全套演完才结算', () => {
+  const { world, director } = setup(7, false);
+  director.activeStep = CHAPTER_STEPS; world.enemies.length = 0;
+  world.spawnFormation({ kind: 'pair', side: 'right' }); world.qi = 100;
+  director.step(world, STEP, { ...NO_INTENT, art: 'dugu' });
+  assert.equal(world.enemies.length, 0); assert.equal(director.result, null);
+  for (let i = 0; i < 180 && director.result === null; i++) director.step(world, STEP, NO_INTENT);
+  assert.ok(director.result); assert.equal(world.swordCast, null);
+});
+
+test('截止后活着的小怪或Boss绝不被跳关，尾刀仍计入结算', () => {
+  for (const boss of [false, true]) {
+    const { world, director } = setup(91, false);
+    for (let i = 0; i < CHAPTER_STEPS; i++) director.step(world, STEP, NO_INTENT);
+    assert.equal(director.result, null);
+    if (boss) { world.enemies.length = 0; world.spawnBoss('right'); }
+    const survivors = [...world.enemies];
+    for (let i = 0; i < 600; i++) director.step(world, STEP, NO_INTENT);
+    assert.equal(director.activeStep, CHAPTER_STEPS);
+    assert.equal(director.result, null);
+    assert.equal(director.nextChapter(world), false);
+    assert.deepEqual(world.enemies, survivors, '加时既不能刷怪也不能删掉存活敌人');
+    const before = world.kills;
+    for (let i = 0; i < 1200 && director.result === null; i++) {
+      const target = world.enemies[0];
+      director.step(world, STEP, { ...NO_INTENT, move: target ? target.x > world.player.x ? 1 : -1 : 0,
+        slash: i % 18 === 0, spin: i % 100 === 0 });
+    }
+    assert.ok(director.result, '必须能正常打完加时');
+    assert.equal(world.kills - before, survivors.length);
+    assert.equal(director.checkpoint()?.result.kills, survivors.length);
+    assert.equal(world.enemies.length, 0);
+    assert.equal(director.nextChapter(world), true);
+  }
+});
+
+function setup(seed = 1, cleanAtDeadline = true): { world: World; director: ChapterDirector } {
   const world = new World(seed, { automaticSpawns: false });
   world.resize(180, 44);
   world.enemyLimit = 3;
   const director = new ChapterDirector(seed);
   director.start(world);
+  // 日程/存档测试隔离战斗结果，假设最后一帧已清场；真实清场门槛另作回归。
+  if (cleanAtDeadline) {
+    const step = director.step.bind(director);
+    director.step = (w, dt, input) => {
+      if (director.activeStep === CHAPTER_STEPS - 1 && w.phase === 'fight') {
+        w.enemies.length = 0; w.respawn = 0;
+      }
+      return step(w, dt, input);
+    };
+  }
   return { world, director };
 }
 
@@ -117,7 +163,7 @@ test('开场给一刀多杀机会，定向编队原子执行且永不超过三�
   assert.ok(world.enemies.length <= 3);
 });
 
-test('第 1800 个活动更新结束章节，结果态冻结，J 只打开下一章', () => {
+test('第 1800 个活动更新且已清场时结算，结果态冻结，J 只打开下一章', () => {
   const { world, director } = setup(5);
   for (let i = 0; i < CHAPTER_STEPS - 1; i++) assert.equal(director.step(world, STEP, NO_INTENT), true);
   assert.equal(director.result, null);
@@ -134,7 +180,7 @@ test('第 1800 个活动更新结束章节，结果态冻结，J 只打开下一
   assert.equal(world.player.atk, -1, '下一章的 J 不得同时出刀');
 });
 
-test('十章恰好消耗 18000 个活动更新，压力封顶且末章不可继续', () => {
+test('十章后继续第十一章，压力渐增但同屏负荷有上限', () => {
   const { world, director } = setup(7);
   let active = 0;
   for (let chapter = 1; chapter <= CHAPTER_COUNT; chapter++) {
@@ -146,8 +192,11 @@ test('十章恰好消耗 18000 个活动更新，压力封顶且末章不可继�
     if (chapter < CHAPTER_COUNT) assert.equal(director.nextChapter(world), true);
   }
   assert.equal(active, 18_000);
-  assert.equal(director.nextChapter(world), false);
-  assert.equal(chapterPressure(4), chapterPressure(10));
+  assert.equal(director.nextChapter(world), true);
+  assert.equal(director.chapter, 11);
+  assert.equal(director.chapterTitle(), CHAPTER_TITLES[0]);
+  assert.ok(chapterPressure(4) < chapterPressure(10));
+  assert.equal(chapterPressure(10), chapterPressure(100000));
 });
 
 test('同种子与输入在完整五分钟内产生相同结果和检查点', () => {

@@ -8,6 +8,7 @@ import { Arcade } from '../src/platform/arcade.ts';
 import { BrailleTarget } from '../src/render/braille.ts';
 import { PlaySurface } from '../src/platform/surface.ts';
 import { stringWidth } from '../src/shell/wcwidth.ts';
+import { fieldColsFor } from '../src/shell/regions.ts';
 const output = path.resolve(process.argv[2] ?? '/tmp/moyu-visual-qa');
 fs.mkdirSync(output, { recursive: true });
 const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-visual-state-'));
@@ -52,7 +53,7 @@ const samples = [];
 try {
   for (const [id, rows] of [['stick-slash', 2], ['stick-slash', 6], ['snake', 6], ['blocks', 6]]) {
     const game = new Arcade(path.join(stateDir, 'events'), undefined, id);
-    const target = new BrailleTarget(40, rows, { defaultBackground: true, defaultForeground: 0xecf0f8 });
+    const target = new BrailleTarget(fieldColsFor(80), rows, { defaultBackground: true, defaultForeground: 0xecf0f8 });
     const surface = new PlaySurface(), terminal = screen(rows);
     const frames = [], raw = [], captures = [];
     game.setDisplay(rows, 'braille');
@@ -71,7 +72,7 @@ try {
       game.advance(now);
       const encoded = surface.render(game, target, 1, 80, rows);
       terminal.feed(encoded); frames.push(terminal.html()); raw.push(encoded);
-      if ([8, 13, 26, 37, 52, 60].includes(f)) captures.push({ label: id + ' / ' + rows + ' rows / frame ' + f, cells: terminal.cells().map(r => r.slice(0, 40)) });
+      if ([8, 13, 26, 37, 52, 60].includes(f)) captures.push({ label: id + ' / ' + rows + ' rows / frame ' + f, cells: terminal.cells() });
       now += 67;
     }
     samples.push({ id, rows, frames, raw, captures });
@@ -90,9 +91,9 @@ try {
   fs.writeFileSync(path.join(output, 'frames.json'), JSON.stringify(samples.map(({id, rows, raw}) => ({id, rows, raw}))));
   const shots = samples.flatMap(s => s.captures.filter((_, i) => [0,1,3].includes(i)));
   const width = 1320, rowHeight = 260;
-  let svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + (Math.ceil(shots.length / 2) * rowHeight) + '"><rect width="100%" height="100%" fill="#161923"/>';
+  let svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + (shots.length * rowHeight) + '"><rect width="100%" height="100%" fill="#161923"/>';
   shots.forEach((shot, n) => {
-    const ox = 20 + (n % 2) * 650, oy = 42 + Math.floor(n / 2) * rowHeight;
+    const ox = 20, oy = 42 + n * rowHeight;
     svg += '<text x="' + ox + '" y="' + (oy - 15) + '" font-family="DejaVu Sans" font-size="16" fill="#a4afc2">' + escape(shot.label) + '</text>';
     shot.cells.forEach((row, y) => row.forEach((c, x) => {
       if (c.ch.trim() === '') return;

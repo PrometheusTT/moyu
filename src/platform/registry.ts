@@ -28,6 +28,7 @@ export function validateManifest(value: unknown): GameManifest {
     || typeof display.micro !== 'boolean' || !Number.isInteger(display.minRows)
     || Number(display.minRows) < 4 || Number(display.minRows) > 24)) throw new Error('display 需要 micro 布尔值和 4–24 的整数 minRows');
   if (display?.glyphs !== undefined && display.glyphs !== 'dots' && display.glyphs !== 'blocks') throw new Error('display.glyphs 只能是 dots 或 blocks');
+  if (display?.responsive !== undefined && typeof display.responsive !== 'boolean') throw new Error('display.responsive 必须是布尔值');
   for (const control of m.controls) {
     if (typeof control !== 'object' || control === null || typeof control.action !== 'string'
       || typeof control.label !== 'string' || !Array.isArray(control.keys)

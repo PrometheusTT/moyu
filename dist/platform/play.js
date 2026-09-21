@@ -4,6 +4,7 @@ import { Teardown } from "../shell/teardown.js";
 import { Arcade } from "./arcade.js";
 import { loadGameModules } from "./registry.js";
 import { PlaySurface } from "./surface.js";
+import { fieldColsFor } from "../shell/regions.js";
 function oneLine(value) { return value.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim() || '未知错误'; }
 function reported(value) {
     return Number.isSafeInteger(value) && value !== undefined && value > 0 ? value : null;
@@ -17,7 +18,7 @@ export function playGeometry(columns, terminalRows, expanded) {
         && (reportedRows === null || reportedRows >= 3);
     const availableRows = Math.max(1, physicalRows - 2);
     return Object.freeze({ cols, rows: Math.min(expanded ? 6 : 2, availableRows),
-        targetCols: Math.min(40, Math.max(1, cols - 1)), usable });
+        targetCols: fieldColsFor(cols), usable });
 }
 export function preparePlay(modules, id) {
     if (id !== undefined && !modules.some((m) => m.manifest.id === id))
@@ -101,6 +102,7 @@ export async function cmdPlay(id) {
     if (size.usable) {
         active = true;
         arcade.resume();
+        arcade.enter();
     }
     else
         layout();
@@ -123,8 +125,7 @@ export async function cmdPlay(id) {
             const now = Date.now();
             arcade.setDisplay(size.rows, 'braille');
             arcade.advance(now);
-            const h = arcade.hud();
-            const row = `\x1b[1;1H\x1b[38;2;196;202;218m\x1b[48;2;24;26;36m${fitRow(h.left, h.right, size.targetCols)}\x1b[0m`;
+            const row = `\x1b[1;${size.cols - size.targetCols + 1}H\x1b[38;2;196;202;218m\x1b[48;2;24;26;36m${fitRow(arcade.name, '? 帮助', size.targetCols)}\x1b[0m`;
             process.stdout.write(row + surface.render(arcade, target, 2, size.cols, size.rows));
         }, 1000 / 30);
         timer.unref();

@@ -36,14 +36,9 @@ export const DEFAULT_GAME_ROWS = 1;
 export const MICRO_GAME_ROWS = 2;
 /** 终端至少要这么宽。半块渲染下像素宽度 = 列数。 */
 export const MIN_COLS = 60;
-/** 游戏画布的最大列数 —— "不要那么宽"。40 列的场地配 3~6 像素高的小人正好。 */
-export const MAX_FIELD_COLS = 40;
-/** HUD 文本区至少留这么多列（战绩 + 热键提示）。窄终端下先让场地缩。 */
-export const MIN_HUD_COLS = 30;
-/** 场地宽度：先给 HUD 留够，剩下的给场地，再夹到最大宽度。 */
+/** 左侧约三分之一给 HUD，两列间隔，最末列永不写入以防滚屏。 */
 export function fieldColsFor(cols) {
-    // 两行精灵需要完整 80×8，不为提示区缩小人物；窄屏提示使用临时全宽帮助。
-    return clamp(cols - 1, 12, MAX_FIELD_COLS);
+    return Math.max(1, cols - Math.floor((cols - 1) / 3) - 3);
 }
 /** 给独立 pocket/debug 布局保留的响应式高度；日常包裹模式固定使用两行。 */
 export function expandedGameRows(rows) {

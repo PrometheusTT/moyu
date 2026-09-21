@@ -32,6 +32,7 @@ export type SceneProp = {
 };
 
 export type SceneTheme = {
+  landmark?: 'bamboo' | 'bridge' | 'gate' | 'desert' | 'snow' | 'pagoda';
   /** 天空掺入的色相与比例（往基础 SKY 里 mix 这么多）。 */
   skyTint: number;
   skyMix: number;
@@ -95,6 +96,18 @@ const THEMES: readonly SceneTheme[] = [
 
 /** 章节号（1..10）→ 氛围主题。越界回落到第 1 章，绝不返回 undefined。 */
 export function sceneForChapter(chapter: number): SceneTheme {
-  const i = Math.trunc(chapter) - 1;
-  return THEMES[i] ?? THEMES[0]!;
+  const i = Number.isFinite(chapter) ? Math.max(0, Math.trunc(chapter) - 1) % THEMES.length : 0;
+  return WUXIA_THEMES[i]!;
 }
+
+const LANDMARKS = ['bamboo', 'bridge', 'gate', 'desert', 'snow', 'pagoda', 'bamboo', 'bridge', 'snow', 'gate'] as const;
+const COLORS = [
+  [0x263e36, 0x36594b, 0x748475], [0x283849, 0x3b5268, 0x9b865d],
+  [0x3a303a, 0x564353, 0x968475], [0x453626, 0x685039, 0xa48a62],
+  [0x303d50, 0x4c5a71, 0x8c9eac], [0x303044, 0x49435e, 0x998063],
+];
+const WUXIA_THEMES: readonly SceneTheme[] = THEMES.map((theme, i) => {
+  const [skyTint, groundTint, foeTint] = COLORS[i % COLORS.length]!;
+  return Object.freeze({ ...theme, skyTint: skyTint!, groundTint: groundTint!, foeTint: foeTint!,
+    skyMix: 0.3, landmark: LANDMARKS[i]! });
+});

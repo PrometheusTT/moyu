@@ -9,8 +9,9 @@ export class PlaySurface {
         const displayRows = Number.isSafeInteger(rows) && rows > 0 ? rows : 1;
         game.setDisplay(displayRows, target.tier);
         const help = game.showingInstructions;
-        const width = Math.max(0, Math.min(screenCols - 1, 80));
-        const mode = [screenTop, screenCols, displayRows, help].join(':');
+        const width = Math.max(0, screenCols - 1);
+        const gameLeft = Math.max(1, screenCols - target.cols);
+        const mode = [screenTop, screenCols, displayRows, target.cols, target.rows, help].join(':');
         let clear = '';
         if (mode !== this.lastMode) {
             for (let row = 0; row < displayRows; row++)
@@ -19,20 +20,19 @@ export class PlaySurface {
             this.lastPanel = '';
             this.lastMode = mode;
         }
+        game.configureViewport(target);
         if (help)
             target.fill(0x090a0e);
         else
             game.render(target, displayRows <= 2 ? 'micro' : 'standard');
         // An opaque Kitty image would cover text instructions even if those bytes follow the image.
         // Help owns plain text cells, not a blank image placement.
-        const body = help && target.tier === 'graphics' ? target.disposeSeq() : target.encode(screenTop);
-        const lines = game.panel();
-        const left = help ? 1 : target.cols + 3;
-        const available = Math.max(0, width - left + 1);
-        if (!help && available < 30)
-            lines[1] = '?帮助 Esc退';
+        const body = help ? (target.tier === 'graphics' ? target.disposeSeq() : '') : target.encode(screenTop, gameLeft);
+        const left = 1;
+        const available = help ? width : Math.max(0, gameLeft - 3);
+        const lines = game.panelRows(available, displayRows);
         // Controls are text, not pixels. Clear previous text with padded rows on every content change.
-        const panel = available === 0 ? '' : lines.slice(0, displayRows).map((line, i) => `\x1b[m\x1b[${screenTop + i};${left}H${fitRow(line.replace(/[\x00-\x1f\x7f-\x9f]/g, ''), '', available)}`).join('');
+        const panel = available === 0 ? '' : Array.from({ length: displayRows }, (_, i) => lines[i] ?? '').map((line, i) => `\x1b[m\x1b[${screenTop + i};${left}H${fitRow(line.replace(/[\x00-\x1f\x7f-\x9f]/g, ''), '', available)}`).join('');
         const changed = panel !== this.lastPanel || body !== '' || clear !== '';
         this.lastPanel = panel;
         return clear + body + (changed ? panel : '');

@@ -5,6 +5,7 @@ import { Arcade } from './arcade.ts';
 import { loadGameModules } from './registry.ts';
 import { PlaySurface } from './surface.ts';
 import type { GameModule } from './types.ts';
+import { fieldColsFor } from '../shell/regions.ts';
 
 export type PlayPreparation = { arcade: Arcade; error?: never } | { arcade?: never; error: string };
 export type PlayGeometry = Readonly<{ cols: number; rows: number; targetCols: number; usable: boolean }>;
@@ -23,7 +24,7 @@ export function playGeometry(columns: number | undefined, terminalRows: number |
     && (reportedRows === null || reportedRows >= 3);
   const availableRows = Math.max(1, physicalRows - 2);
   return Object.freeze({ cols, rows: Math.min(expanded ? 6 : 2, availableRows),
-    targetCols: Math.min(40, Math.max(1, cols - 1)), usable });
+    targetCols: fieldColsFor(cols), usable });
 }
 
 export function preparePlay(modules: GameModule[], id?: string): PlayPreparation {
@@ -85,7 +86,7 @@ export async function cmdPlay(id?: string): Promise<number> {
   await teardown.acquire({});
   process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?7l\x1b[?25l');
   process.stdin.setRawMode(true); process.stdin.resume();
-  if (size.usable) { active = true; arcade.resume(); }
+  if (size.usable) { active = true; arcade.resume(); arcade.enter(); }
   else layout();
   return new Promise<number>((resolve) => {
     process.stdin.on('data', (b: Buffer) => {
@@ -100,8 +101,7 @@ export async function cmdPlay(id?: string): Promise<number> {
       if (done || !active || !size.usable) return;
       const now = Date.now();
       arcade.setDisplay(size.rows, 'braille'); arcade.advance(now);
-      const h = arcade.hud();
-      const row = `\x1b[1;1H\x1b[38;2;196;202;218m\x1b[48;2;24;26;36m${fitRow(h.left, h.right, size.targetCols)}\x1b[0m`;
+      const row = `\x1b[1;${size.cols - size.targetCols + 1}H\x1b[38;2;196;202;218m\x1b[48;2;24;26;36m${fitRow(arcade.name, '? 帮助', size.targetCols)}\x1b[0m`;
       process.stdout.write(row + surface.render(arcade, target, 2, size.cols, size.rows));
     }, 1000 / 30);
     timer.unref();

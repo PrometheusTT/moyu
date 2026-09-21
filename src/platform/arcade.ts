@@ -4,8 +4,13 @@ import { homedir } from 'node:os';
 import { SignalTail } from '../bridge/signal.ts';
 import { Rng } from '../core/rng.ts';
 import { World, bossPhase, type Intent, type Piece, type EnemyTag } from '../core/world.ts';
-import { CHAPTER_COUNT, ChapterDirector, parseChapterCheckpoint } from '../core/chapter.ts';
-import { segments } from '../core/stick.ts';
+import { ChapterDirector, parseChapterCheckpoint } from '../core/chapter.ts';
+import { fighterSegments } from '../core/creature.ts';
+import { heroHat } from '../core/stick.ts';
+import { MAX_QI, BOSS_HIT_QI, SWORD_ARTS, SWORD_FORMS, FULL_ART_NAMES, selectSwordForm, currentSwordForm,
+  ART_IDS, isSecretArt, artLevel, freshCultivation, parseCultivation, type SwordArt } from '../core/martial.ts';
+import { paintLandmark, paintSwordArt, paintBossPressure, type ArtPen } from '../render/wuxia.ts';
+import { wrapWidth, clipWidth } from '../render/text.ts';
 import { paintWorld } from '../render/scene.ts';
 import { sceneForChapter, type SceneTheme } from '../render/theme.ts';
 import { stripPainter } from '../render/painter.ts';
@@ -35,6 +40,19 @@ function mixRgb(a: number, b: number, k: number): number {
   const g = Math.round(((a >>> 8) & 255) * (1 - t) + ((b >>> 8) & 255) * t);
   const bl = Math.round((a & 255) * (1 - t) + (b & 255) * t);
   return (r << 16) | (g << 8) | bl;
+}
+
+function canvasPen(c: GameCanvas, x: (n: number) => number, y: (n: number) => number): ArtPen {
+  return {
+    line: (a, b, d, e, color) => c.line(x(a), y(b), x(d), y(e), color),
+    rect: (a, b, w, h, color) => c.rect(x(a), y(b), x(a + w) - x(a), y(b + h) - y(b), color),
+    circle: (a, b, r, color) => {
+      for (let row = -r; row <= r; row += Math.max(0.3, r / 8)) {
+        const half = Math.sqrt(Math.max(0, r * r - row * row));
+        c.line(x(a - half), y(b + row), x(a + half), y(b + row), color);
+      }
+    },
+  };
 }
 
 /**
@@ -94,40 +112,69 @@ export type ArcadeStatus = 'idle' | 'task-done' | 'needs-input';
 export type ArcadeAction = 'return-to-cli';
 
 class InputLatch {
+  private sequence: Array<{ key: string; at: number }> = [];
+  private pendingArt: SwordArt | undefined;
+  private record(key: string, now: number): void {
+    this.sequence = this.sequence.filter(item => now - item.at <= 650 && now >= item.at);
+    if ('WASD'.includes(key)) {
+      if (this.sequence.at(-1)?.key !== key) this.sequence.push({ key, at: now });
+      this.sequence = this.sequence.slice(-2);
+    } else {
+      const combo = [...this.sequence.map(item => item.key), key].join('>');
+      this.pendingArt ??= ART_IDS.find(art => SWORD_ARTS[art].keys === combo);
+      this.sequence = [];
+    }
+  }
+  private upUntil = 0;
+  private escape: 'ground' | 'esc' | 'seq' | 'str' = 'ground';
   private leftUntil = 0; private rightUntil = 0; private downUntil = 0;
   private lastHorizontal: -1 | 1 = 1;
   private up = false; private jump = false; private primary = false; private secondary = false; private special = false;
   private hold(until: number, now: number): number {
     return now + (now < until ? REPEAT_DIRECTION_MS : FIRST_DIRECTION_MS);
   }
-  feed(bytes: Uint8Array, now: number): 'leave' | 'next' | 'help' | 'view' | 'play' | null {
+  feed(bytes: Uint8Array, now: number): 'leave' | 'next' | 'help' | 'view' | 'play' | 'page-prev' | 'page-next' | null {
     let played = false;
     for (let i = 0; i < bytes.length; i++) {
       const b = bytes[i]!;
+      if (this.escape === 'str') {
+        if (b === 7) this.escape = 'ground';
+        else if (b === 27) this.escape = 'esc';
+        continue;
+      }
+      if (this.escape === 'seq') {
+        if (b >= 0x40 && b <= 0x7e) {
+          this.escape = 'ground';
+          if (b === 0x41) { this.up = true; this.upUntil = now + 340; }
+          else if (b === 0x42) this.downUntil = this.hold(this.downUntil, now);
+          else if (b === 0x43) { this.rightUntil = this.hold(this.rightUntil, now); this.lastHorizontal = 1; }
+          else if (b === 0x44) { this.leftUntil = this.hold(this.leftUntil, now); this.lastHorizontal = -1; }
+          if (b >= 0x41 && b <= 0x44) { played = true; this.record('WSDA'[b - 0x41]!, now); }
+        } else if (b === 27) this.escape = 'esc';
+        continue;
+      }
+      if (this.escape === 'esc') {
+        this.escape = b === 0x5b || b === 0x4f ? 'seq'
+          : [0x5d, 0x50, 0x58, 0x5e, 0x5f].includes(b) ? 'str' : 'ground';
+        continue;
+      }
+      if (b === 27) { this.escape = 'esc'; continue; }
       if (b === 0x71) return 'leave';
       if (b === 0x09) return 'next';
       if (b === 0x3f) return 'help';
+      if (b === 0x5b) return 'page-prev';
+      if (b === 0x5d) return 'page-next';
       if (b === 0x65 || b === 0x45) return 'view';
-      if (b === 0x1b && (bytes[i + 1] === 0x5b || bytes[i + 1] === 0x4f)) {
-        let j = i + 2;
-        while (j < bytes.length && !(bytes[j]! >= 0x40 && bytes[j]! <= 0x7e)) j++;
-        const f = bytes[j];
-        if (f !== undefined && f >= 0x41 && f <= 0x44) played = true;
-        if (f === 0x41) this.up = true;
-        else if (f === 0x42) this.downUntil = this.hold(this.downUntil, now);
-        else if (f === 0x43) { this.rightUntil = this.hold(this.rightUntil, now); this.lastHorizontal = 1; }
-        else if (f === 0x44) { this.leftUntil = this.hold(this.leftUntil, now); this.lastHorizontal = -1; }
-        i = j;
-        continue;
-      }
       if (b === 0x61 || b === 0x68) { this.leftUntil = this.hold(this.leftUntil, now); this.lastHorizontal = -1; }
       else if (b === 0x64 || b === 0x6c) { this.rightUntil = this.hold(this.rightUntil, now); this.lastHorizontal = 1; }
       else if (b === 0x73) this.downUntil = this.hold(this.downUntil, now);
-      else if (b === 0x77 || b === 0x6b) this.up = true;
+      else if (b === 0x77 || b === 0x6b) { this.up = true; this.upUntil = now + 340; }
       else if (b === 0x20) this.jump = true;
       else if (b === 0x6a || b === 0x66 || b === 0x3b) this.primary = true;
       else if (b === 0x75) this.secondary = true;
       else if (b === 0x69) this.special = true;
+      const key = ({ a: 'A', h: 'A', d: 'D', l: 'D', s: 'S', w: 'W', k: 'W', j: 'J', f: 'J', ';': 'J', u: 'U', i: 'I' } as Record<string, string>)[String.fromCharCode(b)];
+      if (key) this.record(key, now);
       if ('ahdlswkjf;ui '.includes(String.fromCharCode(b))) played = true;
     }
     return played ? 'play' : null;
@@ -139,13 +186,20 @@ class InputLatch {
       left = this.lastHorizontal === -1;
       right = this.lastHorizontal === 1;
     }
+    const art: SwordArt | undefined = this.pendingArt ?? (this.secondary && now < this.downUntil ? 'dugu'
+      : this.special && now < this.downUntil ? 'liumai'
+        : this.special && now < this.upUntil ? 'taiji' : undefined);
+    this.pendingArt = undefined;
     const out = { left, right, up: this.up,
       down: now < this.downUntil, jump: this.jump, primary: this.primary, secondary: this.secondary, special: this.special };
     this.up = this.jump = this.primary = this.secondary = this.special = false;
-    return out;
+    return art ? { ...out, art } : out;
   }
   clear(): void {
+    this.sequence = []; this.pendingArt = undefined;
     this.leftUntil = this.rightUntil = this.downUntil = 0;
+    this.upUntil = 0;
+    this.escape = 'ground';
     this.up = this.jump = this.primary = this.secondary = this.special = false;
   }
 }
@@ -162,6 +216,7 @@ class StickGame implements GameInstance {
   // 通关演出：章节 settle（result 从 null 翻成非空）的那一刻起一个 1→0 的脉冲，
   // 在三档渲染里画一记金色冲击波。同样是纯渲染态、不进 world 快照。
   private clearPulse = 0;
+  private intermission = 0;
   constructor(seed: number) {
     this.world = new World(seed, { automaticSpawns: false });
     this.world.resize(180, 44);
@@ -169,17 +224,33 @@ class StickGame implements GameInstance {
     this.director = new ChapterDirector(seed);
     this.director.start(this.world);
   }
+  configureViewport(width: number, height: number, tier: PixelTarget['tier']): void {
+    // 微型条（braille/半块两行）是雷达式压缩视图，世界保持 180 —— 那里加宽只会让
+    // 攻击距离缩成贴脸。展开/图形档按纵横比把战场**真实加宽**（不是横向拉伸画面），
+    // 封顶 360：约 4.6 秒横穿一趟，再长就是马拉松而不是战场。移速只跟身高走
+    // （见 world.playerSpeed），加宽不会把人变快。
+    const arena = tier !== 'graphics' && height <= 8 ? 180
+      : Math.min(360, Math.max(180, Math.round(width * (this.world.h + 4) / Math.max(1, height))));
+    if (arena === this.world.w) return;
+    this.world.resizeArena(arena);
+    this.previous.clear(); this.scratch.clear();
+  }
   update(dt: number, input: GameInput): void {
     const previous = this.previous;
     this.previous = snapshotFighters(this.world, this.scratch);
     this.scratch = previous;
+    const art = input.art ?? (input.down && input.secondary ? 'dugu'
+      : input.down && input.special ? 'liumai' : input.up && input.special ? 'taiji' : undefined);
     const intent: Intent = { move: input.left === input.right ? 0 : input.left ? -1 : 1,
-      jump: input.jump || input.up, slash: input.primary,
-      dash: input.secondary === true, spin: input.special === true,
+      jump: !art && (input.jump || input.up), slash: !art && input.primary,
+      dash: !art && input.secondary === true, spin: !art && input.special === true, art,
       crouch: input.down === true };
-    // 结算屏按 J：先试进下一章，进不了（已是末章终局）就再来一局 —— 否则会卡死在终局屏。
-    if (this.director.result !== null && input.primary
-      && (this.director.nextChapter(this.world) || this.director.restartRun(this.world))) {
+    this.world.enemyLimit = Math.min(6, 3 + Math.floor((this.director.chapter - 1) / 5));
+    // 结算短暂停留后继续无尽关卡；J 可跳过停留，任务暂停仍由宿主控制。
+    if (this.director.result !== null && this.world.phase === 'fight') this.intermission += dt;
+    if (this.director.result !== null && (input.primary || this.intermission >= 1.4)
+      && this.director.nextChapter(this.world)) {
+      this.intermission = 0;
       this.clearPulse = 0;   // 翻页即收起上一关的通关冲击波，别糊进下一章开局。
       this.reduceMotion();
       return;
@@ -223,6 +294,10 @@ class StickGame implements GameInstance {
     c.clear(BG);
     // 64/180 maps the 29.9-world-unit attack reach to the sprite's 11-pixel blade tip.
     const px = (x: number): number => 8 + (x / this.world.w) * (c.width - 16);
+    const pen = canvasPen(c, px, y => y / this.world.ground * 7);
+    const scene = this.scene();
+    paintLandmark(pen, this.world.w, this.world.ground,
+      { ...scene, groundTint: scene.skyTint, foeTint: scene.skyTint });
     const enemies = this.world.enemies;
     for (const f of enemies) {
       const x = px(f.x);
@@ -239,6 +314,8 @@ class StickGame implements GameInstance {
       const x = Math.round(px(this.world.player.x) + this.world.player.face * 11);
       c.pixel(x, 1, ACCENT); c.pixel(x + this.world.player.face, 2, ACCENT); c.pixel(x, 3, ACCENT);
     }
+    paintSwordArt(pen, this.world.swordCast, this.world.fh);
+    paintBossPressure(pen, this.world);
     paintClearBurst(c, this.clearPulse);
   }
   onHostEvent(event: HostEvent): void {
@@ -261,7 +338,9 @@ class StickGame implements GameInstance {
 
     // 每章静态剪影布景，垫在最底（人身后）—— 把剧情落到画面。混向 BG 保持暗，不抢主体。
     const scene = this.scene();
-    for (const prop of scene.props) {
+    const pen = canvasPen(c, px, py);
+    paintLandmark(pen, w.w, w.ground, scene);
+    for (const prop of scene.landmark ? [] : scene.props) {
       const color = mixRgb(BG, scene.skyTint, 0.35 + prop.shade);
       const cx = px(prop.cx * w.w);
       const halfW = Math.max(1, prop.w * w.w * 0.5 * scale);
@@ -287,18 +366,26 @@ class StickGame implements GameInstance {
     for (const f of [...w.enemies, ...(w.respawn > 0 ? [] : [w.player])]) {
       // boss 按阶段变色（暴走偏橙、困兽去饱和），其余走变种本色。
       const foe = f.tag === 'boss'
-        ? (bossPhase(f.hp) === 1 ? FOE_BOSS : bossPhase(f.hp) === 2 ? mixRgb(FOE_BOSS, AMBER, 0.5) : mixRgb(FOE_BOSS, DEAD, 0.45))
+        ? (bossPhase(f.hp, f.maxHp) === 1 ? FOE_BOSS : bossPhase(f.hp, f.maxHp) === 2 ? mixRgb(FOE_BOSS, AMBER, 0.5) : mixRgb(FOE_BOSS, DEAD, 0.45))
         : foeColor(f.tag);
-      const color = f === w.player ? (f.hurt > 0 ? ACCENT : INK) : f.windup >= 0 ? ACCENT : foe;
+      const color = f.hurt > 0 ? INK : f === w.player ? INK : f.windup >= 0 ? ACCENT : foe;
       const flash = w.hitstop > 0 && f.armed;   // 命中那几帧刀刃闪白
       const body = { ...f, x: px(f.x), y: py(f.y), h: f.h * verticalScale };
-      for (const s of segments(body)) {
+      const bodySegs = fighterSegments(body);
+      for (const s of bodySegs) {
         if (s.part === 'head') c.rect(Math.round(s.x0 - 1), Math.round(s.y0 - 1), 2, 2, color);
         else c.line(s.x0, s.y0, s.x1, s.y1, s.part === 'blade' ? (flash ? INK : AMBER) : color);
       }
+      // 主角身份标识：斗笠 + 红围巾（其余档位的渲染器里同款，这个档位一直缺）。
+      if (f === w.player) {
+        const head = bodySegs.find(s => s.part === 'head');
+        if (head) for (const s of heroHat(head, body.h)) c.line(s.x0, s.y0, s.x1, s.y1, color);
+        const torso = bodySegs.find(s => s.part === 'torso');
+        if (torso) c.line(torso.x1, torso.y1, torso.x1 - f.face * body.h * 0.26, torso.y1 + body.h * 0.1, ACCENT);
+      }
       // boss 头顶尖冠：字符档也一眼认出头目。
       if (f.tag === 'boss') {
-        const topX = px(f.x), topY = py(f.y - f.h * verticalScale);
+        const topX = px(f.x), topY = py(f.y - f.h * 0.75);
         c.rect(Math.round(topX - 1), Math.round(topY - 2), 3, 1, color);
       }
     }
@@ -320,19 +407,32 @@ class StickGame implements GameInstance {
 
     // 血花盖在最上，和 paintWorld 一样的层序（血是盖在刀光和身体之上的）。
     for (const b of w.blood) c.pixel(Math.round(px(b.x)), Math.round(py(b.y)), ACCENT);
+    paintSwordArt(pen, w.swordCast, w.fh);
+    paintBossPressure(pen, w);
     // 通关冲击波盖在最上：结算屏才亮，战斗中 clearPulse 恒 0。
     paintClearBurst(c, this.clearPulse);
   }
   serialize(): unknown {
-    return { version: 1, kills: this.world.kills, bestCombo: this.world.bestCombo,
-      checkpoint: this.director.checkpoint() };
+    return { version: 2, kills: this.world.kills, bestCombo: this.world.bestCombo,
+      checkpoint: this.director.checkpoint(), qi: this.world.qi,
+      cultivation: structuredClone(this.world.cultivation) };
   }
   restore(state: unknown): void {
     if (typeof state !== 'object' || state === null || Array.isArray(state)) return;
     const s = state as Record<string, unknown>;
     const kills = savedCount(s.kills);
     const bestCombo = savedCount(s.bestCombo);
-    if (s.version === 1) {
+    const cultivation = s.version === 2 ? parseCultivation(s.cultivation) : freshCultivation();
+    const qi = s.version === 2 ? savedCount(s.qi) : 0;
+    if (cultivation === null || qi === null || qi > MAX_QI) return;
+    if (s.version !== 2) cultivation.insight = kills ?? 0;
+    const restoreArts = (): void => {
+      this.world.cultivation = cultivation;
+      this.world.qi = qi;
+      this.intermission = 0;
+      this.previous.clear(); this.scratch.clear();
+    };
+    if (s.version === 1 || s.version === 2) {
       if (kills === null || bestCombo === null) return;
       if (s.checkpoint === null) {
         if (bestCombo > kills) return;
@@ -340,6 +440,7 @@ class StickGame implements GameInstance {
         this.world.kills = kills;
         this.world.bestCombo = bestCombo;
         this.director.start(this.world);
+        restoreArts();
         return;
       }
       const checkpoint = parseChapterCheckpoint(s.checkpoint);
@@ -348,6 +449,7 @@ class StickGame implements GameInstance {
       if (!this.director.restore(this.world, checkpoint)) return;
       this.world.kills = kills;
       this.world.bestCombo = bestCombo;
+      restoreArts();
       return;
     }
     if (s.version !== undefined) return;
@@ -357,20 +459,18 @@ class StickGame implements GameInstance {
     this.world.kills = kills;
     this.world.bestCombo = bestCombo;
     this.director.start(this.world);
+    restoreArts();
   }
   hud(): string {
     const result = this.director.result;
     if (result !== null) {
-      const checkpoint = this.director.checkpoint();
-      if (result.chapter >= CHAPTER_COUNT && this.world.phase === 'fight' && checkpoint !== null) {
-        return `五分钟完成 · ${checkpoint.score}分 · ${checkpoint.kills}击破 · 连击${checkpoint.bestCombo} · J 再来一局`;
-      }
+      const checkpoint = this.director.checkpoint()!;
       // 章节完成屏是天然的剧情节拍（按 J 进下一章前）：亮出刚打完这章的标题。
       // 保留"第N章完成"连续子串，HUD 正则（arcade.test）照旧匹配；标题追加在后面。
       const title = this.director.chapterTitle();
       const story = this.director.chapterStory();
       return this.world.phase === 'fight'
-        ? `第${result.chapter}章完成 · 『${title}』 · ${story} · ${result.score}分 · J 下一章`
+        ? `第${result.chapter}章完成 · ${result.score}分 · J 下一章 / 自动继续 · 累计${checkpoint.score}分 ${checkpoint.kills}击破 连击${checkpoint.bestCombo} · 『${title}』${story}`
         : `第${result.chapter}章完成 · 『${title}』 · ${story} · ${result.score}分 · 等待下个任务`;
     }
     // 冷却指示追加在**最后**：`血X/4` 与 `火柴快斩` 都在它前面，窄屏只会裁掉指示器本身，
@@ -383,7 +483,52 @@ class StickGame implements GameInstance {
     const combo = this.world.combo >= 2 ? ` · 连击${this.world.combo}` : '';
     const pulse = this.readyPulse > 0 ? ' 就绪✦' : '';
     const life = this.world.respawn > 0 ? '重生中' : `血${this.world.player.hp}/4`;
-    return `火柴快斩 ${this.director.chapter}/${CHAPTER_COUNT} · ${this.world.kills}击破 · ${life}${combo} · ${skills}${pulse}`;
+    const w = this.world;
+    const next = ART_IDS.find(art => !isSecretArt(art) && w.cultivation.insight < SWORD_ARTS[art].unlock);
+    const growth = next ? `悟${SWORD_ARTS[next].short} ${w.cultivation.insight}/${SWORD_ARTS[next].unlock}` : '剑谱齐备';
+    const headline = w.artNoticeT > 0 ? w.artNotice : `第${this.director.chapter}关 ${this.director.chapterTitle()}`;
+    const boss = w.enemies.find(e => e.tag === 'boss');
+    const battle = boss ? ` · BOSS ${boss.hp}/${boss.maxHp ?? 5}${boss.quakeX !== undefined ? ' 地裂！跳跃/离开红线' : boss.windup >= 0 ? ' 蓄势！' : ''}` : '';
+    const cleanup = this.director.activeStep >= 1800 ? ` · 清场中 剩${w.enemies.length}敌` : '';
+    return `${life} 气${w.qi}/${MAX_QI} · ${headline}${battle}${cleanup} · ${growth} · 火柴快斩·无尽江湖 · ${w.kills}击破${combo} · ${skills}${pulse}`;
+  }
+  details(): string[] {
+    const w = this.world;
+    const arts = ART_IDS.flatMap(art => {
+      const spec = SWORD_ARTS[art];
+      if (isSecretArt(art) && w.cultivation.mastery[art] === 0) return art === 'getsuga'
+        ? '秘卷·月影：48悟后，向上向右挥刀' : '秘卷·日轮：80悟后，向上向左挥刀';
+      const selection = selectSwordForm(art, w.qi);
+      const status = w.cultivation.insight < spec.unlock ? `${w.cultivation.insight}/${spec.unlock}悟`
+        : `${artLevel(w.cultivation, art)}重 · ${selection ? selection.full ? FULL_ART_NAMES[art] : SWORD_FORMS[art][selection.index]!.name : `需${spec.cost}气`}`;
+      return [`${spec.keys} ${spec.name} · ${status}`,
+        ...SWORD_FORMS[art].map((form, i) => `${form.qi}～${(SWORD_FORMS[art][i + 1]?.qi ?? 100) - 1}气 ${form.name}`),
+        `100+气 ${FULL_ART_NAMES[art]} · 奥义 · 消耗100`];
+    });
+    return ['剑谱：起手 / 60气强化 / 100气奥义', '两键340ms / 三键650ms · 零头保留',
+      `储气上限${MAX_QI} · 奥义扣100，余量保留`,
+      '太极/飞仙/归宗/彩蛋为游戏简式编排', ...arts, `击破+12气 · 普通命中Boss+${BOSS_HIT_QI}气`, '剑招不回气 · 按剑法积累熟练度'];
+  }
+  combatHud(rows: number): string[] {
+    const w = this.world, p = w.player, result = this.director.result;
+    const life = w.respawn > 0 ? '重生中' : `血${p.hp}/4`;
+    const status = `${life} 气${w.qi}`;
+    const boss = w.enemies.find(e => e.tag === 'boss');
+    const threat = boss ? `BOSS ${boss.hp}/${boss.maxHp ?? 5}` : '';
+    const warning = boss?.quakeX !== undefined ? '地裂！跳跃 / 离开红线' : boss && boss.windup >= 0 ? '蓄势！准备闪避' : '';
+    const selected = selectSwordForm(w.selectedArt, w.qi), cast = w.swordCast;
+    const nextForm = cast ? `${cast.full ? FULL_ART_NAMES[cast.art] : currentSwordForm(cast).name}`
+      : selected ? `${SWORD_ARTS[w.selectedArt].keys} ${selected.full ? FULL_ART_NAMES[w.selectedArt] : SWORD_FORMS[w.selectedArt][selected.index]!.name}`
+        : `攒气 ${w.qi}/${SWORD_ARTS[w.selectedArt].cost}`;
+    if (rows <= 2) return [`${status} ${boss ? `王${boss.hp}` : `${this.director.chapter}关`}`,
+      result ? '已清场 J继续 ?谱' : `${nextForm}${warning ? ' !' : ''} ?谱`];
+    if (result) return [...[`第${result.chapter}章完成`, this.director.chapterTitle(), `${result.score}分 · ${result.kills}击破`,
+      'J 下一章 / 自动继续', ''].slice(0, rows - 1), '?谱 E大小 Esc退'];
+    const lines = [status, `${SWORD_ARTS[cast?.art ?? w.selectedArt].name} · ${cast ? '施展中' : '当前'}`,
+      nextForm, warning || threat || `${this.director.chapter}关 ${this.director.chapterTitle()}`,
+      boss ? `普通命中 +${BOSS_HIT_QI}气` : this.director.activeStep >= 1800 ? `清场中 剩${w.enemies.length}敌` : '60气强化 · 100气奥义'];
+    if (rows <= 4 && warning) lines[1] = warning;
+    return [...lines.slice(0, rows - 1), '?谱 E大小 Esc退'];
   }
 }
 
@@ -553,10 +698,11 @@ class BlocksGame implements GameInstance {
 
 function manifest(id: string, name: string, description: string, viewport: { width: number; height: number }): GameManifest {
   return { id, name, description, viewport, microViewport: { width: 80, height: 8 }, version: '1.0.0', apiVersion: 1, author: 'Moyu', entry: 'builtin',
-    display: { micro: id === 'stick-slash', minRows: id === 'stick-slash' ? 4 : 6, glyphs: id === 'stick-slash' ? 'dots' : 'blocks' },
+    display: { micro: id === 'stick-slash', minRows: id === 'stick-slash' ? 4 : 6,
+      glyphs: id === 'stick-slash' ? 'dots' : 'blocks', responsive: id === 'stick-slash' },
     palette: ['#090a0e', '#ecf0f8', '#e43834', '#a67c00'],
     controls: id === 'stick-slash'
-      ? [{ action: 'move', label: '移动', keys: ['A/D', '方向键'] }, { action: 'primary', label: '砍', keys: ['J'] }, { action: 'jump', label: '跳', keys: ['空格'] }, { action: 'secondary', label: '冲刺斩', keys: ['U'] }, { action: 'special', label: '旋斩', keys: ['I'] }, { action: 'primary', label: '变招·跳/蹲/前+砍', keys: ['空格/S/D', 'J'] }]
+      ? [{ action: 'move', label: '移动', keys: ['A/D', '方向键'] }, { action: 'primary', label: '砍', keys: ['J'] }, { action: 'jump', label: '跳', keys: ['空格'] }, { action: 'secondary', label: '冲刺斩', keys: ['U'] }, { action: 'special', label: '旋斩', keys: ['I'] }]
       : id === 'snake' ? [{ action: 'move', label: '方向', keys: ['WASD', '方向键'] }]
         : [{ action: 'move', label: '移动', keys: ['A/D'] }, { action: 'primary', label: '旋转', keys: ['J'] }, { action: 'down', label: '下落', keys: ['S'] }, { action: 'jump', label: '直落', keys: ['空格'] }] };
 }
@@ -576,7 +722,7 @@ type CartridgeSlot = {
 };
 
 const OPTIONAL_GAME_HOOKS = [
-  'renderMicro', 'renderExpanded', 'renderPixels', 'onHostEvent', 'serialize', 'restore', 'hud',
+  'renderMicro', 'renderExpanded', 'renderPixels', 'configureViewport', 'onHostEvent', 'serialize', 'restore', 'hud', 'details', 'combatHud',
 ] as const;
 
 function gameInstance(value: unknown): GameInstance {
@@ -617,12 +763,14 @@ function failureMessage(value: unknown): string {
 }
 
 export class Arcade {
+  private panelPage = 0;
   readonly keys = { clear: (): void => { this.input.clear(); } };
   private readonly input = new InputLatch(); private readonly tail: SignalTail;
   private readonly slots: CartridgeSlot[] = [];
   private readonly failures = new Map<string, string>();
   private active = 0; private lastMs = 0; private acc = 0; private lastHostPoll = Number.NEGATIVE_INFINITY;
   private stepped = false;
+  private saveElapsed = 0;
   private paused = false; private instructions = true; private viewToggle = false;
   private displayRows = 24; private displayTier: PixelTarget['tier'] = 'braille';
   private statusValue: ArcadeStatus = 'idle'; private pendingAction: ArcadeAction | null = null;
@@ -649,6 +797,7 @@ export class Arcade {
   }
   failureFor(id: string): string | undefined { return this.failures.get(id); }
   get available(): number { return this.slots.length; }
+  get name(): string { return this.slots[this.active]?.module.manifest.name ?? '摸鱼'; }
   resize(_w: number, _h: number): void { /* logical viewports are fixed */ }
   feed(bytes: Uint8Array, now = Date.now()): boolean {
     const command = this.input.feed(bytes, now);
@@ -658,7 +807,11 @@ export class Arcade {
       this.save(this.active);
       this.active = (this.active + 1) % this.slots.length; this.resetClock(); this.instructions = true;
     }
-    if (command === 'help') { this.instructions = !this.instructions; this.resetClock(); }
+    if (command === 'help') { this.instructions = !this.instructions; this.panelPage = 0; this.resetClock(); }
+    if (command === 'page-prev' || command === 'page-next') {
+      if (!this.instructions) { this.instructions = true; this.panelPage = 0; this.resetClock(); }
+      else this.panelPage += command === 'page-prev' ? -1 : 1;
+    }
     if (command === 'view') { this.viewToggle = true; this.input.clear(); }
     if (command === 'play' && this.playable()) this.instructions = false;
     return false;
@@ -708,6 +861,11 @@ export class Arcade {
     if (rows !== this.displayRows || tier !== this.displayTier) this.resetClock();
     this.displayRows = rows; this.displayTier = tier;
   }
+  configureViewport(target: PixelTarget): void {
+    const slot = this.slots[this.active];
+    try { slot?.instance.configureViewport?.(target.pixelW, target.pixelH, target.tier); }
+    catch (error) { if (slot) this.failures.set(slot.module.manifest.id, failureMessage(error)); }
+  }
   playable(): boolean {
     const slot = this.slots[this.active];
     if (slot === undefined) return false;
@@ -722,7 +880,7 @@ export class Arcade {
     const rows = this.slots[this.active]?.module.manifest.display?.minRows ?? 6;
     return this.displayTier === 'half' ? rows * 2 : rows;
   }
-  panel(): [string, string] {
+  panel(): [string, string, ...string[]] {
     const slot = this.slots[this.active];
     if (slot === undefined) return ['没有可用游戏', '请检查已安装 Cartridge · Esc 返回'];
     const m = slot.module.manifest;
@@ -730,16 +888,29 @@ export class Arcade {
       ? `E 展开 · 需${this.minimumRows()}行 · Esc 返回`
       : `需${this.minimumRows()}行，请放大终端或使用 moyu play · Esc 返回`];
     const controls = m.controls.map((c) => `${c.keys[0] ?? ''} ${c.label}`).join(' · ');
-    // 进游戏即活后不再有整页说明，操作提示就得常驻第二行 —— 不然玩家根本不知道有
-    // 冲刺斩/旋斩这些键。侧栏窄（≈18 个汉字宽），所以用紧排（键紧贴标签、无 · 分隔），
-    // 把返回键让给外壳的 Ctrl+] / Esc（待机条已说明）。窄档 surface 仍会回退成 '?帮助 Esc退'。
     if (!this.instructions) {
-      const compact = m.controls.map((c) => `${c.keys[0] ?? ''}${c.label}`).join(' ');
-      return [slot.instance.hud?.() ?? m.name, compact];
+      const lines = slot.instance.combatHud?.(this.displayRows) ?? [slot.instance.hud?.() ?? m.name, '?帮助 E大小 Esc退'];
+      return [lines[0] ?? m.name, lines[1] ?? '', ...lines.slice(2)];
     }
-    return [`${m.name} · ${controls}`, 'E 大小 · Tab 换 · Esc 返回'];
+    return [`${m.name} · ${controls}`, 'E 大小 · Tab 换 · Esc 返回', ...(slot.instance.details?.() ?? [])];
   }
   get showingInstructions(): boolean { return this.instructions || !this.playable(); }
+  /** 先按终端列宽折行，再分页；任何剑谱条目都能到达，不静默裁掉尾部。 */
+  panelRows(width: number, rows: number): string[] {
+    if (width <= 0 || rows <= 0) return [];
+    if (!this.showingInstructions) return this.panel().slice(0, rows)
+      .map(line => clipWidth(line.replace(/[\x00-\x1f\x7f-\x9f]/g, ''), width));
+    const lines = this.panel().flatMap(line => wrapWidth(line.replace(/[\x00-\x1f\x7f-\x9f]/g, ''), width));
+    const size = Math.max(1, rows - 1), pages = Math.max(1, Math.ceil(lines.length / size));
+    this.panelPage = ((this.panelPage % pages) + pages) % pages;
+    const page = lines.slice(this.panelPage * size, (this.panelPage + 1) * size);
+    while (page.length < size) page.push('');
+    if (rows > 1) page.push(this.showingInstructions
+      ? `Esc 返回 · [ ]翻页 ${this.panelPage + 1}/${pages} · ?收起`
+      : width < 26 ? `? Esc退 []${this.panelPage + 1}/${pages}`
+        : `?帮助 Esc退 [ ]翻页 ${this.panelPage + 1}/${pages}`);
+    return page;
+  }
   private resetClock(): void { this.lastMs = 0; this.acc = 0; this.stepped = false; this.input.clear(); }
   advance(now: number): void {
     const elapsed = this.lastMs === 0 ? 0 : Math.max(0, Math.min(0.25, (now - this.lastMs) / 1000)); this.lastMs = now;
@@ -754,6 +925,8 @@ export class Arcade {
       this.stepped = true;
       first = held; this.acc -= 1 / 60;
     }
+    this.saveElapsed += elapsed;
+    if (this.saveElapsed >= 5) { this.saveElapsed = 0; this.save(this.active); }
   }
   render(target: PixelTarget, profile: 'standard' | 'micro' = 'standard'): void {
     const slot = this.slots[this.active];
@@ -771,10 +944,13 @@ export class Arcade {
     }
     if (profile === 'standard' && target.tier !== 'graphics' && game.renderExpanded !== undefined) {
       const height = Math.max(8, Math.min(24, target.pixelH));
-      if (slot.expandedCanvas.height !== height) slot.expandedCanvas = new LogicalCanvas(80, height);
+      const width = slot.module.manifest.display?.responsive ? target.pixelW : 80;
+      if (slot.expandedCanvas.height !== height || slot.expandedCanvas.width !== width) slot.expandedCanvas = new LogicalCanvas(width, height);
       const canvas = slot.expandedCanvas; game.renderExpanded(canvas); canvas.blit(target); return;
     }
     const micro = profile === 'micro' && target.tier !== 'graphics' && game.renderMicro !== undefined;
+    if (micro && slot.module.manifest.display?.responsive && slot.microCanvas.width !== target.pixelW)
+      slot.microCanvas = new LogicalCanvas(target.pixelW, slot.microCanvas.height);
     const canvas = micro ? slot.microCanvas : slot.canvas;
     if (micro) game.renderMicro!(canvas); else game.render(canvas);
     canvas.blit(target);
@@ -817,7 +993,11 @@ export class Arcade {
     if (slot === undefined) return;
     try {
       const value = slot.instance.serialize?.(); if (value === undefined) return;
-      const file = this.stateFile(index); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+      const file = this.stateFile(index);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const temp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(temp, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+      fs.renameSync(temp, file);
     } catch { /* play must not depend on persistence */ }
   }
 }

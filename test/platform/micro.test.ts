@@ -23,8 +23,8 @@ function fighter(overrides: Partial<Fighter> = {}): Fighter {
 function glyphSignature(pose: MicroFighterPose, face: 1 | -1 = 1): string {
   const state: Record<MicroFighterPose, Partial<Fighter>> = {
     idle: {}, runA: { vx: 4, walk: 0.1 }, runB: { vx: 4, walk: 0.7 },
-    jump: { onGround: false }, windup: { atk: 0.1 }, strike: { atk: 0.3 },
-    recover: { atk: 0.5 }, hurt: { hurt: 1 },
+    jump: { onGround: false }, windup: { atk: 0.05 }, strike: { atk: 0.16 },
+    recover: { atk: 0.28 }, hurt: { hurt: 1 },
   };
   const canvas = new LogicalCanvas(32, 8);
   canvas.clear(BG);
@@ -61,9 +61,9 @@ test('every key action survives Braille quantization as a distinct multi-cell si
 
 test('left-facing frames are true mirrors and pose selection has stable action thresholds', () => {
   assert.notEqual(glyphSignature('strike', 1), glyphSignature('strike', -1));
-  assert.equal(microPoseFor(fighter({ atk: 0.19 })), 'windup');
-  assert.equal(microPoseFor(fighter({ atk: 0.30 })), 'strike');
-  assert.equal(microPoseFor(fighter({ atk: 0.50 })), 'recover');
+  assert.equal(microPoseFor(fighter({ atk: 0.09 })), 'windup');
+  assert.equal(microPoseFor(fighter({ atk: 0.16 })), 'strike');
+  assert.equal(microPoseFor(fighter({ atk: 0.28 })), 'recover');
   assert.equal(microPoseFor(fighter({ hurt: 0.1, atk: 0.30 })), 'hurt', 'hurt feedback wins over attack');
   assert.equal(microPoseFor(fighter({ onGround: false })), 'jump');
 });

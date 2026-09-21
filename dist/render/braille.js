@@ -143,7 +143,7 @@ export class BrailleTarget {
         this.fg[at] = fg;
         this.mask[at] = mask;
     }
-    encode(screenTop) {
+    encode(screenTop, screenLeft = 1) {
         const n = this.cols * this.rows;
         for (let i = 0; i < n; i++)
             this.quantizeCell(i % this.cols, Math.floor(i / this.cols), i);
@@ -179,7 +179,7 @@ export class BrailleTarget {
                     col++;
                 }
                 end++;
-                out.push(`\x1b[${screenTop + row};${start + 1}H`);
+                out.push(`\x1b[${screenTop + row};${start + screenLeft}H`);
                 for (let x = start; x < end; x++) {
                     const i = base + x, m = this.mask[i], f = this.fg[i], b = this.bg[i];
                     // 反色近似字形要把“画布底色”塞进 glyph 前景；透明模式里 ANSI 没有“默认背景色

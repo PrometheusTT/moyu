@@ -1,9 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Arcade } from '../../src/platform/arcade.ts';
+import { Arcade, BUILTIN_GAMES } from '../../src/platform/arcade.ts';
 import type { GameInput, GameModule } from '../../src/platform/types.ts';
 import { BrailleTarget } from '../../src/render/braille.ts';
 import { PlaySurface } from '../../src/platform/surface.ts';
+import { stringWidth } from '../../src/shell/wcwidth.ts';
+import { wrapWidth } from '../../src/render/text.ts';
+import { fieldColsFor } from '../../src/shell/regions.ts';
 
 function recorder(micro = true, minRows = 4) {
   const steps: GameInput[] = [];
@@ -23,6 +26,75 @@ test('surface safely bounds missing or zero terminal geometry', () => {
   const surface = new PlaySurface(), target = new BrailleTarget(12, 2);
   assert.doesNotThrow(() => surface.render(game, target, 0, 0, 0));
   assert.equal(typeof surface.render(game, target, Number.NaN, Number.NaN, Number.NaN), 'string');
+});
+
+test('剑谱宽度折行保留中文，所有条目可翻到，帮助翻页不会恢复战斗', () => {
+  const game = new Arcade('/tmp/moyu-panel-pagination');
+  game.setDisplay(6, 'braille');
+  for (const width of [18, 37, 77]) {
+    const expected = game.panel().flatMap(line => wrapWidth(line, width));
+    const actual: string[] = [];
+    const count = Math.ceil(expected.length / 5);
+    for (let page = 0; page < count; page++) {
+      const rows = game.panelRows(width, 6);
+      actual.push(...rows.slice(0, 5));
+      assert.ok(rows.slice(0, 5).every(row => stringWidth(row) <= width));
+      game.feed(Buffer.from(']'));
+      assert.equal(game.showingInstructions, true);
+    }
+    assert.deepEqual(actual.slice(0, expected.length), expected);
+    assert.match(actual.join(''), /万剑归宗/);
+    game.panelRows(width, 6); // wrap back to page 1 before resizing
+  }
+});
+
+test('宽终端画布贴右、HUD 居左，宽度缩小后仍无越界写入', () => {
+  const { game } = recorder(); game.enter();
+  const surface = new PlaySurface(), target = new BrailleTarget(40, 6);
+  const wide = surface.render(game, target, 5, 120, 6);
+  // 同一坐标先出现清场行、后出现 HUD 行；取最后一个。
+  const hudRows = [...wide.matchAll(/\x1b\[5;1H([^\x1b]*)/g)].map(m => m[1]!);
+  const hudRow = hudRows.at(-1) ?? '';
+  assert.ok(stringWidth(hudRow) > 0 && stringWidth(hudRow) <= 77, 'HUD 居左，止于画布左缘之前');
+  const bodyCols = [...wide.matchAll(/\x1b\[\d+;(\d+)H/g)].map(m => Number(m[1]));
+  assert.ok(bodyCols.some(col => col >= 80), '画布贴在右侧约三分之二处');
+  const narrow = surface.render(game, target, 5, 60, 6);
+  for (const match of narrow.matchAll(/\x1b\[(\d+);(\d+)H([^\x1b]*)/g)) {
+    assert.ok(Number(match[1]) >= 5 && Number(match[1]) < 11);
+    assert.ok(Number(match[2]) + stringWidth(match[3]!) <= 60);
+  }
+});
+
+test('常驻HUD只有战斗摘要，剑谱按需打开且关闭后不残留翻页内容', () => {
+  const game = new Arcade('/tmp/moyu-clean-hud'); game.setDisplay(6, 'braille'); game.enter();
+  const rows = game.panelRows(28, 6);
+  assert.ok(rows.length <= 6 && rows.every(row => stringWidth(row) <= 28));
+  assert.doesNotMatch(rows.join(' '), /累计|熟练|三键|万剑归宗|翻页/);
+  assert.ok(rows.filter(row => /S\+U/.test(row)).length <= 1, '只预告当前剑法，不铺满全部键位');
+  assert.match(rows.join(' '), /\?谱/);
+  game.feed(Buffer.from(']')); assert.equal(game.showingInstructions, true);
+  assert.match(game.panel().join(' '), /万剑归宗/);
+  game.feed(Buffer.from('?')); assert.equal(game.showingInstructions, false);
+  assert.deepEqual(game.panelRows(28, 6), rows);
+});
+
+test('响应式战场接收真实像素宽度，旧Cartridge保持原画布，HUD不超过战场高度', () => {
+  const sizes: Array<[number, number]> = [];
+  const module: GameModule = { manifest: { ...BUILTIN_GAMES[0]!.manifest, id: 'responsive-test' }, create: () => ({
+    update: () => {}, render: () => {}, renderMicro: c => sizes.push([c.width, c.height]),
+    renderExpanded: c => sizes.push([c.width, c.height]),
+  }) };
+  const game = new Arcade('/tmp/moyu-responsive-hud', [module]); game.enter();
+  for (const cols of [60, 80, 120, 200]) for (const rows of [2, 6]) {
+    const field = fieldColsFor(cols), target = new BrailleTarget(field, rows);
+    const surface = new PlaySurface(); surface.render(game, target, 3, cols, rows);
+    assert.equal(sizes.at(-1)?.[0], target.pixelW);
+    assert.ok(field > cols - field - 3, `战场(${field})必须大于左侧 HUD 区`);
+    assert.ok(game.panelRows(Math.min(28, cols - field - 3), rows).length <= rows);
+  }
+  const old = new Arcade('/tmp/moyu-fixed-hud', [{ ...module,
+    manifest: { ...module.manifest, display: { ...module.manifest.display!, responsive: false } } }]);
+  old.enter(); old.render(new BrailleTarget(89, 6)); assert.equal(sizes.at(-1)?.[0], 80);
 });
 
 test('help is visible before first input, remains without a timeout, and is removed by a real action', () => {

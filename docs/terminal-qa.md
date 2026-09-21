@@ -4,7 +4,51 @@ Moyu targets a readable, safely owned terminal game rather than identical raster
 The default micro view uses two game rows while standby reserves one row and paints one safe-edge cell.
 Games without a playable micro composition yield input to the wrapped CLI instead of running invisibly.
 
-## Reference evidence (2026-09-11)
+## Wuxia revision (2026-09-21)
+
+Sword-form follow-up: seven schools now cast by qi tier — opener, 60-qi empowered form, and a
+single 100-qi finisher (about 1.2 s, no cycling through every form); reserves are capped separately
+at 300, and leftover qi is saved. The hero wears a conical hat and red scarf in every render tier,
+casts open with a shared draw-flash, and finishers push a ground shockwave.
+Tests cover all threshold edges, every form's distinct drawing commands, finisher movement,
+single mastery award, four-hit Boss budget, and delayed chapter settlement until the finisher ends.
+The playing field takes the right two-thirds of the terminal (HUD on the left), growing with width.
+Generate a school's production-render contact sheet with
+`node --experimental-strip-types scripts/wuxia-qa.mjs /tmp/moyu-nine-forms dugu`.
+
+Follow-up verification (2026-09-22): the fixed 1,800-frame benchmark is followed by actual combat
+cleanup (93 additional steps for the reference seed), then the result freeze is checked. Time alone
+cannot produce a checkpoint. All eight native scenarios still pass the existing 15% gates without
+relaxing them: combined p95 0.384–0.447 ms at 320×34 and 1.386–1.413 ms at 640×68.
+The contact sheet now covers nine habitat-specific creatures, seven sword arts, Boss hit flash,
+ground-warning/eruption frames and expanded character rendering. Automated tests also check late
+enemy/Boss kills, three-key input timing, old sword-manual migration, CJK wrapping and sidebar paging
+at 18/37/77 columns. Native-terminal manual acceptance remains pending.
+
+The same 1,800-step production fixture now includes recognizable bamboo scenery, articulated geometric
+creatures, 320 ms attacks, and persistent sword cultivation. The following measurements intentionally
+replace the native-pixel performance gate; the older evidence below remains for comparison.
+
+| Device pixels | Theme / motion | Combined p95 (ms) | Encode p95 (ms) | Average / peak bytes |
+| --- | --- | ---: | ---: | ---: |
+| 320×34 | dark / normal | 0.426 | 0.202 | 3,278 / 4,429 |
+| 320×34 | dark / reduced | 0.413 | 0.214 | 3,219 / 4,325 |
+| 320×34 | light / normal | 0.398 | 0.199 | 3,305 / 4,549 |
+| 320×34 | light / reduced | 0.359 | 0.197 | 3,248 / 4,313 |
+| 640×68 | dark / normal | 1.393 | 0.652 | 7,086 / 9,654 |
+| 640×68 | dark / reduced | 1.369 | 0.661 | 6,958 / 9,430 |
+| 640×68 | light / normal | 1.412 | 0.656 | 7,376 / 9,690 |
+| 640×68 | light / reduced | 1.349 | 0.653 | 7,251 / 9,686 |
+
+Richer silhouettes roughly double native-image payload relative to the September 11 fixture. Rendering
+plus encoding still takes less than 1.5 ms at p95 in this fixture, within the local 33 ms frame budget;
+this is a local measurement, not a remote-latency guarantee. Native frames use at most three APC records,
+still written together. The Braille SSH gate remains unchanged: average <250 B/frame, peak <600 B.
+The new baseline keeps the existing 15% regression allowance. `measurements.json` is emitted even on gate
+failure so future changes can be reviewed. `scripts/wuxia-qa.mjs` additionally renders a contact sheet of
+six landmarks, all seven sword arts, Boss effects and the expanded character view, with a six-enemy stress sample.
+
+## Previous reference evidence (2026-09-11)
 
 ### Native-pixel fixture
 

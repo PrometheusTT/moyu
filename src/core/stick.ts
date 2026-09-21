@@ -153,6 +153,22 @@ export function bladeTip(b: Body): [number, number] {
   return [s.x1, s.y1];
 }
 
+/**
+ * 主角的斗笠：一条宽帽檐 + 两根收顶的坡线，锚在头段上，随姿态走、随朝向翻（帽檐对称，不用翻）。
+ * 刻意不进 `segments()`：断肢拆分、跳跃顶点的画布余量（strip.test）都按裸骨架算，帽子只是
+ * 渲染层的身份标识。段标成 `armB` 是为了白捡各渲染器里"四肢"的笔宽与描边逻辑。
+ */
+export function heroHat(head: Seg, h: number): Seg[] {
+  const brimY = head.y0 - head.r * 0.55;
+  const half = h * 0.19;
+  const apexY = head.y0 - head.r * 1.55;
+  return [
+    { part: 'armB', x0: head.x0 - half, y0: brimY, x1: head.x0 + half, y1: brimY, r: 0 },
+    { part: 'armB', x0: head.x0 - half * 0.55, y0: brimY, x1: head.x0, y1: apexY, r: 0 },
+    { part: 'armB', x0: head.x0 + half * 0.55, y0: brimY, x1: head.x0, y1: apexY, r: 0 },
+  ];
+}
+
 /* ────────────────────────────── 姿态库 ────────────────────────────── */
 
 const TAU = Math.PI * 2;

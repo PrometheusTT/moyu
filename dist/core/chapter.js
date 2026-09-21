@@ -1,34 +1,21 @@
 import { NO_INTENT } from "./world.js";
 export const CHAPTER_STEPS = 1800;
 export const CHAPTER_COUNT = 10;
+// CHAPTER_COUNT 是场景循环长度，不再是通关上限。老存档保持 v1 可读。
 /** 每章一句剧情标题，在该章的"完成屏"上亮出（按 J 进下一章前的剧情节拍）。第 3/6/9 章是 boss 章。 */
 export const CHAPTER_TITLES = [
-    '巷口的第一刀',
-    '桥头的伏兵',
-    '断电的工厂', // boss
-    '雨夜的追逐',
-    '天台上的风',
-    '钟楼的守卫', // boss
-    '末班地铁',
-    '霓虹长街',
-    '老板的走廊', // boss
-    '加班的尽头',
+    '竹海听雨', '残月石桥', '山门蛛王', '大漠孤烟', '雪岭问剑',
+    '古塔镇妖', '竹影迷踪', '长桥夜渡', '雪山魔窟', '天门破晓',
 ];
 /**
  * 每章一句收尾旁白，在该章"完成屏"上跟在标题后面亮出 —— 把"下班路被加班堵死、
  * 一路劈到老板走廊"的剧情落到文字上（第 3/6/9 章打 boss，旁白也对上那三场硬仗）。
  */
 export const CHAPTER_STORY = [
-    '下班的路被堵死了，那就自己劈开一条。',
-    '他们从加班群里追出来，桥这头没一个是熟人。',
-    '拉闸的是主管，黑暗里他比谁都怕挨这一刀。', // boss
-    '雨把霓虹冲成一片红，跑在前头的还是那张考勤表。',
-    '站得越高，越看得清这座城把人熬成了什么样。',
-    '钟敲十二下，守夜的老规矩今晚被砍停了。', // boss
-    '末班车不等人，可今晚它得等我把这节车厢清空。',
-    '招牌一个接一个灭掉，长街尽头只剩那间还亮着的办公室。',
-    '走廊尽头那扇门后，坐着让所有人加班的那个人。', // boss
-    '打完这最后一个，卡钟停了，天也亮了。',
+    '竹叶落尽，剑意初生。', '桥下寒水，照见来时路。', '山门钟响，群妖退散。',
+    '黄沙埋骨，长剑犹鸣。', '雪落无声，剑过留痕。', '古塔灯灭，江湖未歇。',
+    '深林之外，还有深林。', '月下独行，一剑渡江。', '寒风吹散了最后一声嘶鸣。',
+    '天光初现，前方又是一重江湖。',
 ];
 export const OPENING_END = 180;
 export const ORDINARY_END = 720;
@@ -45,9 +32,9 @@ export function chapterBand(step) {
         return 'pincer';
     return 'closing';
 }
-/** 难度只在前三章加压；之后十章共享同一个上限。 */
+/** 无限增长的关数，有限的同屏压力，避免后期刷怪把终端拖垮。 */
 export function chapterPressure(chapter) {
-    return Math.min(3, Math.max(0, Math.trunc(chapter) - 1));
+    return Math.min(7, Math.max(0, Math.trunc(chapter) - 1));
 }
 export class ChapterDirector {
     seedValue;
@@ -62,9 +49,9 @@ export class ChapterDirector {
     }
     get runSeed() { return this.seedValue; }
     /** 当前章的剧情标题（供 HUD 开场横幅用）。 */
-    chapterTitle() { return CHAPTER_TITLES[this.chapter - 1] ?? ''; }
+    chapterTitle() { return CHAPTER_TITLES[(this.chapter - 1) % CHAPTER_COUNT] ?? ''; }
     /** 当前章的收尾旁白（供 HUD 完成屏用）。 */
-    chapterStory() { return CHAPTER_STORY[this.chapter - 1] ?? ''; }
+    chapterStory() { return CHAPTER_STORY[(this.chapter - 1) % CHAPTER_COUNT] ?? ''; }
     start(world) {
         this.chapter = 1;
         this.saved = null;
@@ -79,19 +66,22 @@ export class ChapterDirector {
         }
         if (this.result !== null)
             return false;
-        this.schedule(world);
+        if (this.activeStep < CHAPTER_STEPS)
+            this.schedule(world);
         const killsBefore = world.kills;
         world.step(dt, input);
         this.chapterKills += Math.max(0, world.kills - killsBefore);
         // World records the peak before a later hit/combo timeout can reset it in the same fixed step.
         this.chapterBest = Math.max(this.chapterBest, world.stepComboPeak);
-        this.activeStep++;
-        if (this.activeStep === CHAPTER_STEPS)
+        this.activeStep = Math.min(CHAPTER_STEPS, this.activeStep + 1);
+        // 三十秒是出怪日程的终点。加时清场仍模拟、仍计分，绝不移除幸存敌人。
+        if (this.activeStep === CHAPTER_STEPS && world.enemies.length === 0 && world.respawn <= 0
+            && world.swordCast === null)
             this.finish(world);
         return true;
     }
     nextChapter(world) {
-        if (this.result === null || this.chapter >= CHAPTER_COUNT || world.phase !== 'fight')
+        if (this.result === null || this.chapter >= Number.MAX_SAFE_INTEGER || world.phase !== 'fight')
             return false;
         this.chapter++;
         this.begin(world);
@@ -120,6 +110,7 @@ export class ChapterDirector {
         this.activeStep = CHAPTER_STEPS;
         this.result = checkpoint.result;
         this.saved = checkpoint;
+        world.biome = (this.chapter - 1) % CHAPTER_COUNT;
         world.beginChapter();
         world.rng.restore(checkpoint.rngState);
         this.chapterKills = checkpoint.result.kills;
@@ -127,7 +118,10 @@ export class ChapterDirector {
         return true;
     }
     begin(world) {
+        world.biome = (this.chapter - 1) % CHAPTER_COUNT;
         world.beginChapter();
+        if (this.saved)
+            world.rng.restore(this.saved.rngState);
         this.activeStep = 0;
         this.result = null;
         this.chapterKills = 0;
@@ -170,7 +164,7 @@ export class ChapterDirector {
             // 保证一定出现），之后不再刷 fill —— 让玩家专心打 boss。第 1/4 章 %3≠0，日程断言不受影响。
             if (this.chapter % 3 === 0) {
                 if (offset === 0)
-                    world.spawnBoss(this.side(this.chapter));
+                    world.spawnBoss(this.side(this.chapter), this.chapter);
                 return;
             }
             const interval = 150 - pressure * 15;
@@ -224,7 +218,7 @@ export function parseChapterCheckpoint(value) {
     catch {
         return null;
     }
-    if (version !== 1 || !natural(runSeed, 0xffffffff) || !natural(completed, CHAPTER_COUNT)
+    if (version !== 1 || !natural(runSeed, 0xffffffff) || !natural(completed)
         || completed < 1 || !natural(score) || !natural(kills) || !natural(bestCombo)
         || !natural(rngState, 0xffffffff) || rngState === 0)
         return null;
@@ -241,7 +235,7 @@ export function parseChapterCheckpoint(value) {
     catch {
         return null;
     }
-    if (!natural(chapter, CHAPTER_COUNT) || chapter !== completed || !natural(resultScore)
+    if (!natural(chapter) || chapter !== completed || !natural(resultScore)
         || !natural(resultKills) || !natural(resultBest) || resultBest > resultKills
         || (resultKills > 0 && resultBest === 0)
         || resultScore !== chapterScore(resultKills, resultBest)

@@ -33,9 +33,11 @@
 import { rgb } from './canvas.ts';
 import { arcStroke, disc, dot, rect, stripPainter, stroke, type Painter } from './painter.ts';
 import { bodyOf, bossPhase, type Fighter, type Piece, type World } from '../core/world.ts';
-import { segments, type Seg } from '../core/stick.ts';
+import { heroHat, type Seg } from '../core/stick.ts';
 import type { PixelTarget } from './target.ts';
 import type { SceneTheme } from './theme.ts';
+import { fighterSegments } from '../core/creature.ts';
+import { paintLandmark, paintSwordArt, paintBossPressure, type ArtPen } from './wuxia.ts';
 
 const SKY = [rgb(12, 13, 18), rgb(17, 18, 25), rgb(23, 24, 33), rgb(30, 31, 42)] as const;
 const GROUND_HI = rgb(64, 66, 82);
@@ -83,7 +85,15 @@ export function paintWorld(p: Painter, w: World, scene?: SceneTheme): void {
   const lift = w.flash > 0 ? Math.min(1, w.flash * 6) : 0;
 
   paintBackdrop(p, w, dy, dim, lift, scene);
-  if (scene !== undefined) paintProps(p, w, dx, dy, dim, scene);
+  const pen: ArtPen = {
+    line: (x0, y0, x1, y1, c) => stroke(p, x0, y0, x1, y1, 0.32, tint(c, dim)),
+    rect: (x, y, width, height, c) => rect(p, x, y, x + width, y + height, tint(c, dim)),
+    circle: (x, y, r, c) => disc(p, x, y, r, tint(c, dim)),
+  };
+  if (scene !== undefined) {
+    if (scene.landmark) paintLandmark(pen, w.w, w.ground, scene);
+    else paintProps(p, w, dx, dy, dim, scene);
+  }
 
   const sr = speckR(p);
   for (const key of w.stains) {
@@ -96,7 +106,7 @@ export function paintWorld(p: Painter, w: World, scene?: SceneTheme): void {
 
   for (const e of w.enemies) {
     // 变种只改本色（尺寸本就由 h 驱动）：快刀手偏亮、重甲偏暗、boss 按阶段变色。
-    let base = e.tag === 'boss' ? bossBaseColor(e.hp)
+    let base = e.tag === 'boss' ? bossBaseColor(e.hp, e.maxHp)
       : e.tag === 'brute' ? mix(FOE, KEY, 0.4)
         : e.tag === 'runner' ? mix(FOE, BONE, 0.32)
           : FOE;
@@ -110,7 +120,7 @@ export function paintWorld(p: Painter, w: World, scene?: SceneTheme): void {
       }
     }
     // 起手的敌人整个人变红：这是它唯一的预警，看不见就等于偷袭。
-    const c = e.windup >= 0 ? mix(base, ACCENT, 0.55 + 0.45 * Math.sin(e.windup * 40)) : base;
+    const c = e.hurt > 0.16 ? BONE : e.windup >= 0 ? mix(base, ACCENT, 0.55 + 0.45 * Math.sin(e.windup * 40)) : base;
     paintFighter(p, w, e, dx, dy, tint(c, dim), false);
     if (e.tag === 'boss') paintBossCrown(p, w, e, dx, dy, tint(c, dim));
   }
@@ -123,6 +133,8 @@ export function paintWorld(p: Painter, w: World, scene?: SceneTheme): void {
   }
 
   for (const s of w.slashes) paintSlash(p, w, s, dx, dy, dim);
+  paintSwordArt(pen, w.swordCast, w.fh);
+  paintBossPressure(pen, w);
 
   for (const b of w.blood) speck(p, Math.round(b.x) + dx, Math.round(b.y) + dy, sr, BLOOD);
 
@@ -149,7 +161,7 @@ function paintBackdrop(p: Painter, w: World, dy: number, dim: number, lift: numb
   const grd = (c: number): number => scene === undefined ? c : mix(c, scene.groundTint, scene.groundMix);
   const top = mix(sky(SKY[0]!), WAVE, lift * 0.35);
   const bot = mix(sky(SKY[bands - 1]!), WAVE, lift * 0.35);
-  if (p.t.tier === 'graphics') {
+  if (p.t.tier === 'graphics' && !scene?.landmark) {
     const gDev = Math.min(p.t.pixelH, Math.max(0, Math.round(g * p.k)));
     // 一行一次 fillRect：68 次调用，比 43000 次 setPixel 便宜三个数量级。
     for (let y = 0; y < gDev; y++) {
@@ -188,7 +200,8 @@ function paintProps(p: Painter, w: World, dx: number, dy: number, dim: number, s
 
 /** 一整行（或几行）纯色。虚拟坐标，半开区间。 */
 function band(p: Painter, y0: number, y1: number, color: number): void {
-  rect(p, 0, Math.max(0, y0), p.vw, Math.min(p.vh, y1), color);
+  // vw取整后在某些响应式宽度少一设备像素；背景必须铺满真实目标。
+  rect(p, 0, Math.max(0, y0), p.t.pixelW / p.k, Math.min(p.vh, y1), color);
 }
 
 /**
@@ -197,9 +210,11 @@ function band(p: Painter, y0: number, y1: number, color: number): void {
  */
 function paintFighter(p: Painter, w: World, f: Fighter, dx: number, dy: number, color: number, hero: boolean): void {
   const body = bodyOf(f);
-  const segs = segments(body);
+  const base = fighterSegments(f);
+  // 主角追加斗笠：第三重身份标识（红围巾之后），帽檐对称所以朝向翻转不用特判。
+  const segs = hero ? [...base, ...heroHat(base.find(s => s.part === 'head') ?? base[0]!, body.h)] : base;
   const flash = w.hitstop > 0 && f.armed;        // 命中那几帧整刀闪白加粗
-  const r = (s: Seg): number => radiusOf(s, body.h, flash);
+  const r = (s: Seg): number => radiusOf(s, body.h, flash) * (hero || s.part === 'head' ? 1 : 0.6);
   // 按**最细的那种笔**（四肢）决定描不描：四肢只有 1 个像素宽时描一圈会把它变成
   // 3 个像素宽的黑块，那一档（半块）宁可不描。
   if (devR(p, body.h * R_LIMB) >= KEYLINE_MIN_R) {
@@ -327,8 +342,8 @@ function mix(a: number, b: number, k: number): number {
  * Boss 按阶段变色：重压(5-4)深红、暴走(3-2)更亮更橙、困兽(1)去饱和灰红。
  * 光看配色就能读出 boss 进到哪个阶段了。
  */
-function bossBaseColor(hp: number): number {
-  const phase = bossPhase(hp);
+function bossBaseColor(hp: number, maxHp = 5): number {
+  const phase = bossPhase(hp, maxHp);
   return phase === 1 ? mix(ACCENT, KEY, 0.32)         // 深红
     : phase === 2 ? mix(ACCENT, WAVE, 0.30)           // 暴走：偏橙提亮
       : mix(mix(ACCENT, KEY, 0.32), FOE, 0.4);        // 困兽：去饱和灰红
@@ -337,7 +352,7 @@ function bossBaseColor(hp: number): number {
 /** Boss 头顶一顶小尖冠：强化"这是头目"的剪影辨识。 */
 function paintBossCrown(p: Painter, w: World, f: Fighter, dx: number, dy: number, color: number): void {
   const cx = f.x + dx;
-  const topY = f.y - f.h + dy;               // 头顶略上方
+  const topY = f.y - f.h * 0.74 + dy;
   const s = w.fh * 0.18;                     // 冠的尺度随场景缩放
   rect(p, cx - s, topY - s * 0.5, cx + s, topY, color);   // 冠底座
   for (const ox of [-s, 0, s]) disc(p, cx + ox, topY - s, s * 0.42, color);   // 三个尖角

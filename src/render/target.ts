@@ -54,10 +54,10 @@ export type PixelTarget = {
 
   /**
    * 一帧的字节。`screenTop` 是画布第一行在**真实屏幕**上的行号（1-based）；
-   * 左边缘固定在第 1 列 —— 外壳把画布放在游戏区的最左边，HUD 在它右边。
+   * `screenLeft` 是左边缘（1-based，默认1）；宿主在左侧留出 HUD。
    * 没有任何变化时返回 `''`（一个字节都不发）。
    */
-  encode(screenTop: number): string;
+  encode(screenTop: number, screenLeft?: number): string;
 
   /**
    * 退出 / 收起游戏区 / 换档时要发的清理字节。

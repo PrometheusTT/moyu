@@ -1,3 +1,4 @@
+import { fighterSegments } from "../core/creature.js";
 function frame(head, limbs, sword) {
     const grid = Array.from({ length: 8 }, () => Array(20).fill('.'));
     const dot = (x, y, mark) => { if (x >= 0 && x < 20 && y >= 0 && y < 8)
@@ -13,6 +14,9 @@ function frame(head, limbs, sword) {
     for (let y = 0; y < 2; y++)
         for (let x = 0; x < 2; x++)
             dot(head[0] + x, head[1] + y, '#');
+    // 斗笠檐：头顶那行向左右各探两格 —— 八像素高的小人靠这一笔宽檐认出"是侠客"。
+    for (const dx of [-2, -1, 2, 3])
+        dot(head[0] + dx, head[1], '#');
     for (let i = 1; i < sword.length; i++)
         line(sword[i - 1], sword[i], '*');
     return grid.map(row => row.join(''));
@@ -31,7 +35,7 @@ export function microPoseFor(f) {
     if (f.hurt > 0)
         return 'hurt';
     if (f.atk >= 0)
-        return f.atk < 0.20 ? 'windup' : f.atk < 0.43 ? 'strike' : 'recover';
+        return f.atk < 0.10 ? 'windup' : f.atk < 0.23 ? 'strike' : 'recover';
     if (!f.onGround)
         return 'jump';
     if (Math.abs(f.vx) > f.h * 0.12)
@@ -39,6 +43,17 @@ export function microPoseFor(f) {
     return 'idle';
 }
 export function drawMicroFighter(c, f, centerX, body, blade, lift = 0) {
+    if (f.kind !== 'player' && f.tag !== undefined) {
+        const color = f.hurt > 0.16 ? 0xfff0c7 : f.windup >= 0 ? 0xe43834 : body;
+        for (const s of fighterSegments({ ...f, x: Math.round(centerX / 2) * 2, y: 7,
+            walk: Math.floor(f.walk * 2) / 2, h: f.tag === 'boss' ? 9 : 6 })) {
+            if (s.part === 'head')
+                c.pixel(Math.round(s.x0), Math.round(s.y0), blade);
+            else
+                c.line(s.x0, s.y0, s.x1, s.y1, color);
+        }
+        return;
+    }
     const sprite = MICRO_FIGHTER[microPoseFor(f)];
     const pivot = Math.round(centerX / 2) * 2;
     for (let y = 0; y < sprite.length; y++)

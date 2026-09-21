@@ -1,7 +1,9 @@
-import { segments, type Body, type Pose, type Seg } from '../core/stick.ts';
+import { heroHat, type Pose, type Seg } from '../core/stick.ts';
 import { bossPhase, type Fighter, type Piece, type World } from '../core/world.ts';
 import type { PixelCanvas, PixelRenderContext } from '../platform/types.ts';
 import type { SceneTheme } from './theme.ts';
+import { fighterSegments } from '../core/creature.ts';
+import { paintLandmark, paintSwordArt, paintBossPressure, type ArtPen } from './wuxia.ts';
 
 export const PIXEL_PALETTES = {
   dark: {
@@ -80,7 +82,15 @@ export function paintPixelWorld(c: PixelCanvas, world: World, context: PixelRend
   const floorBase = scene === undefined ? palette.floor : mix(palette.floor, scene.groundTint, scene.groundMix);
   const bg = ink(mix(skyBase, palette.wave, flash * 0.25));
   c.clear(bg);
-  if (scene !== undefined) paintPixelProps(c, world, scene, x, y, scale, ink, palette.key, skyBase);
+  const pen: ArtPen = {
+    line: (x0, y0, x1, y1, color) => c.stroke(x(x0), y(y0), x(x1), y(y1), Math.max(0.5, scale * 0.28), ink(color)),
+    rect: (a, b, w, h, color) => c.rect(x(a), y(b), w * scale, h * scale, ink(color)),
+    circle: (a, b, r, color) => c.circle(x(a), y(b), r * scale, ink(color)),
+  };
+  if (scene !== undefined) {
+    if (scene.landmark) paintLandmark(pen, world.w, world.ground, scene);
+    else paintPixelProps(c, world, scene, x, y, scale, ink, palette.key, skyBase);
+  }
   const floorY = Math.floor(y(world.ground));
   c.rect(0, floorY, c.width, Math.max(1, Math.round(scale * 0.65)),
     ink(mix(floorBase, palette.wave, flash * 0.45)));
@@ -95,18 +105,20 @@ export function paintPixelWorld(c: PixelCanvas, world: World, context: PixelRend
     ink(palette.key), ink(piece.mine ? palette.hero : palette.pieceAir));
 
   // Boss 按阶段变色：重压深红 / 暴走偏橙提亮 / 困兽去饱和灰红。
-  const bossColor = (hp: number): number => {
-    const phase = bossPhase(hp);
+  const bossColor = (hp: number, maxHp = 5): number => {
+    const phase = bossPhase(hp, maxHp);
     return phase === 1 ? mix(palette.accent, palette.key, 0.32)
       : phase === 2 ? mix(palette.accent, palette.wave, 0.30)
         : mix(mix(palette.accent, palette.key, 0.32), palette.foe, 0.4);
   };
-  const drawBody = (body: Body, hero: boolean, base: number): void => {
-    const segs = segments(body);
+  const drawBody = (body: Fighter, hero: boolean, base: number): void => {
+    const raw = fighterSegments(body);
+    // 主角追加斗笠（段标 armB，白捡四肢笔宽与描边）。
+    const segs = hero ? [...raw, ...heroHat(raw.find(seg => seg.part === 'head') ?? raw[0]!, body.h)] : raw;
     const hit = world.hitstop > 0 && body.armed;
     const radius = (seg: Seg): number => seg.part === 'head' ? seg.r * scale
       : Math.max(0.55, body.h * scale / (seg.part === 'torso' ? 15 : seg.part === 'blade' ? 26 : 22)
-        * (seg.part === 'blade' && hit ? 1.9 : 1));
+        * (seg.part === 'blade' && hit ? 1.9 : hero ? 1 : 0.6));
     if (body.h * scale / 22 >= 1.1) {
       for (const seg of segs) drawSegment(c, seg, x, y, radius(seg) + 1, ink(palette.key));
     }
@@ -123,13 +135,13 @@ export function paintPixelWorld(c: PixelCanvas, world: World, context: PixelRend
     const body = interpolateFighter(fighter, previous?.get(fighter), context.interpolation);
     const blink = body.invuln > 0 && Math.floor(body.invuln * 18) % 2 === 0;
     // 变种本色：快刀手偏亮、重甲偏暗、boss 按阶段变色；其余走 foe。
-    let foeBase = body.tag === 'boss' ? bossColor(body.hp)
+    let foeBase = body.tag === 'boss' ? bossColor(body.hp, body.maxHp)
       : body.tag === 'brute' ? mix(palette.foe, palette.key, 0.4)
         : body.tag === 'runner' ? mix(palette.foe, palette.hero, 0.3)
           : palette.foe;
     // 每章给杂兵掺一点章节色相（boss 保持阶段警示色，不掺）。
     if (scene !== undefined && body.tag !== 'boss') foeBase = mix(foeBase, scene.foeTint, scene.foeMix);
-    const base = body.hurt > 0 ? palette.accent
+    const base = body.hurt > 0.16 ? palette.hit
       : body.windup >= 0
         ? mix(foeBase, palette.accent, 0.55 + 0.45 * Math.sin(body.windup * 40))
         : hero ? (blink ? palette.foe : palette.hero) : foeBase;
@@ -141,7 +153,7 @@ export function paintPixelWorld(c: PixelCanvas, world: World, context: PixelRend
     // Boss 头顶小尖冠：强化"这是头目"的剪影辨识。
     if (body.tag === 'boss') {
       const s = world.fh * 0.18;
-      const topY = body.y - body.h;
+      const topY = body.y - body.h * 0.74;
       const baseW = Math.max(2, Math.round(s * 2 * scale));
       const baseH = Math.max(1, Math.round(s * 0.6 * scale));
       c.rect(Math.round(x(body.x - s)), Math.round(y(topY)) - baseH, baseW, baseH, ink(base));
@@ -166,6 +178,8 @@ export function paintPixelWorld(c: PixelCanvas, world: World, context: PixelRend
         wide * wf, ink(mix(palette.trail, palette.hit, bright * (life > 0.55 ? 1 : 0.6))));
     }
   }
+  paintSwordArt(pen, world.swordCast, world.fh);
+  paintBossPressure(pen, world);
   for (const blood of world.blood) speck(Math.round(blood.x), Math.round(blood.y), palette.blood);
   if (world.waveR !== null) for (const side of [-1, 1] as const) {
     const waveX = Math.round(world.player.x + side * world.waveR);

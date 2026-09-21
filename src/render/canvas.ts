@@ -136,7 +136,7 @@ export class Canvas implements PixelTarget {
    *      之类的属性开着，我们只设颜色的话会把它的属性继承到游戏区里。
    *      每帧的颜色状态从零开始跟踪（`curFg/curBg` 是局部变量），所以复位是免费的。
    */
-  encode(screenTop: number): string {
+  encode(screenTop: number, screenLeft = 1): string {
     const out: string[] = [];
     let curFg = -1;
     let curBg = -1;
@@ -170,7 +170,7 @@ export class Canvas implements PixelTarget {
         }
         end += 1;
 
-        out.push(`\x1b[${screenTop + r};${spanStart + 1}H`);
+        out.push(`\x1b[${screenTop + r};${spanStart + screenLeft}H`);
         for (let k = spanStart; k < end; k++) {
           const f = this.top[base + k]!;
           const b = this.bot[base + k]!;

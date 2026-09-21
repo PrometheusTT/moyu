@@ -1,5 +1,26 @@
 /** 文本行的宽度对齐。HUD 和横幅都是**文本行**而不是像素 —— 中文在半块画布上画不出来。 */
 import { stringWidth } from "../shell/wcwidth.js";
+/** 按显示宽度折行，保留全部字符（不足两列时双宽字无法展示）。 */
+export function wrapWidth(s, max) {
+    if (max <= 0)
+        return [];
+    const lines = [];
+    let row = '', width = 0;
+    for (const ch of s) {
+        const n = stringWidth(ch);
+        if (width + n > max && row) {
+            lines.push(row);
+            row = '';
+            width = 0;
+        }
+        if (n <= max) {
+            row += ch;
+            width += n;
+        }
+    }
+    lines.push(row);
+    return lines;
+}
 /** 按**显示列宽**截断，不是按码元 —— CJK 一个字占两列。 */
 export function clipWidth(s, max) {
     if (max <= 0)

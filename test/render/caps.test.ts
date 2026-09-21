@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CELL, parseProbe, probeCaps, probeSeq } from '../../src/render/caps.ts';
+import { fieldColsFor } from '../../src/shell/regions.ts';
 
 /**
  * 探测这一段的正确性有两半，两半都在这里锁住：
@@ -334,7 +335,7 @@ test('doctor --gfx：档位判成 half 也照样送图，几何是出货那条',
   assert.notEqual(apc, null, `--gfx 没发 APC —— 那它就什么都证明不了：${JSON.stringify(gfx.slice(-200))}`);
   const keys = apc?.[1] ?? '';
   assert.match(keys, /a=T/);
-  assert.match(keys, /c=40,r=2/, `图必须按出货那条的格数夹住（实际键：${keys}）`);
+  assert.match(keys, new RegExp(`c=${fieldColsFor(80)},r=2`), `图必须按响应式战场格数夹住（实际键：${keys}）`);
   assert.match(keys, /q=2/, '出帧的 APC 一定要抑制回复');
   // 相对定位：这一页前面已经打了十几行文字，绝对行号是未知的。发了 CUP 就会盖掉输出。
   assert.ok(!/\x1b\[\d+;1H\x1b_G/.test(gfx), '图前面发了绝对定位 —— 会跳到屏幕别处去');

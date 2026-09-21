@@ -114,7 +114,7 @@ export class BrailleTarget implements PixelTarget {
     this.bg[at] = bg; this.fg[at] = fg; this.mask[at] = mask;
   }
 
-  encode(screenTop: number): string {
+  encode(screenTop: number, screenLeft = 1): string {
     const n = this.cols * this.rows;
     for (let i = 0; i < n; i++) this.quantizeCell(i % this.cols, Math.floor(i / this.cols), i);
     const out: string[] = []; let curFg = -1, curBg = -1; const full = this.dirtyAll;
@@ -135,7 +135,7 @@ export class BrailleTarget implements PixelTarget {
           if (same) { if (++clean > 4) break; } else { clean = 0; end = col; }
           col++;
         }
-        end++; out.push(`\x1b[${screenTop + row};${start + 1}H`);
+        end++; out.push(`\x1b[${screenTop + row};${start + screenLeft}H`);
         for (let x = start; x < end; x++) {
           const i = base + x, m = this.mask[i]!, f = this.fg[i]!, b = this.bg[i]!;
           // 反色近似字形要把“画布底色”塞进 glyph 前景；透明模式里 ANSI 没有“默认背景色

@@ -75,9 +75,11 @@ export class Game {
             }
         }
         this.acc += dt;
+        if (this.acc < STEP)
+            return;
         // 脉冲（跳/砍）只喂给第一个子步，方向键则整帧有效 —— 不然一次按下会在
         // 同一帧里被多个子步各算一次。
-        let first = this.keys.intent(Date.now());
+        let first = this.keys.intent(nowMs);
         const held = { move: first.move, jump: false, slash: false };
         while (this.acc >= STEP) {
             this.world.step(STEP, first ?? held);

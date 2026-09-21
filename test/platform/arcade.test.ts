@@ -9,6 +9,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { GameInstance, GameModule } from '../../src/platform/types.ts';
 import { LogicalCanvas } from '../../src/platform/canvas.ts';
+import type { World } from '../../src/core/world.ts';
+import { freshCultivation } from '../../src/core/martial.ts';
 
 function cartridge(id: string, create: GameModule['create']): GameModule {
   return {
@@ -290,8 +292,16 @@ function chapterOneCheckpoint(seed = 1): Record<string, unknown> {
   const game = stickGame(seed);
   const input = { left: false, right: false, up: false, down: false,
     jump: false, primary: false, secondary: false };
-  for (let i = 0; i < 1800; i++) game.update(1 / 60, input);
+  for (let i = 0; i < 1799; i++) game.update(1 / 60, input);
+  clearFixtureEnemies(game);
+  game.update(1 / 60, input);
   return game.serialize?.() as Record<string, unknown>;
+}
+
+// 结果屏测试的布景准备；不把时间走完等同于真实战斗胜利。
+function clearFixtureEnemies(game: GameInstance): void {
+  const world = (game as unknown as { world: World }).world;
+  world.enemies.length = 0; world.respawn = 0;
 }
 
 test('primary action changes the very next rendered micro frame', () => {
@@ -322,7 +332,9 @@ test('two-row diff output stays lightweight enough for an SSH session', () => {
       bytes += size; peak = Math.max(peak, size);
     }
     assert.ok(bytes / 180 < 250, `cartridge ${game}: average diff grew to ${Math.round(bytes / 180)} bytes/frame`);
-    assert.ok(peak < 600, `cartridge ${game}: a frame grew to ${peak} bytes`);
+    // 峰值预算给的是"多足生物同帧移动+碎裂"的爆发帧：敌人从火柴棍换成多节轮廓后，
+    // 一帧重绘的 cell 数上了一个台阶。800 字节 @15fps ≈ 12KB/s，SSH 仍然轻松。
+    assert.ok(peak < 800, `cartridge ${game}: a frame grew to ${peak} bytes`);
     a.feed(Uint8Array.of(9));
   }
 });
@@ -346,7 +358,7 @@ test('Stick Slash v1 persistence separates lifetime records from campaign checkp
   const before = restored.serialize?.();
   restored.restore?.({ ...state, kills: (checkpoint.kills as number) - 1 });
   assert.deepEqual(restored.serialize?.(), before, 'outer totals cannot trail the checkpoint');
-  restored.restore?.({ version: 2, kills: 99, bestCombo: 88 });
+  restored.restore?.({ version: 3, kills: 99, bestCombo: 88 });
   assert.deepEqual(restored.serialize?.(), before, 'unknown versions must not fall through to legacy restore');
 });
 
@@ -354,13 +366,15 @@ test('Stick Slash restores legacy and v1 pre-checkpoint lifetime records', () =>
   const legacy = stickGame(24);
   legacy.restore?.({ kills: 7, bestCombo: 3 });
   assert.deepEqual(legacy.serialize?.(), {
-    version: 1, kills: 7, bestCombo: 3, checkpoint: null,
+    version: 2, kills: 7, bestCombo: 3, checkpoint: null, qi: 0,
+    cultivation: { ...freshCultivation(), insight: 7 },
   });
 
   const v1 = stickGame(25);
   v1.restore?.({ version: 1, kills: 9, bestCombo: 4, checkpoint: null });
   assert.deepEqual(v1.serialize?.(), {
-    version: 1, kills: 9, bestCombo: 4, checkpoint: null,
+    version: 2, kills: 9, bestCombo: 4, checkpoint: null, qi: 0,
+    cultivation: { ...freshCultivation(), insight: 9 },
   });
 });
 
@@ -369,7 +383,8 @@ test('Stick Slash result-screen J cannot bypass task completion ownership', () =
   const none = { left: false, right: false, up: false, down: false,
     jump: false, primary: false, secondary: false };
   const slash = { ...none, primary: true };
-  for (let i = 0; i < 1800; i++) game.update(1 / 60, none);
+  for (let i = 0; i < 1799; i++) game.update(1 / 60, none);
+  clearFixtureEnemies(game); game.update(1 / 60, none);
   const before = game.serialize?.() as Record<string, unknown>;
   const checkpoint = before.checkpoint;
   game.onHostEvent?.('task-done');
@@ -384,7 +399,7 @@ test('Stick Slash result-screen J cannot bypass task completion ownership', () =
   assert.match(game.hud?.() ?? '', /等待下个任务/);
   game.onHostEvent?.('task-start');
   game.update(1 / 60, slash);
-  assert.match(game.hud?.() ?? '', /2\/10/);
+  assert.match(game.hud?.() ?? '', /第2关/);
 });
 
 test('通关演出：章节 settle 起一记冲击波，战斗中不出现、脉冲散尽后收回', () => {
@@ -402,17 +417,18 @@ test('通关演出：章节 settle 起一记冲击波，战斗中不出现、脉
   // 战斗途中（未 settle）：clearPulse 恒 0，没有冲击波。跑到第 1799 步仍在打。
   for (let i = 0; i < 1799; i++) game.update(1 / 60, none);
   assert.doesNotMatch(game.hud?.() ?? '', /第1章完成/, '第 1799 步应还没结算');
-  // 第 1800 步 settle：这一帧点亮冲击波。
+  // 已清场才允许第 1800 步 settle：这一帧点亮冲击波。
+  clearFixtureEnemies(game);
   game.update(1 / 60, none);
   assert.match(game.hud?.() ?? '', /第1章完成/, '第 1800 步应已结算');
   const atClear = dye();
   // 让脉冲散尽（>1.1s），场景冻结不变，只有冲击波退场。
-  for (let i = 0; i < 90; i++) game.update(1 / 60, none);
+  for (let i = 0; i < 70; i++) game.update(1 / 60, none);
   const settled = dye();
   assert.ok(atClear > settled, `通关瞬间应比散尽后更亮（冲击波在场）：${atClear} vs ${settled}`);
 });
 
-test('Stick Slash final HUD reports cumulative five-minute totals', () => {
+test('Stick Slash wave result reports cumulative endless-run totals', () => {
   const game = stickGame(23);
   const state = chapterOneCheckpoint(23);
   const first = state.checkpoint as Record<string, unknown>;
@@ -440,7 +456,7 @@ test('Stick Slash final HUD reports cumulative five-minute totals', () => {
   assert.doesNotMatch(hud, new RegExp(`五分钟完成 · ${finalResult.score}分 · ${finalResult.kills}击破`));
 });
 
-test('Stick Slash final screen restarts a fresh run on J instead of freezing', () => {
+test('Stick Slash chapter ten continues to eleven without clearing progression', () => {
   // 复现玩家反馈：打穿第 10 章后停在"五分钟完成"屏，按 J 完全卡住。
   // 末章 nextChapter 返回 false，得靠 restartRun 兜底：J 应回到第 1 章重开，而不是冻结。
   const game = stickGame(26);
@@ -457,8 +473,8 @@ test('Stick Slash final screen restarts a fresh run on J instead of freezing', (
   };
   game.restore?.({ version: 1, kills: completed.kills,
     bestCombo: completed.bestCombo, checkpoint: completed });
-  assert.match(game.hud?.() ?? '', /五分钟完成/, '末章终局屏应先亮出五分钟完成');
-  assert.match(game.hud?.() ?? '', /J 再来一局/, '终局屏应给出再来一局的提示');
+  assert.match(game.hud?.() ?? '', /第10章完成/);
+  assert.match(game.hud?.() ?? '', /J 下一章/);
 
   const none = { left: false, right: false, up: false, down: false,
     jump: false, primary: false, secondary: false };
@@ -466,7 +482,7 @@ test('Stick Slash final screen restarts a fresh run on J instead of freezing', (
   game.update(1 / 60, slash);
   const after = game.hud?.() ?? '';
   assert.doesNotMatch(after, /五分钟完成/, '按 J 后不该再停在终局屏（卡死）');
-  assert.match(after, /火柴快斩 1\/10/, '按 J 应回到第 1 章重开新的一局');
+  assert.match(after, /第11关/, '按 J 应继续第十一关');
 });
 
 test('cartridge random streams are independent of preceding factory consumption', () => {

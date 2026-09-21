@@ -20,11 +20,11 @@ function module(id: string, create: () => GameInstance): GameModule {
 const healthy = (id: string): GameModule => module(id, () => ({ update() {}, render() {} }));
 
 test('play geometry distinguishes unknown dimensions from a genuinely tiny terminal', () => {
-  assert.deepEqual(playGeometry(0, 0, true), { cols: 80, rows: 6, targetCols: 40, usable: true });
+  assert.deepEqual(playGeometry(0, 0, true), { cols: 80, rows: 6, targetCols: 51, usable: true });
   assert.deepEqual(playGeometry(undefined, undefined, false),
-    { cols: 80, rows: 2, targetCols: 40, usable: true });
+    { cols: 80, rows: 2, targetCols: 51, usable: true });
   assert.deepEqual(playGeometry(1, 1, true), { cols: 1, rows: 1, targetCols: 1, usable: false });
-  assert.deepEqual(playGeometry(12, 3, false), { cols: 12, rows: 1, targetCols: 11, usable: true });
+  assert.deepEqual(playGeometry(12, 3, false), { cols: 12, rows: 1, targetCols: 6, usable: true });
 });
 
 test('preparePlay distinguishes unknown IDs from known factory failures', () => {

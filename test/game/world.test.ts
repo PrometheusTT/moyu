@@ -29,7 +29,7 @@ function fightUntilKill(w: World, maxFrames = 60 * 20): number {
   return -1;
 }
 
-test('一刀砍碎：杂兵变成一堆断肢，头是单独一块，还会喷血', () => {
+test('一刀砍碎：多足怪的肢节和双眼分解，还会喷血', () => {
   const w = mk();
   w.taskStart();
   const frames = fightUntilKill(w);
@@ -39,7 +39,7 @@ test('一刀砍碎：杂兵变成一堆断肢，头是单独一块，还会喷�
   assert.equal(w.taskKills, 1);
   // 骨架是 10 条线段，被切线穿过的那条一分为二 → 至少 9 块（太短的碎块会被丢掉）。
   assert.ok(w.pieces.length >= 9, `只碎成 ${w.pieces.length} 块 —— "砍碎"这个词就不成立了`);
-  assert.equal(w.pieces.filter((p) => p.head).length, 1, '头必须恰好一块');
+  assert.equal(w.pieces.filter((p) => p.head).length, 2, '双眼必须分别成为碎片');
   assert.ok(w.blood.length > 0, '没喷血');
   // 顿帧 + 震屏 = "砍到了"的重量。少任何一个都会立刻变软。
   assert.ok(w.hitstop > 0, '没有顿帧');
@@ -414,7 +414,7 @@ test('四种变招推出的刀光几何各不相同（刀光形状是区分变�
   assert.equal(keys.size, 4, `四招刀光应各不相同，实得 ${keys.size} 种：${arcs.map(key).join(' / ')}`);
 });
 
-test('命中反馈 hitstop 恒 ≥ 0.04：reduceMotion 清掉 flash/shake 后顿帧仍在（每招都留手感）', () => {
+test('普通命中停顿保留打击感，控制在 16~40ms 内', () => {
   const probe = (kind: AttackKind): number => {
     const w = new World(19, { automaticSpawns: false });
     w.resize(160, 44);
@@ -430,7 +430,8 @@ test('命中反馈 hitstop 恒 ≥ 0.04：reduceMotion 清掉 flash/shake 后顿
     return w.hitstop;
   };
   for (const kind of ['normal', 'air', 'sweep', 'lunge'] as AttackKind[]) {
-    assert.ok(probe(kind) >= 0.04, `${kind} 命中后的 hitstop 应 ≥ 0.04（幸存反馈）`);
+    const stop = probe(kind);
+    assert.ok(stop >= 0.016 && stop <= 0.04, `${kind} 停顿 ${stop} 不在短促反馈范围`);
   }
 });
 
@@ -568,7 +569,7 @@ test('boss：前摇是更长的 BOSS_WINDUP，够得更远，打满会命中玩�
   assert.ok(w.player.hp < hp0, 'boss 打满前摇没能命中玩家（更宽命中距离失效？）');
 });
 
-test('boss 阶段一（满血）：只重击近战，绝不冲撞/横扫', () => {
+test('boss 阶段一（满血）：重击和地裂，不使用后续阶段的冲撞/横扫', () => {
   const w = new World(20, { automaticSpawns: false });
   w.resize(160, 44);
   w.spawnBoss('right');

@@ -1,5 +1,6 @@
 import type { Fighter } from '../core/world.ts';
 import type { GameCanvas } from './types.ts';
+import { fighterSegments } from '../core/creature.ts';
 
 // Fixed 20×8 cells, body pivot x=8. Head, neck, hands and feet have distinct roles.
 // Every pose uses the same pivot; a longer sword never shifts the body on screen.
@@ -13,6 +14,8 @@ function frame(head: Point, limbs: readonly (readonly Point[])[], sword: readonl
   };
   for (const limb of limbs) for (let i = 1; i < limb.length; i++) line(limb[i - 1]!, limb[i]!, '#');
   for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) dot(head[0] + x, head[1] + y, '#');
+  // 斗笠檐：头顶那行向左右各探两格 —— 八像素高的小人靠这一笔宽檐认出"是侠客"。
+  for (const dx of [-2, -1, 2, 3]) dot(head[0] + dx, head[1], '#');
   for (let i = 1; i < sword.length; i++) line(sword[i - 1]!, sword[i]!, '*');
   return grid.map(row => row.join(''));
 }
@@ -30,12 +33,21 @@ export const MICRO_FIGHTER = {
 export type MicroFighterPose = keyof typeof MICRO_FIGHTER;
 export function microPoseFor(f: Pick<Fighter, 'hurt' | 'atk' | 'onGround' | 'vx' | 'h' | 'walk'>): MicroFighterPose {
   if (f.hurt > 0) return 'hurt';
-  if (f.atk >= 0) return f.atk < 0.20 ? 'windup' : f.atk < 0.43 ? 'strike' : 'recover';
+  if (f.atk >= 0) return f.atk < 0.10 ? 'windup' : f.atk < 0.23 ? 'strike' : 'recover';
   if (!f.onGround) return 'jump';
   if (Math.abs(f.vx) > f.h * 0.12) return f.walk < 0.5 ? 'runA' : 'runB';
   return 'idle';
 }
 export function drawMicroFighter(c: GameCanvas, f: Fighter, centerX: number, body: number, blade: number, lift = 0): void {
+  if (f.kind !== 'player' && f.tag !== undefined) {
+    const color = f.hurt > 0.16 ? 0xfff0c7 : f.windup >= 0 ? 0xe43834 : body;
+    for (const s of fighterSegments({ ...f, x: Math.round(centerX / 2) * 2, y: 7,
+      walk: Math.floor(f.walk * 2) / 2, h: f.tag === 'boss' ? 9 : 6 })) {
+      if (s.part === 'head') c.pixel(Math.round(s.x0), Math.round(s.y0), blade);
+      else c.line(s.x0, s.y0, s.x1, s.y1, color);
+    }
+    return;
+  }
   const sprite = MICRO_FIGHTER[microPoseFor(f)];
   const pivot = Math.round(centerX / 2) * 2;
   for (let y = 0; y < sprite.length; y++) for (let x = 0; x < sprite[y]!.length; x++) {

@@ -195,9 +195,22 @@ function runScenario({ width, height, theme, reduced }) {
       captures.push({ step, rgb, hash: sha(rgb) });
     }
   }
+  // 固定1800帧仍作为性能基线；截止后的敌人必须实际打完，不能靠超时拿检查点。
+  let cleanupSteps = 0;
+  while (!game.serialize?.().checkpoint && cleanupSteps < 3600) {
+    const w = game.world;
+    const target = w.enemies[0];
+    game.update(1 / 60, { ...EMPTY, left: !!target && target.x < w.player.x,
+      right: !!target && target.x >= w.player.x, primary: cleanupSteps % 18 === 0,
+      special: cleanupSteps % 100 === 0 });
+    cleanupSteps++;
+  }
   const checkpoint = game.serialize?.().checkpoint;
   assert.ok(checkpoint && checkpoint.completed === 1, 'full chapter did not produce checkpoint 1');
   assert.equal(game.hud?.().includes('第1章完成'), true, 'chapter result HUD is missing');
+  paint(game, canvas, theme);
+  const finalFrame = target.encode(1);
+  if (finalFrame) currentRgb = decodeFrame(finalFrame, target).rgb;
   paint(game, canvas, theme);
   const frozen = target.encode(1);
   assert.equal(frozen, '', 'stable result frame emitted bytes');
@@ -214,7 +227,7 @@ function runScenario({ width, height, theme, reduced }) {
   return {
     target, game, checkpoint, resultHash: sha(resultRgb), captures,
     metrics: {
-      width, height, theme, reducedMotion: reduced, frames: bytes.length,
+      width, height, theme, reducedMotion: reduced, frames: bytes.length, cleanupSteps,
       render: timing(renderNs), encode: timing(encodeNs), combined: timing(combinedNs),
       payload: payload(bytes, chunkCounts), unchangedEncode: timing(unchangedNs),
     },
@@ -304,15 +317,19 @@ try {
     assert.equal(normalDark.checkpoint.completed, 1);
     assert.equal(reducedDark.checkpoint.completed, 1);
   }
+  // Retain measurements even when a gate fails so intentional art revisions can be reviewed.
+  fs.writeFileSync(path.join(out, 'measurements.json'), JSON.stringify(runs.map(run => run.metrics), null, 2));
   const baselines = new Map([
-    ['320x34:dark:false', [0.127, 1510, 2612]],
-    ['320x34:dark:true', [0.127, 1481, 2612]],
-    ['320x34:light:false', [0.126, 1535, 2608]],
-    ['320x34:light:true', [0.127, 1506, 2608]],
-    ['640x68:dark:false', [0.393, 3354, 6049]],
-    ['640x68:dark:true', [0.398, 3291, 6049]],
-    ['640x68:light:false', [0.397, 3498, 6193]],
-    ['640x68:light:true', [0.400, 3433, 6193]],
+    // 2026-09-21: intentional scenery + articulated creature revision.
+    // Measurements and bandwidth tradeoff are recorded in docs/terminal-qa.md.
+    ['320x34:dark:false', [0.202, 3278, 4429]],
+    ['320x34:dark:true', [0.214, 3219, 4325]],
+    ['320x34:light:false', [0.199, 3305, 4549]],
+    ['320x34:light:true', [0.197, 3248, 4313]],
+    ['640x68:dark:false', [0.652, 7086, 9654]],
+    ['640x68:dark:true', [0.661, 6958, 9430]],
+    ['640x68:light:false', [0.656, 7376, 9690]],
+    ['640x68:light:true', [0.653, 7251, 9686]],
   ]);
   for (const run of runs) {
     const key = `${run.metrics.width}x${run.metrics.height}:${run.metrics.theme}:${run.metrics.reducedMotion}`;
@@ -338,7 +355,7 @@ try {
       productionTiming: 'game renderPixels and GraphicsTarget.encode only; protocol decode and PNG export excluded',
       percentiles: 'nearest-rank over 1800 fixed 60 Hz updates; zero-byte unchanged frames included',
       wireValidation: 'strict Kitty keys, APC/ST framing, 4096-byte chunk cap, continuation markers, zlib RGB size',
-      fixture: `stick-slash seed ${SEED}, one complete 1800-step chapter`,
+      fixture: `stick-slash seed ${SEED}, 1800 scheduled steps plus bounded combat cleanup`,
       gates: 'native encode p95 and average/peak payload <= 115% of checked-in baseline; resume <= 50 ms local / 100 ms SSH',
     },
     scenarios: runs.map(run => ({ ...run.metrics, checkpoint: run.checkpoint,

@@ -112,10 +112,14 @@ onHostEvent?(event: HostEvent): void;
 serialize?(): unknown;
 restore?(state: unknown): void;
 hud?(): string;
+combatHud?(rows: number): string[]; // 可选：简洁常驻摘要，不分页，不展示完整剑谱
+details?(): string[]; // 可选：仅帮助页展示的附加说明
 ```
 
 `update` 使用固定步长调用。隐藏、帮助和不支持的视图会暂停模拟；恢复时不会补算隐藏时间。
 宿主可能随时改变画布尺寸，因此每一帧都应读取 `canvas.width` / `canvas.height`。
+`display.responsive: true` 可让字符档 `renderMicro` / `renderExpanded` 接收真实目标宽度；
+省略则保持原有逻辑宽度。内置火柴快斩开启此项，贪吃蛇/落块保留固定棋盘比例。
 
 ## 输入
 
@@ -128,6 +132,8 @@ type GameInput = {
   jump: boolean;
   primary: boolean;
   secondary: boolean;
+  special?: boolean;
+  art?: 'dugu' | 'liumai' | 'taiji' | 'feixian' | 'wanjian' | 'getsuga' | 'hinokami'; // 内置剑谱，其他 Cartridge 可忽略
 };
 ```
 
