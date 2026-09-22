@@ -35,7 +35,7 @@ export function microPoseFor(f) {
     if (f.hurt > 0)
         return 'hurt';
     if (f.atk >= 0)
-        return f.atk < 0.10 ? 'windup' : f.atk < 0.23 ? 'strike' : 'recover';
+        return f.atk < 0.10 ? 'windup' : f.atk < 0.19 ? 'strike' : 'recover';
     if (!f.onGround)
         return 'jump';
     if (Math.abs(f.vx) > f.h * 0.12)
@@ -46,7 +46,7 @@ export function drawMicroFighter(c, f, centerX, body, blade, lift = 0) {
     if (f.kind !== 'player' && f.tag !== undefined) {
         const color = f.hurt > 0.16 ? 0xfff0c7 : f.windup >= 0 ? 0xe43834 : body;
         for (const s of fighterSegments({ ...f, x: Math.round(centerX / 2) * 2, y: 7,
-            walk: Math.floor(f.walk * 2) / 2, h: f.tag === 'boss' ? 9 : 6 })) {
+            walk: Math.floor(f.walk * 2) / 2, h: f.duelist ? 6 : f.tag === 'boss' ? 9 : 6 })) {
             if (s.part === 'head')
                 c.pixel(Math.round(s.x0), Math.round(s.y0), blade);
             else

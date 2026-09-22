@@ -7,7 +7,7 @@ import { World, bossPhase, type Intent, type Piece, type EnemyTag } from '../cor
 import { ChapterDirector, parseChapterCheckpoint } from '../core/chapter.ts';
 import { fighterSegments } from '../core/creature.ts';
 import { heroHat } from '../core/stick.ts';
-import { MAX_QI, BOSS_HIT_QI, SWORD_ARTS, SWORD_FORMS, FULL_ART_NAMES, selectSwordForm, currentSwordForm,
+import { MAX_QI, BOSS_HIT_QI, SWORD_ARTS, SWORD_FORMS, FULL_ART_NAMES, parseFormProgress, selectSwordForm, currentSwordForm,
   ART_IDS, isSecretArt, artLevel, freshCultivation, parseCultivation, type SwordArt } from '../core/martial.ts';
 import { paintLandmark, paintSwordArt, paintBossPressure, type ArtPen } from '../render/wuxia.ts';
 import { wrapWidth, clipWidth } from '../render/text.ts';
@@ -225,12 +225,11 @@ class StickGame implements GameInstance {
     this.director.start(this.world);
   }
   configureViewport(width: number, height: number, tier: PixelTarget['tier']): void {
-    // 微型条（braille/半块两行）是雷达式压缩视图，世界保持 180 —— 那里加宽只会让
-    // 攻击距离缩成贴脸。展开/图形档按纵横比把战场**真实加宽**（不是横向拉伸画面），
-    // 封顶 360：约 4.6 秒横穿一趟，再长就是马拉松而不是战场。移速只跟身高走
-    // （见 world.playerSpeed），加宽不会把人变快。
-    const arena = tier !== 'graphics' && height <= 8 ? 180
-      : Math.min(360, Math.max(180, Math.round(width * (this.world.h + 4) / Math.max(1, height))));
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+    // 与实际渲染高度一致；不封顶世界宽度，否则像素条两端仍是无法到达的空白。
+    const viewHeight = tier === 'graphics' ? height : Math.min(24, height);
+    const arena = tier !== 'graphics' && height <= 8 ? 90
+      : Math.max(90, width * (this.world.h + 4) / viewHeight);
     if (arena === this.world.w) return;
     this.world.resizeArena(arena);
     this.previous.clear(); this.scratch.clear();
@@ -296,12 +295,13 @@ class StickGame implements GameInstance {
     const px = (x: number): number => 8 + (x / this.world.w) * (c.width - 16);
     const pen = canvasPen(c, px, y => y / this.world.ground * 7);
     const scene = this.scene();
-    paintLandmark(pen, this.world.w, this.world.ground,
+    const backdrop = canvasPen(c, x => x * 7 / this.world.ground, y => y * 7 / this.world.ground);
+    paintLandmark(backdrop, c.width * this.world.ground / 7, this.world.ground,
       { ...scene, groundTint: scene.skyTint, foeTint: scene.skyTint });
     const enemies = this.world.enemies;
     for (const f of enemies) {
       const x = px(f.x);
-      drawMicroFighter(c, f, x, foeColor(f.tag), AMBER);
+      drawMicroFighter(c, f, x, f.duelist ? f.duelist === 'qingfeng' ? 0x7dcac8 : 0xb29aca : foeColor(f.tag), AMBER);
     }
     const playerX = px(this.world.player.x);
     if (this.world.respawn <= 0) drawMicroFighter(c, this.world.player, playerX, INK, AMBER,
@@ -365,7 +365,7 @@ class StickGame implements GameInstance {
 
     for (const f of [...w.enemies, ...(w.respawn > 0 ? [] : [w.player])]) {
       // boss 按阶段变色（暴走偏橙、困兽去饱和），其余走变种本色。
-      const foe = f.tag === 'boss'
+      const foe = f.duelist ? f.duelist === 'qingfeng' ? 0x7dcac8 : 0xb29aca : f.tag === 'boss'
         ? (bossPhase(f.hp, f.maxHp) === 1 ? FOE_BOSS : bossPhase(f.hp, f.maxHp) === 2 ? mixRgb(FOE_BOSS, AMBER, 0.5) : mixRgb(FOE_BOSS, DEAD, 0.45))
         : foeColor(f.tag);
       const color = f.hurt > 0 ? INK : f === w.player ? INK : f.windup >= 0 ? ACCENT : foe;
@@ -384,7 +384,7 @@ class StickGame implements GameInstance {
         if (torso) c.line(torso.x1, torso.y1, torso.x1 - f.face * body.h * 0.26, torso.y1 + body.h * 0.1, ACCENT);
       }
       // boss 头顶尖冠：字符档也一眼认出头目。
-      if (f.tag === 'boss') {
+      if (f.tag === 'boss' && !f.duelist) {
         const topX = px(f.x), topY = py(f.y - f.h * 0.75);
         c.rect(Math.round(topX - 1), Math.round(topY - 2), 3, 1, color);
       }
@@ -415,6 +415,7 @@ class StickGame implements GameInstance {
   serialize(): unknown {
     return { version: 2, kills: this.world.kills, bestCombo: this.world.bestCombo,
       checkpoint: this.director.checkpoint(), qi: this.world.qi,
+      formProgress: structuredClone(this.world.formProgress), selectedArt: this.world.selectedArt,
       cultivation: structuredClone(this.world.cultivation) };
   }
   restore(state: unknown): void {
@@ -429,6 +430,8 @@ class StickGame implements GameInstance {
     const restoreArts = (): void => {
       this.world.cultivation = cultivation;
       this.world.qi = qi;
+      this.world.formProgress = parseFormProgress(s.formProgress);
+      this.world.selectedArt = ART_IDS.includes(s.selectedArt as SwordArt) ? s.selectedArt as SwordArt : 'dugu';
       this.intermission = 0;
       this.previous.clear(); this.scratch.clear();
     };
@@ -498,25 +501,31 @@ class StickGame implements GameInstance {
       const spec = SWORD_ARTS[art];
       if (isSecretArt(art) && w.cultivation.mastery[art] === 0) return art === 'getsuga'
         ? '秘卷·月影：48悟后，向上向右挥刀' : '秘卷·日轮：80悟后，向上向左挥刀';
-      const selection = selectSwordForm(art, w.qi);
+      const selection = selectSwordForm(art, w.qi, w.formProgress[art]);
       const status = w.cultivation.insight < spec.unlock ? `${w.cultivation.insight}/${spec.unlock}悟`
         : `${artLevel(w.cultivation, art)}重 · ${selection ? selection.full ? FULL_ART_NAMES[art] : SWORD_FORMS[art][selection.index]!.name : `需${spec.cost}气`}`;
       return [`${spec.keys} ${spec.name} · ${status}`,
-        ...SWORD_FORMS[art].map((form, i) => `${form.qi}～${(SWORD_FORMS[art][i + 1]?.qi ?? 100) - 1}气 ${form.name}`),
-        `100+气 ${FULL_ART_NAMES[art]} · 奥义 · 消耗100`];
+        ...[0, 1, 2].map(tier => {
+          const count = SWORD_FORMS[art].length / 3;
+          return `${['起手', '60气', '100气'][tier]}档 · 耗${spec.cost + tier * 3}气：${SWORD_FORMS[art].slice(tier * count, (tier + 1) * count).map(f => f.name).join(' → ')}`;
+        }), `高档末式收势：${FULL_ART_NAMES[art]}`];
     });
-    return ['剑谱：起手 / 60气强化 / 100气奥义', '两键340ms / 三键650ms · 零头保留',
-      `储气上限${MAX_QI} · 奥义扣100，余量保留`,
-      '太极/飞仙/归宗/彩蛋为游戏简式编排', ...arts, `击破+12气 · 普通命中Boss+${BOSS_HIT_QI}气`, '剑招不回气 · 按剑法积累熟练度'];
+    return ['剑谱：三档轮换 · 按键不变', '两键340ms / 三键650ms · 每档记忆进度',
+      `储气上限${MAX_QI} · 每式少量扣气，不清空`,
+      '各剑法演出及衍生招式为游戏编排', ...arts, `击破+12气 · 普通命中剑客/Boss+${BOSS_HIT_QI}气`,
+      '剑招不回气 · 高档轮完自动收势', '剑客：正面普攻可拼剑，剑招/绕背破守', '收招时追击；蓄势时跳跃或冲刺躲避', '战斗不限时，全部击败才结算'];
   }
   combatHud(rows: number): string[] {
     const w = this.world, p = w.player, result = this.director.result;
     const life = w.respawn > 0 ? '重生中' : `血${p.hp}/4`;
     const status = `${life} 气${w.qi}`;
-    const boss = w.enemies.find(e => e.tag === 'boss');
-    const threat = boss ? `BOSS ${boss.hp}/${boss.maxHp ?? 5}` : '';
-    const warning = boss?.quakeX !== undefined ? '地裂！跳跃 / 离开红线' : boss && boss.windup >= 0 ? '蓄势！准备闪避' : '';
-    const selected = selectSwordForm(w.selectedArt, w.qi), cast = w.swordCast;
+    const boss = w.enemies.find(e => e.tag === 'boss') ?? w.enemies.find(e => e.duelist);
+    const threat = boss ? `${boss.duelist ? boss.duelist === 'qingfeng' ? '青锋' : '玄衣' : 'BOSS'} ${boss.hp}/${boss.maxHp ?? 5}` : '';
+    const warning = boss?.quakeX !== undefined ? '地裂！跳跃 / 离开红线'
+      : boss && boss.windup >= 0 ? '蓄势！准备闪避' : (boss?.guard ?? 0) > 0 ? '守势：剑招 / 绕背破守' : '';
+    const selected = selectSwordForm(w.selectedArt, w.qi, w.formProgress[w.selectedArt]), cast = w.swordCast;
+    const following = cast ? selected : selected ? selectSwordForm(w.selectedArt, w.qi - selected.cost,
+      w.formProgress[w.selectedArt].map((n, i) => n + (i === selected.tier ? 1 : 0))) : null;
     const nextForm = cast ? `${cast.full ? FULL_ART_NAMES[cast.art] : currentSwordForm(cast).name}`
       : selected ? `${SWORD_ARTS[w.selectedArt].keys} ${selected.full ? FULL_ART_NAMES[w.selectedArt] : SWORD_FORMS[w.selectedArt][selected.index]!.name}`
         : `攒气 ${w.qi}/${SWORD_ARTS[w.selectedArt].cost}`;
@@ -526,7 +535,7 @@ class StickGame implements GameInstance {
       'J 下一章 / 自动继续', ''].slice(0, rows - 1), '?谱 E大小 Esc退'];
     const lines = [status, `${SWORD_ARTS[cast?.art ?? w.selectedArt].name} · ${cast ? '施展中' : '当前'}`,
       nextForm, warning || threat || `${this.director.chapter}关 ${this.director.chapterTitle()}`,
-      boss ? `普通命中 +${BOSS_HIT_QI}气` : this.director.activeStep >= 1800 ? `清场中 剩${w.enemies.length}敌` : '60气强化 · 100气奥义'];
+      following ? `接 ${SWORD_FORMS[w.selectedArt][following.index]!.name}` : '攒气续招 · 战斗不限时'];
     if (rows <= 4 && warning) lines[1] = warning;
     return [...lines.slice(0, rows - 1), '?谱 E大小 Esc退'];
   }

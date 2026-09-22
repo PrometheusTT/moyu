@@ -99,9 +99,9 @@ test('手动调高度服从掌机上限，而且给 HUD 留着列', () => {
     assert.ok(r.kind === 'split');
     if (r.kind === 'split') {
       const l = r.layout;
-      assert.ok(l.fieldCols >= Math.floor(cols * 0.6), '战场占右侧约三分之二');
-      assert.ok(l.fieldCols < cols - 3, '左侧必须给 HUD 留出版面');
-      assert.ok(cols - l.fieldCols - 3 < l.fieldCols, 'HUD仍小于战场');
+      assert.equal(l.fieldCols, Math.round((cols - Math.floor((cols - 1) / 3) - 3) / 2), '原战场减半且随窗口自适应');
+      assert.ok(l.fieldCols < cols - 3, '右侧必须给 HUD 留出版面');
+      assert.ok(Math.min(28, l.fieldCols) <= l.fieldCols, '文字面板不宽于战场');
       // 最后一列必须没人碰 —— 写屏幕右下角会置上延迟换行标志，下一个字符就滚屏。
       assert.ok(l.fieldCols + (l.cols - l.fieldCols - 1) < l.cols);
     }

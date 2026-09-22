@@ -101,7 +101,7 @@ export function paintWorld(p, w, scene) {
             paintPiece(p, w, q, dx, dy, tint(q.mine ? BONE : PIECE_AIR, dim));
     for (const e of w.enemies) {
         // 变种只改本色（尺寸本就由 h 驱动）：快刀手偏亮、重甲偏暗、boss 按阶段变色。
-        let base = e.tag === 'boss' ? bossBaseColor(e.hp, e.maxHp)
+        let base = e.duelist ? e.duelist === 'qingfeng' ? rgb(125, 202, 200) : rgb(178, 154, 202) : e.tag === 'boss' ? bossBaseColor(e.hp, e.maxHp)
             : e.tag === 'brute' ? mix(FOE, KEY, 0.4)
                 : e.tag === 'runner' ? mix(FOE, BONE, 0.32)
                     : FOE;
@@ -118,7 +118,7 @@ export function paintWorld(p, w, scene) {
         // 起手的敌人整个人变红：这是它唯一的预警，看不见就等于偷袭。
         const c = e.hurt > 0.16 ? BONE : e.windup >= 0 ? mix(base, ACCENT, 0.55 + 0.45 * Math.sin(e.windup * 40)) : base;
         paintFighter(p, w, e, dx, dy, tint(c, dim), false);
-        if (e.tag === 'boss')
+        if (e.tag === 'boss' && !e.duelist)
             paintBossCrown(p, w, e, dx, dy, tint(c, dim));
     }
     if (w.respawn <= 0) {

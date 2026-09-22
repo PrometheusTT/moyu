@@ -1,9 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { World, NO_INTENT, bossDifficulty, bossPhase, bossQuakeOffsets } from '../../src/core/world.ts';
-import { MAX_QI, SWORD_ARTS, SWORD_FORMS, selectSwordForm, currentSwordForm,
+import { MAX_QI, BOSS_HIT_QI, SWORD_ARTS, SWORD_FORMS, selectSwordForm, currentSwordForm,
   artLevel, parseCultivation, type SwordArt } from '../../src/core/martial.ts';
-import { paintSwordArt, type ArtPen } from '../../src/render/wuxia.ts';
+import { paintLandmark, paintSwordArt, type ArtPen } from '../../src/render/wuxia.ts';
+import { sceneForChapter } from '../../src/render/theme.ts';
+import { pixelCamera } from '../../src/render/pixel-scene.ts';
+import { fieldColsFor } from '../../src/shell/regions.ts';
 import { fighterSegments } from '../../src/core/creature.ts';
 import { ChapterDirector, CHAPTER_STEPS, parseChapterCheckpoint } from '../../src/core/chapter.ts';
 import { BUILTIN_GAMES, Arcade } from '../../src/platform/arcade.ts';
@@ -20,54 +23,202 @@ function world(): World {
 }
 const none: GameInput = { left: false, right: false, up: false, down: false, jump: false, primary: false, secondary: false };
 
-test('每套剑法所有剑气边界选对招式，零头保留，100以上整套只扣100', () => {
+test('同门三档保持不同轨迹：归一化范围后仍有独立轮廓，三档完整', () => {
+  for (const art of Object.keys(SWORD_ARTS) as SwordArt[]) {
+    assert.equal(new Set(SWORD_FORMS[art].map(f => f.qi)).size, 3);
+    const contours = new Set<string>();
+    for (let tier = 0; tier < 3; tier++) {
+      const calls: number[][] = [];
+      const formIndex = tier * SWORD_FORMS[art].length / 3;
+      const form = SWORD_FORMS[art][formIndex]!;
+      for (const progress of [0.2, 0.5, 0.8])
+        paintSwordArt({ line: (...args) => { calls.push(args); }, rect: () => {}, circle: () => {} },
+          { art, x: 0, y: 0, face: 1, age: progress * 0.65, pulse: 0, level: 1, formIndex }, 26);
+      // 忽略颜色、笔画重复次数与攻击距离，检查二维占用轮廓。
+      const occupied = new Set<string>();
+      for (const a of calls) for (let i = 0; i <= 12; i++) {
+        const u = i / 12;
+        occupied.add(`${Math.round((a[0]! + (a[2]! - a[0]!) * u) / (26 * form.reach) * 20)},${Math.round((a[1]! + (a[3]! - a[1]!) * u) / 26 * 20)}`);
+      }
+      contours.add([...occupied].sort().join(';'));
+    }
+    assert.equal(contours.size, 3, `${art} 不能只是增亮/复制/拉长同一式`);
+  }
+});
+
+test('Boss普通有效命中回气，空挥/无敌/剑招不回气，封顶300', () => {
+  for (const attack of ['slash', 'dash', 'spin'] as const) for (const immune of [false, true]) {
+    const w = world(); w.spawnBoss('right', 33); w.hitstop = 0;
+    const boss = w.enemies[0]!, hp = boss.hp;
+    w.player.invuln = 999; boss.cool = 999;
+    for (let frame = 0; frame < 22; frame++) {
+      boss.x = w.player.x + w.fh * 0.5;
+      if (immune) boss.invuln = 99;
+      w.step(dt, { ...NO_INTENT, [attack]: frame === 0 });
+    }
+    assert.equal(w.qi, (hp - boss.hp) * BOSS_HIT_QI, attack);
+    assert.equal(w.qi > 0, !immune, attack);
+  }
+  const w = world(); w.spawnBoss('right', 33); w.hitstop = 0;
+  const boss = w.enemies[0]!; boss.cool = 999; w.player.invuln = 999;
+  w.qi = 300;
+  for (let frame = 0; frame < 100; frame++) {
+    boss.x = w.player.x + w.fh * 0.5;
+    w.step(dt, { ...NO_INTENT, art: frame === 0 ? 'dugu' : undefined });
+  }
+  assert.equal(w.qi, 284, '高档剑招打Boss不充能，只扣16气');
+  w.qi = 297; boss.invuln = 0; boss.x = w.player.x + w.fh * 0.5;
+  w.step(dt, { ...NO_INTENT, spin: true }); assert.equal(w.qi, 300);
+  const empty = world(); empty.step(dt, { ...NO_INTENT, spin: true }); assert.equal(empty.qi, 0);
+});
+
+test('剑招演出期间的普通击杀仍回气，不受整帧casting标记误伤', () => {
+  const w = world(); w.qi = 100; w.step(dt, { ...NO_INTENT, art: 'dugu' });
+  for (let i = 0; i < 8; i++) w.step(dt, NO_INTENT);
+  w.spawnFormation({ kind: 'single', side: 'left' });
+  w.enemies[0]!.x = w.player.x - w.fh * 0.8;
+  w.step(dt, { ...NO_INTENT, spin: true });
+  assert.ok(w.swordCast); assert.equal(w.kills, 1); assert.equal(w.qi, 96);
+});
+
+test('宽视口真正扩展可走边界，速度不变；重复配置和切换不重置战斗', () => {
+  for (const [width, height, tier] of [[2096, 68, 'graphics'], [262, 24, 'braille'], [262, 32, 'braille']] as const) {
+    const game = BUILTIN_GAMES[0]!.create({ seed: 71, random: () => 0.5 });
+    const w = (game as unknown as { world: World }).world;
+    const speed = w.player.speed, fraction = w.player.x / w.w;
+    w.qi = 172; w.player.y -= 5; w.player.onGround = false; w.player.vy = -20;
+    game.configureViewport?.(width, height, tier);
+    const arena = width * 48 / Math.min(height, tier === 'graphics' ? height : 24);
+    assert.equal(w.w, arena); assert.equal(w.player.x / w.w, fraction);
+    assert.equal(w.player.speed, speed); assert.equal(w.player.vy, -20); assert.equal(w.player.onGround, false);
+    if (tier === 'graphics') {
+      const camera = pixelCamera(width, height, w);
+      assert.ok(Math.abs(camera.x(0)) < 1e-8);
+      assert.ok(Math.abs(camera.x(w.w) - width) < 1e-8);
+    }
+    const state = JSON.stringify(w); game.configureViewport?.(width, height, tier);
+    assert.equal(JSON.stringify(w), state, '每帧配置不能改变世界');
+    game.configureViewport?.(80, 8, 'braille');
+    assert.equal(w.w, 90); assert.equal(w.qi, 172); assert.equal(w.player.speed, speed);
+    game.configureViewport?.(NaN, 0, 'graphics'); assert.equal(w.w, 90);
+  }
+});
+
+test('加宽背景续接地标，不改变单座建筑比例；每幅只有一轮月亮', () => {
+  for (const chapter of [1, 2, 3, 4, 5, 6]) {
+    const draw = (width: number) => {
+      const lines: number[][] = [], circles: number[][] = [];
+      paintLandmark({ line: (...a) => { lines.push(a); }, rect: (...a) => { lines.push(a); },
+        circle: (...a) => { circles.push(a); } }, width, 40, sceneForChapter(chapter));
+      return { lines, circles };
+    };
+    const narrow = draw(180), wide = draw(540);
+    assert.equal(wide.lines.length, narrow.lines.length * 3);
+    assert.deepEqual(wide.lines.slice(0, narrow.lines.length), narrow.lines);
+    assert.equal(wide.circles.length, 1); assert.equal(wide.circles[0]![2], narrow.circles[0]![2]);
+  }
+});
+
+test('紧凑地图在不同窗口下约为旧版半宽，人物速度与身高不变', () => {
+  for (const cols of [60, 80, 120, 200]) for (const tier of ['graphics', 'braille'] as const) {
+    const game = BUILTIN_GAMES[0]!.create({ seed: 71, random: () => 0.5 });
+    const w = (game as unknown as { world: World }).world;
+    const height = tier === 'graphics' ? 68 : 24, density = tier === 'graphics' ? 16 : 2;
+    const oldCols = cols - Math.floor((cols - 1) / 3) - 3;
+    const oldArena = Math.max(180, oldCols * density * 48 / height);
+    const speed = w.player.speed, bodyHeight = w.fh;
+    game.configureViewport?.(fieldColsFor(cols) * density, height, tier);
+    assert.ok(Math.abs(w.w / oldArena - 0.5) < 0.025, String(cols));
+    assert.equal(w.player.speed, speed); assert.equal(w.fh, bodyHeight);
+    w.player.invuln = 999;
+    for (let i = 0; i < 600; i++) w.step(dt, { ...NO_INTENT, move: 1 });
+    assert.ok(w.player.x > w.w * 0.8, '缩图后右侧仍可走到');
+  }
+});
+
+test('重绘奥义不越出人物高度带，几何与画笔开销均有界', () => {
+  for (const art of Object.keys(SWORD_ARTS) as SwordArt[]) for (const age of [0.02, 0.3, 0.6, 0.9, 1.1]) {
+    const calls: number[][] = [];
+    const pen: ArtPen = { line: (...a) => { calls.push(a); }, rect: () => {}, circle: () => {} };
+    paintSwordArt(pen, { art, x: 0, y: 0, face: 1, age, level: 5, pulse: 0, full: true }, 26);
+    assert.ok(calls.every(a => Math.abs(a[1]!) < 26 * 1.4 && Math.abs(a[3]!) < 26 * 1.4), art);
+    assert.ok(calls.length < 1500, art);
+    assert.ok(calls.flat().every(Number.isFinite), art);
+  }
+});
+
+test('七套剑法有不同实心轮廓、正确镜像与消散，起势和收势不会定格', () => {
+  const outlines = new Set<string>();
+  for (const art of Object.keys(SWORD_ARTS) as SwordArt[]) {
+    const draw = (age: number, face: 1 | -1) => {
+      const calls: number[][] = [];
+      paintSwordArt({ line: (...a) => { calls.push(a); }, rect: () => {}, circle: () => {} },
+        { art, x: 0, y: 0, face, age, level: 1, pulse: 0, full: true }, 26);
+      return calls;
+    };
+    const first = draw(0.1, 1), middle = draw(0.45, 1), last = draw(1.1, 1);
+    assert.notDeepEqual(first, middle, art); assert.notDeepEqual(middle, last, art);
+    assert.deepEqual(draw(1.2, 1), [], '收势结束不能残留特效');
+    assert.deepEqual(draw(0.45, -1), middle.map(a => [-a[0]! || 0, a[1]!, -a[2]! || 0, a[3]!, a[4]!]));
+    outlines.add(JSON.stringify(middle.map(a => a.slice(0, 4))));
+  }
+  assert.equal(outlines.size, 7, '不能只用换色区分剑法');
+});
+
+test('三档门槛与轮换全覆盖，每式只扣少量气，高气不强制覆盖为奥义', () => {
   for (const art of Object.keys(SWORD_ARTS) as SwordArt[]) {
     const forms = SWORD_FORMS[art];
     assert.equal(selectSwordForm(art, forms[0]!.qi - 1), null);
     assert.equal(selectSwordForm(art, NaN), null);
-    for (let index = 0; index < forms.length; index++) {
-      const min = forms[index]!.qi, max = (forms[index + 1]?.qi ?? 100) - 1;
+    const count = forms.length / 3;
+    for (let tier = 0; tier < 3; tier++) for (let offset = 0; offset < count; offset++) {
+      const min = [SWORD_ARTS[art].cost, 60, 100][tier]!, max = [59, 99, 300][tier]!;
       for (const qi of [min, max]) {
-        assert.deepEqual(selectSwordForm(art, qi), { index, full: false, cost: min });
-        const w = world(); w.qi = qi; w.cultivation.insight = 100;
+        const index = tier * count + offset, progress = [0, 0, 0]; progress[tier] = offset;
+        const cost = SWORD_ARTS[art].cost + tier * 3;
+        assert.deepEqual(selectSwordForm(art, qi, progress), { index, tier, full: tier === 2 && offset === count - 1, cost });
+        const w = world(); w.qi = qi; w.cultivation.insight = 100; w.formProgress[art] = [...progress] as [number, number, number];
         w.step(dt, { ...NO_INTENT, art });
-        assert.equal(w.qi, qi - min); assert.equal(w.swordCast?.formIndex, index);
+        assert.equal(w.qi, qi - cost); assert.equal(w.swordCast?.formIndex, index);
+        assert.equal(w.formProgress[art][tier], (offset + 1) % count);
       }
     }
     for (const qi of [100, 101, 200, 300]) {
       const w = world(); w.qi = qi; w.cultivation.insight = 100;
       w.step(dt, { ...NO_INTENT, art });
-      assert.equal(w.qi, qi - 100); assert.equal(w.swordCast?.full, true);
+      assert.equal(w.qi, qi - SWORD_ARTS[art].cost - 6); assert.equal(w.swordCast?.full, false);
     }
   }
 });
 
-test('满气奥义是一记统一收招：不轮播分式、可移动、只计一次熟练度，不重扣费', () => {
+test('高档末式带统一收招：可移动，只计一次熟练度，演出中不重扣费', () => {
   for (const art of Object.keys(SWORD_ARTS) as SwordArt[]) {
     const w = world(); w.qi = 100; w.cultivation.insight = 100;
+    w.formProgress[art][2] = SWORD_FORMS[art].length / 3 - 1;
     const x = w.player.x;
     w.step(dt, { ...NO_INTENT, art });
     assert.equal(w.swordCast?.full, true);
     const finisher = SWORD_FORMS[art].at(-1)!;
     for (let i = 0; i < 90; i++) {
       if (w.swordCast) assert.equal(currentSwordForm(w.swordCast), finisher, '奥义始终收束在同一记收招上');
-      w.step(dt, { ...NO_INTENT, move: 1, art: i % 20 === 0 ? art : undefined });
+      w.step(dt, { ...NO_INTENT, move: 1, art: i < 45 && i % 20 === 0 ? art : undefined });
     }
-    assert.equal(w.swordCast, null); assert.equal(w.qi, 0);
+    assert.equal(w.swordCast, null); assert.equal(w.qi, 100 - SWORD_ARTS[art].cost - 6);
     assert.equal(w.cultivation.mastery[art], 1);
     assert.ok(w.player.x > x && w.player.invuln <= 0, '不能做成锁移动或整套无敌的过场');
   }
 });
 
-test('独孤九剑全套对同一Boss最多四次伤害；死亡和换章清掉连式状态', () => {
+test('独孤收势对同一Boss最多三次伤害；死亡和换章清掉演出状态', () => {
   const w = world(); w.qi = 100; w.spawnBoss('right', 33); w.hitstop = 0;
+  w.formProgress.dugu[2] = 2;
   const boss = w.enemies[0]!; const hp = boss.hp;
   w.player.invuln = 999;
   for (let i = 0; i < 210; i++) {
     boss.x = w.player.x + w.fh * 0.5; boss.cool = 99; boss.windup = -1;
     w.step(dt, { ...NO_INTENT, art: i === 0 ? 'dugu' : undefined });
   }
-  assert.equal(hp - boss.hp, 4); assert.equal(w.swordCast, null);
+  assert.equal(hp - boss.hp, 3); assert.equal(w.swordCast, null);
   w.qi = 100; w.step(dt, { ...NO_INTENT, art: 'dugu' });
   w.beginChapter(); assert.equal(w.swordCast, null);
   w.qi = 100; w.spawnBoss('right', 33); w.hitstop = 0;
@@ -99,7 +250,7 @@ test('所有分式有独立几何演出，奥义是同一剑法的加强构图�
     const fullCalls: number[][] = [];
     const pen: ArtPen = { line: (...args) => { fullCalls.push(args); }, rect: (...args) => { fullCalls.push(args); }, circle: (...args) => { fullCalls.push(args); } };
     paintSwordArt(pen, { art, x: 60, y: 25, face: 1, age: 0.6, level: 1, pulse: 0, full: true }, 26);
-    assert.ok(fullCalls.length > counts[0]!, `${art}奥义应比起手式更丰满`);
+    assert.ok(fullCalls.length > 0 && fullCalls.length < 1500, `${art}收势必须清晰且有界，不以光效数量衡量`);
   }
 });
 
@@ -136,7 +287,7 @@ test('百关持续推进且检查点可恢复，敌人与碎片数量有界', ()
       director.step(w, dt, { ...NO_INTENT, slash: frame % 15 === 0, spin: frame % 100 === 0 });
       assert.ok(w.enemies.length <= 6 && w.pieces.length <= 150);
       const boss = w.enemies.find(e => e.tag === 'boss');
-      if (boss) assert.equal(boss.maxHp, bossDifficulty(chapter).hp);
+      if (boss) assert.equal(boss.maxHp, boss.duelist ? 16 + bossDifficulty(chapter).rank * 2 : bossDifficulty(chapter).hp);
     }
     for (let overtime = 0; overtime < 3600 && director.result === null; overtime++) {
       const target = w.enemies.reduce((a, b) => Math.abs(a.x - w.player.x) < Math.abs(b.x - w.player.x) ? a : b, w.enemies[0]!);
@@ -188,13 +339,13 @@ test('剑招检查解锁与剑气，失败不扣费、不加熟练度', () => {
   assert.equal(w.cultivation.mastery.dugu, 0);
 });
 
-test('七套满气连式真实命中且各扣100气；剑招击杀不给自己充能', () => {
+test('七套高档剑招真实命中且只扣单式费用；剑招击杀不给自己充能', () => {
   for (const art of Object.keys(SWORD_ARTS) as SwordArt[]) {
     const w = world(); w.qi = 100; w.cultivation.insight = 100;
     w.spawnFormation({ kind: 'pair', side: 'right' });
     w.step(dt, { ...NO_INTENT, art });
     assert.equal(w.kills, 2, art);
-    assert.equal(w.qi, 0, art);
+    assert.equal(w.qi, 100 - SWORD_ARTS[art].cost - 6, art);
     assert.equal(w.cultivation.mastery[art], 1);
     for (let i = 0; i < 180; i++) w.step(dt, NO_INTENT);
     assert.equal(w.swordCast, null);
@@ -285,7 +436,7 @@ test('剑气能越过100，300封顶，高于100的老版本结构存档可往�
     cultivation: { insight: 100, mastery: { dugu: 6, liumai: 2, taiji: 0 } } };
   game.restore?.(save); game.update(dt, { ...none, art: 'dugu' });
   const state = game.serialize?.() as { qi: number };
-  assert.equal(state.qi, 72);
+  assert.equal(state.qi, 156);
   const resumed = BUILTIN_GAMES[0]!.create({ seed: 1, random: () => 0.5 });
   resumed.restore?.(state); assert.deepEqual(resumed.serialize?.(), state);
 });

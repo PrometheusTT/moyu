@@ -125,11 +125,11 @@ test('走完整块场地的时间与画布尺寸无关（速度原来按身高�
   );
 });
 
-test('全屏那一端的手感常数一个都没变（兜底公式写错的典型症状是把 demo 一起改了）', () => {
+test('全屏移动提升20%，跳跃与身高不变，宽度不能放大移速', () => {
   const w = new World(23);
   w.resize(160, 78);
   assert.equal(w.fh, 26);
-  assert.equal(w.player.speed, 78, '全屏速度只跟身高走 = fh×3.0 = 78，战场加宽不提速');
+  assert.equal(w.player.speed, 78 * 1.2, '步行速度 = fh×3.0×1.2，战场加宽不提速');
   assert.ok(Math.abs(w.jumpV - 140.4) < 1e-9, `jumpV=${w.jumpV}`);
   const s = new World(23);
   s.resize(120, 40);
@@ -143,13 +143,15 @@ test('拖窗口从全屏缩到一条，再拖回去，不清场也不飘人', ()
   run(w, 60 * 6, (i) => ({ move: i % 60 < 30 ? 1 : -1, jump: i % 40 === 0, slash: i % 25 === 0 }));
   const kills = w.kills;
   const live = w.enemies.length;
+  const fractions = new Map([w.player, ...w.enemies].map(f => [f, f.x / w.w]));
   w.resize(40, 4);
   assert.equal(w.kills, kills, '缩成一条把战绩清了');
   assert.equal(w.enemies.length, live, '缩成一条把人清了');
   assert.equal(w.fh, 3);
   for (const f of [w.player, ...w.enemies]) {
     assert.equal(f.y, w.ground, '缩放后有人飘着');
-    assert.ok(f.x >= 0 && f.x <= w.w, `有人被缩到画布外：x=${f.x}`);
+    assert.equal(f.x / w.w, fractions.get(f), '缩放必须保持横向位置比例；尚在场外入场的敌人也不能被瞬移');
+    if (f.kind === 'player') assert.ok(f.x >= 0 && f.x <= w.w, `玩家被缩到画布外：x=${f.x}`);
   }
   run(w, 60 * 3, () => ({ move: 1, jump: true, slash: true }));
   assert.ok(topOf(w) >= -0.5, `缩成一条之后头出画布了：top=${topOf(w)}`);

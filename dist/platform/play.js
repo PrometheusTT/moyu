@@ -125,7 +125,7 @@ export async function cmdPlay(id) {
             const now = Date.now();
             arcade.setDisplay(size.rows, 'braille');
             arcade.advance(now);
-            const row = `\x1b[1;${size.cols - size.targetCols + 1}H\x1b[38;2;196;202;218m\x1b[48;2;24;26;36m${fitRow(arcade.name, '? 帮助', size.targetCols)}\x1b[0m`;
+            const row = `\x1b[1;1H\x1b[38;2;196;202;218m\x1b[48;2;24;26;36m${fitRow(arcade.name, '? 帮助', size.targetCols)}\x1b[0m`;
             process.stdout.write(row + surface.render(arcade, target, 2, size.cols, size.rows));
         }, 1000 / 30);
         timer.unref();

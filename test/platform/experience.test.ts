@@ -48,16 +48,14 @@ test('剑谱宽度折行保留中文，所有条目可翻到，帮助翻页不�
   }
 });
 
-test('宽终端画布贴右、HUD 居左，宽度缩小后仍无越界写入', () => {
+test('战场贴左、HUD 居右，缩放后仍无越界写入', () => {
   const { game } = recorder(); game.enter();
   const surface = new PlaySurface(), target = new BrailleTarget(40, 6);
   const wide = surface.render(game, target, 5, 120, 6);
-  // 同一坐标先出现清场行、后出现 HUD 行；取最后一个。
-  const hudRows = [...wide.matchAll(/\x1b\[5;1H([^\x1b]*)/g)].map(m => m[1]!);
+  const hudRows = [...wide.matchAll(/\x1b\[5;43H([^\x1b]*)/g)].map(m => m[1]!);
   const hudRow = hudRows.at(-1) ?? '';
-  assert.ok(stringWidth(hudRow) > 0 && stringWidth(hudRow) <= 77, 'HUD 居左，止于画布左缘之前');
-  const bodyCols = [...wide.matchAll(/\x1b\[\d+;(\d+)H/g)].map(m => Number(m[1]));
-  assert.ok(bodyCols.some(col => col >= 80), '画布贴在右侧约三分之二处');
+  assert.equal(stringWidth(hudRow), 28, 'HUD 从战场右侧开始，限制文字面板宽度');
+  assert.match(wide, /\x1b\[5;1H\x1b\[/, '画布第一行从左缘起笔');
   const narrow = surface.render(game, target, 5, 60, 6);
   for (const match of narrow.matchAll(/\x1b\[(\d+);(\d+)H([^\x1b]*)/g)) {
     assert.ok(Number(match[1]) >= 5 && Number(match[1]) < 11);
@@ -89,7 +87,8 @@ test('响应式战场接收真实像素宽度，旧Cartridge保持原画布，HU
     const field = fieldColsFor(cols), target = new BrailleTarget(field, rows);
     const surface = new PlaySurface(); surface.render(game, target, 3, cols, rows);
     assert.equal(sizes.at(-1)?.[0], target.pixelW);
-    assert.ok(field > cols - field - 3, `战场(${field})必须大于左侧 HUD 区`);
+    const previous = cols - Math.floor((cols - 1) / 3) - 3;
+    assert.ok(Math.abs(field * 2 - previous) <= 1, '相同窗口下战场宽度减半');
     assert.ok(game.panelRows(Math.min(28, cols - field - 3), rows).length <= rows);
   }
   const old = new Arcade('/tmp/moyu-fixed-hud', [{ ...module,

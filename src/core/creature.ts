@@ -3,7 +3,18 @@ import { segments, type Seg } from './stick.ts';
 
 /** 身体和死亡碎片共用同一轮廓：六足菱蛛、三角螳螂、方甲虫、八足蛛王。 */
 export function fighterSegments(f: Fighter): Seg[] {
-  if (f.kind === 'player' || f.tag === undefined) return segments(f);
+  if (f.kind === 'player' || f.tag === undefined || f.duelist) {
+    const body = segments(f);
+    if (f.duelist) {
+      // 肩披、束发与长剑保留人形，区别于玩家斗笠和多足妖物。
+      const h = f.h;
+      body.push({ x0: f.x - h * 0.22, y0: f.y - h * 0.76, x1: f.x - f.face * h * 0.4,
+        y1: f.y - h * 0.22, part: 'torso', r: 0 });
+      body.push({ x0: f.x, y0: f.y - h * 1.04, x1: f.x - f.face * h * 0.3,
+        y1: f.y - h * (f.duelist === 'qingfeng' ? 1 : 0.85), part: 'torso', r: 0 });
+    }
+    return body;
+  }
   const out: Seg[] = [];
   const h = f.h, x = f.x, y = f.y;
   const line = (a: number, b: number, c: number, d: number, part: Seg['part'] = 'torso'): void => {

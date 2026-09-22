@@ -1,23 +1,37 @@
-import { SWORD_ARTS, currentSwordForm, artDuration } from "../core/martial.js";
-import { bossPhase, bossQuakeOffsets } from "../core/world.js";
+import { SWORD_ARTS, SWORD_FORMS, currentSwordForm, artDuration } from "../core/martial.js";
+import { bossPhase, bossQuakeOffsets, duelistFormFor } from "../core/world.js";
 export function paintLandmark(p, width, ground, scene) {
     if (!scene.landmark)
         return;
+    // 按固定纵横比续接景物，不把同一座山门/竹林拉成整幅超宽背景。
+    const tile = ground * 4.5;
+    if (tile <= 0 || !Number.isFinite(width))
+        return;
+    for (let offset = 0; offset < width; offset += tile) {
+        const pen = {
+            line: (a, b, c, d, ink) => p.line(a + offset, b, c + offset, d, ink),
+            rect: (a, b, w, h, ink) => p.rect(a + offset, b, w, h, ink),
+            circle: (a, b, r, ink) => p.circle(a + offset, b, r, ink),
+        };
+        paintLandmarkTile(pen, tile, ground, scene);
+    }
+    p.circle(width * 0.72, ground * 0.2, ground * 0.1, scene.foeTint);
+}
+function paintLandmarkTile(p, width, ground, scene) {
     const far = scene.skyTint, near = scene.groundTint, light = scene.foeTint;
     const line = (a, b, c, d, color = near) => p.line(a * width, b * ground, c * width, d * ground, color);
     // 两层山脊构成连续景深，地标保持静态以保住终端帧差预算。
-    for (let i = 0; i < 6; i++) {
-        const a = i / 5 - 0.08, peak = a + 0.12;
+    for (let i = 0; i < 4; i++) {
+        const a = i / 3 - 0.08, peak = a + 0.12;
         line(a, 0.76, peak, 0.32 + (i % 3) * 0.08, far);
         line(peak, 0.32 + (i % 3) * 0.08, a + 0.28, 0.76, far);
     }
-    p.circle(width * 0.72, ground * 0.2, ground * 0.1, light);
     switch (scene.landmark) {
         case 'bamboo':
-            for (const x of [0.06, 0.14, 0.24, 0.85, 0.94]) {
+            for (const x of [0.08, 0.24, 0.88]) {
                 line(x, 1, x + 0.015, 0.06);
-                for (let i = 0; i < 4; i++) {
-                    const y = 0.2 + i * 0.18;
+                for (let i = 0; i < 3; i++) {
+                    const y = 0.2 + i * 0.25;
                     line(x - 0.008, y, x + 0.018, y, far);
                     line(x + 0.008, y, x + (i % 2 ? -0.065 : 0.065), y - 0.12);
                     line(x + 0.008, y, x + (i % 2 ? -0.045 : 0.045), y + 0.04);
@@ -73,139 +87,343 @@ export function paintLandmark(p, width, ground, scene) {
     }
     line(0, 0.98, 1, 0.98, far);
 }
+/** 实心收尖剑光，而非等宽线框；所有几何仍在世界坐标内。 */
 export function paintSwordArt(p, cast, h) {
-    if (!cast)
+    if (!cast || cast.age < 0 || cast.age >= artDuration(cast.art, cast.full))
         return;
-    const { x, y, face, art, level } = cast;
-    const form = currentSwordForm(cast);
-    const t = Math.min(1, cast.age / artDuration(art, cast.full));
-    const power = cast.full ? 2 : form.qi >= 60 ? 1 : 0;
+    const { x, y, face, art, level } = cast, form = currentSwordForm(cast);
+    const t = cast.age / artDuration(art, cast.full);
+    const power = form.qi >= 100 ? 2 : form.qi >= 60 ? 1 : 0;
     const reach = h * (form.reach + (level - 1) * 0.15);
-    const color = SWORD_ARTS[art].color;
-    // 每套剑法只有一种构图语言；奥义增强同一构图，不轮播不相关图形。
-    // 垂直幅度受身高约束，防止宽战场上的圆阵长成遮满屏幕的车轮。
-    const line = (a, b, c, d, ink = color) => p.line(x + face * a, y + b, x + face * c, y + d, ink);
-    const arc = (cx, rx, ry, start, span, ink = color) => {
-        for (let i = 0; i < 24; i++) {
-            const a = start + span * i / 24, b = start + span * (i + 1) / 24;
-            line(cx + Math.cos(a) * rx, Math.sin(a) * ry, cx + Math.cos(b) * rx, Math.sin(b) * ry, ink);
+    const color = SWORD_ARTS[art].color, white = 0xfff7df;
+    const clamp = (v) => Math.max(0, Math.min(1, v));
+    const fade = 1 - clamp((t - 0.62) / 0.38);
+    const shade = (ink, brightness) => {
+        const bg = 0x171c23;
+        const mix = (shift) => Math.round(((bg >> shift) & 255) * (1 - brightness)
+            + ((ink >> shift) & 255) * brightness);
+        return (mix(16) << 16) | (mix(8) << 8) | mix(0);
+    };
+    const line = (a, b, ink) => p.line(x + face * a[0], y + a[1], x + face * b[0], y + b[1], ink);
+    const fill = (points, ink) => {
+        const lo = Math.min(...points.map(v => v[1])), hi = Math.max(...points.map(v => v[1]));
+        const step = h / 80;
+        for (let yy = lo + step / 2; yy < hi; yy += step) {
+            const cuts = [];
+            for (let i = 0; i < points.length; i++) {
+                const a = points[i], b = points[(i + 1) % points.length];
+                if ((a[1] <= yy && b[1] > yy) || (b[1] <= yy && a[1] > yy))
+                    cuts.push(a[0] + (yy - a[1]) / (b[1] - a[1]) * (b[0] - a[0]));
+            }
+            cuts.sort((a, b) => a - b);
+            for (let i = 0; i + 1 < cuts.length; i += 2)
+                line([cuts[i], yy], [cuts[i + 1], yy], ink);
         }
     };
-    const grow = Math.min(1, t * 5), fade = Math.max(0, (t - 0.7) / 0.3);
-    // 出鞘闪光：所有剑招共用的一记起手亮环，先读到"技能出手了"，再读是哪一种。
-    if (t < 0.2) {
-        const r = h * (0.22 + t * 1.9);
-        arc(0, r, r * 0.8, 0, Math.PI * 2, 0xfff6dd);
-    }
-    // 奥义落地气浪：沿地面向两侧推开一圈，给统一收招补上重量感。
-    if (cast.full) {
-        const wave = reach * 1.35 * Math.min(1, t * 1.4);
-        const feet = h * 0.5;
-        for (const s of [-1, 1]) {
-            p.line(x + s * wave * 0.45, y + feet, x + s * wave, y + feet, color);
-            p.line(x + s * wave * 0.8, y + feet, x + s * wave * 1.08, y + feet, 0xfff0c7);
+    const blade = (a, b, width, ink, core = white) => {
+        const dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy);
+        if (len < h * 0.04 || width < h * 0.008)
+            return;
+        const nx = -dy / len, ny = dx / len;
+        const shape = (w) => [a,
+            [a[0] + dx * 0.35 + nx * w, a[1] + dy * 0.35 + ny * w], b,
+            [a[0] + dx * 0.25 - nx * w * 0.45, a[1] + dy * 0.25 - ny * w * 0.45]];
+        fill(shape(width * 1.7), shade(ink, 0.25 * fade));
+        fill(shape(width), shade(ink, 0.8 * fade));
+        line([a[0] + dx * 0.3, a[1] + dy * 0.3], b, shade(core, fade));
+    };
+    const crescent = (cx, rx, ry, start, span, thickness, ink) => {
+        const outer = [], inner = [];
+        for (let i = 0; i <= 24; i++) {
+            const u = i / 24, a = start + span * u, taper = Math.sin(Math.PI * u);
+            outer.push([cx + Math.cos(a) * rx, Math.sin(a) * ry]);
+            inner.unshift([cx + Math.cos(a) * (rx - thickness * taper),
+                Math.sin(a) * (ry - thickness * 0.45 * taper)]);
         }
-        // 四连节拍：每个伤害脉冲的起点亮一记白环，把"奥义连打四段"的鼓点敲出来。
-        const beat = (cast.age % 0.3) / 0.3;
-        if (beat < 0.25) {
-            const r = reach * (0.35 + beat * 2.2);
-            arc(0, r, r * 0.7, 0, Math.PI * 2, 0xfff6dd);
+        fill([...outer, ...inner], shade(ink, fade));
+        for (let i = 9; i < 19; i++)
+            line(outer[i], outer[i + 1], shade(white, fade * 0.8));
+    };
+    const index = cast.formIndex ?? (cast.full ? SWORD_FORMS[art].length - 1 : 0);
+    // 弯曲的带状笔触，和实体飞剑、月牙轮廓分别建模；不能再共用一个大三角。
+    const ribbon = (points, width, ink) => {
+        const left = [], right = [];
+        for (let i = 0; i < points.length; i++) {
+            const a = points[Math.max(0, i - 1)], b = points[Math.min(points.length - 1, i + 1)], c = points[i];
+            const len = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+            const w = width * Math.pow(Math.sin(Math.PI * i / (points.length - 1)), 0.7);
+            const nx = -(b[1] - a[1]) / len, ny = (b[0] - a[0]) / len;
+            left.push([c[0] + nx * w, c[1] + ny * w]);
+            right.unshift([c[0] - nx * w * 0.45, c[1] - ny * w * 0.45]);
         }
+        fill([...left, ...right], shade(ink, fade));
+        for (let i = 6; i < points.length - 3; i++)
+            line(points[i], points[i + 1], shade(ink === 0x526875 ? 0x819398 : white, fade * 0.7));
+    };
+    const curve = (fn, width, ink) => ribbon(Array.from({ length: 33 }, (_, i) => fn(i / 32)), width, ink);
+    const seal = (cx, cy, r, ink) => {
+        const pts = Array.from({ length: 13 }, (_, i) => [cx + Math.cos(i * Math.PI / 6) * r, cy + Math.sin(i * Math.PI / 6) * r]);
+        fill(pts, shade(ink, fade));
+    };
+    // 剑身带护手；指劲则使用连续光波。两者不能只是换色的三角形。
+    const sword = (cx, cy, angle, length) => {
+        const dx = Math.cos(angle), dy = Math.sin(angle);
+        blade([cx - dx * length, cy - dy * length], [cx, cy], h * 0.045, color);
+        const gx = cx - dx * length * 0.8, gy = cy - dy * length * 0.8;
+        line([gx - dy * h * 0.09, gy + dx * h * 0.09], [gx + dy * h * 0.09, gy - dx * h * 0.09], shade(color, fade));
+    };
+    const motif = () => {
+        switch (form.shape) {
+            case 'thrust': {
+                const tip = reach * (0.2 + clamp(t * 3) * 0.8);
+                if (index === 1) {
+                    // 破剑：贴身斜截，再反向挑开；两道干净剑痕，不挂一柄巨型短剑。
+                    const turn = clamp(t * 2.5);
+                    curve(u => [h * 0.2 + u * tip * 0.8, h * (-0.42 + u * 0.7 - Math.sin(u * Math.PI) * 0.12)], h * 0.035, color);
+                    curve(u => [h * 0.3 + u * tip, h * (0.34 - u * 0.58) * turn], h * 0.055, 0xffebbc);
+                    const cx = tip * 0.48;
+                    for (const s of [-1, 1])
+                        line([cx, 0], [cx + s * h * 0.12, -h * 0.17], shade(color, fade * 0.75));
+                }
+                else {
+                    // 破枪：沿枪杆一线穿入，末端挑开，尾迹是窄线而非长菱形。
+                    const tail = h * 0.18 + reach * clamp((t - 0.45) * 1.2);
+                    curve(u => [tail + (tip - tail) * u, h * (0.04 - u * 0.09)], h * 0.023, 0xffebbc);
+                    line([tip * 0.12, h * 0.1], [tip * 0.65, h * 0.07], shade(color, fade * 0.5));
+                    line([tip * 0.35, -h * 0.1], [tip * 0.86, -h * 0.1], shade(color, fade * 0.45));
+                    // 一点星芒示意破入，避免尖端弯钩/鱼形轮廓。
+                    line([tip - h * 0.09, -h * 0.05], [tip + h * 0.09, -h * 0.05], shade(white, fade));
+                    line([tip, -h * 0.14], [tip, h * 0.04], shade(color, fade));
+                }
+                break;
+            }
+            case 'fan': {
+                const closing = index % 2 === 1;
+                for (let i = -1; i <= 1; i++) {
+                    const tip = reach * (0.25 + t * 0.7), spread = h * (closing ? 0.65 - t * 0.4 : 0.1 + t * 0.6);
+                    const cy = i * spread;
+                    sword(tip - Math.abs(i) * h * 0.25, cy, i * (closing ? -0.12 : 0.2), h * 0.7);
+                    line([tip * 0.25, i * h * 0.05], [tip - h * 0.75, cy], shade(color, fade * 0.4));
+                }
+                break;
+            }
+            case 'sweep':
+                crescent(form.radial ? 0 : reach * 0.35, reach * (form.radial ? 1 : 0.65), h * 0.35, -Math.PI + t * Math.PI * (index % 2 ? -1 : 1), Math.PI * 1.25, h * 0.14, color);
+                break;
+            case 'ring':
+                for (let side = 0; side < 2; side++) {
+                    const a = t * Math.PI * (index % 2 ? -2 : 2) + side * Math.PI;
+                    const r = reach * (0.85 - t * 0.25);
+                    crescent(0, r, h * 0.5, a, Math.PI * 0.65, h * 0.07, side ? shade(color, 0.6) : color);
+                    sword(Math.cos(a) * r, Math.sin(a) * h * 0.5, a + Math.PI / 2, h * 0.6);
+                }
+                break;
+            case 'rain':
+                for (let i = 0; i < 5; i++) {
+                    const u = clamp((t - (i % 3) * 0.06) * 1.7), cx = (form.radial ? i / 4 * 1.8 - 0.9 : i / 4) * reach;
+                    const tip = -h * 0.65 + u * h * 1.15;
+                    sword(cx, tip, Math.PI / 2, h * 0.56);
+                    line([cx - h * 0.16, h * 0.5], [cx + h * 0.16, h * 0.5], shade(color, fade * (u > 0.8 ? 0.8 : 0.25)));
+                }
+                break;
+            case 'crescent':
+                crescent(reach * (0.15 + t * 0.7), h * 0.48, h * 0.66, -1.5, 3, h * 0.18, color);
+                break;
+        }
+    };
+    // 独孤收势归于一线；其他门派保持自己的笔触，不再全部套同一记白色突刺。
+    if (art === 'dugu' && cast.full && t > 0.72) {
+        blade([h * 0.15, h * 0.06], [reach, 0], h * 0.1 * Math.sin(Math.PI * (t - 0.72) / 0.28), color);
+        return;
     }
     if (art === 'dugu') {
-        // 金色剑痕从不同角度聚向同一破绽，九剑归一收束成一线。
-        const count = [2, 4, 9][power];
-        const tip = reach * grow;
-        for (let i = 0; i < count; i++) {
-            const offset = (i / (count - 1) - 0.5) * h * (1 - t) * 0.85;
-            line(tip * (0.12 + fade * 0.72), offset, tip, 0);
-        }
-        line(tip * 0.7, 0, tip, 0, 0xfff0c7);
-        // 奥义：剑尖聚合处炸开一圈放射星芒 —— "万剑归一点"的定格。
-        if (power === 2)
-            for (let i = 0; i < 8; i++) {
-                const a = i / 8 * Math.PI * 2;
-                line(tip + Math.cos(a) * h * 0.1, Math.sin(a) * h * 0.1, tip + Math.cos(a) * h * 0.34, Math.sin(a) * h * 0.34, 0xfff0c7);
-            }
+        motif();
     }
     else if (art === 'liumai') {
-        // 六脉是平行、纤细的青色指劲，不画实体剑或剑雨。
-        const count = [1, 3, 6][power];
-        for (let i = 0; i < count; i++) {
-            const offset = (i - (count - 1) / 2) * h * 0.13;
-            const end = reach * Math.min(1, grow * (1 - i * 0.025));
-            line(h * 0.2 + fade * end * 0.75, offset, end, offset);
-            line(end - h * 0.2, offset, end, offset, 0xd7ffff);
-            // 奥义：每道指劲的落点炸一朵十字星花。
-            if (power === 2) {
-                line(end - h * 0.13, offset - h * 0.13, end + h * 0.13, offset + h * 0.13, 0xd7ffff);
-                line(end - h * 0.13, offset + h * 0.13, end + h * 0.13, offset - h * 0.13, 0xd7ffff);
+        if (index === 0 || index === 2) {
+            // 少商是直贯光波，中冲以窄芯穿透；光波连接手指，不是飞剑。
+            const tip = reach * clamp(t * 4), width = h * (index === 0 ? 0.09 : 0.045) * Math.sin(Math.PI * t);
+            fill([[h * 0.2, -width], [tip, -width * 0.5], [tip + h * 0.14, 0], [tip, width * 0.5], [h * 0.2, width]], shade(color, fade));
+            line([h * 0.2, 0], [tip, 0], shade(0xe6ffff, fade));
+            if (index === 2)
+                for (const s of [-1, 1])
+                    line([tip * 0.35, s * h * 0.13], [tip, s * h * 0.04], shade(color, fade * 0.5));
+        }
+        else if (index === 1) {
+            // 商阳点射：两个短促脉冲前后追逐。
+            for (let i = 0; i < 2; i++) {
+                const u = clamp((t - i * 0.15) * 1.4), tip = reach * (0.15 + u * 0.8);
+                blade([tip - h * 0.5, -i * h * 0.07], [tip, -i * h * 0.07], h * 0.035, color, 0xe6ffff);
+            }
+        }
+        else if (index === 3) {
+            for (let i = -1; i <= 1; i++) {
+                const tip = reach * (0.2 + t * 0.75);
+                blade([h * 0.2, 0], [tip, i * h * (0.15 + t * 0.55)], h * 0.04, color, 0xe6ffff);
+            }
+        }
+        else if (index === 4) {
+            // 少冲：指劲绕行，只有脉冲节点，没有飞剑护手。
+            for (let i = 0; i < 4; i++) {
+                const a = t * 5 + i * Math.PI / 2, cx = Math.cos(a) * reach * 0.8, cy = Math.sin(a) * h * 0.42;
+                curve(u => [Math.cos(a - u * 0.65) * reach * 0.8, Math.sin(a - u * 0.65) * h * 0.42], h * 0.018, color);
+                seal(cx, cy, h * 0.035, 0xc9ffff);
+            }
+        }
+        else {
+            // 少泽：细长光剑依次落下，保留落阵辨识，区别于万剑的实体剑身。
+            for (let i = 0; i < 5; i++) {
+                const u = clamp((t - (i % 3) * 0.075) * 1.8), cx = (i / 4 * 1.8 - 0.9) * reach;
+                const tip = -h * 0.6 + u * h * 1.1;
+                blade([cx, tip - h * 0.65], [cx, tip], h * 0.026, color, 0xdfffff);
+                if (u > 0.65)
+                    curve(v => [cx + (v - 0.5) * h * 0.65, h * (0.46 - Math.sin(v * Math.PI) * 0.07)], h * 0.016, color);
             }
         }
     }
     else if (art === 'taiji') {
-        // 阴阳两条相抱的低扁弧，缓旋后合拢，没有放射状剑刺。
-        const r = reach * (0.6 + grow * 0.4) * (1 - fade * 0.2);
-        for (let side = 0; side < 2; side++) {
-            const a = side * Math.PI + t * Math.PI * 0.8;
-            arc(0, r, h * (0.32 + power * 0.1), a, Math.PI * 0.85, side ? 0xe9e6ff : color);
-            if (power > 0)
-                arc(0, r * 0.78, h * 0.25, a + 0.15, Math.PI * 0.65);
-        }
-        // 奥义：外围再加一圈四段旋转罡气，太极图外有剑阵。
-        if (power === 2)
-            for (let k = 0; k < 4; k++) {
-                const a = k * Math.PI / 2 + t * Math.PI * 1.6;
-                arc(0, r * 1.35, h * 0.52, a, Math.PI * 0.3, k % 2 ? 0xe9e6ff : color);
+        const yin = 0x526875, yang = 0xe3e8d9, motion = t * Math.PI;
+        // 九式分别是引流、展翼、托月、回雪、游龙、合璧、云瀑、两仪、归元。
+        // 水墨柔带贯穿整套，但不复用飞剑/扇射/剑雨模板。
+        switch (index) {
+            case 0:
+                curve(u => [(u - 0.5) * reach * 1.7, h * (0.2 + Math.sin(u * Math.PI * 2 + motion) * 0.18)], h * 0.085, yin);
+                curve(u => [(u - 0.5) * reach * 1.5, h * (-0.06 + Math.sin(u * Math.PI * 2 + motion) * 0.16)], h * 0.035, yang);
+                break;
+            case 1:
+                for (const s of [-1, 1])
+                    curve(u => [reach * u * 0.95, s * h * (Math.sin(u * Math.PI * 0.8) * (0.45 + t * 0.18))], h * 0.07, s > 0 ? yin : yang);
+                break;
+            case 2:
+                curve(u => [(u - 0.5) * reach * 1.8, h * (0.38 - Math.pow(u * 2 - 1, 2) * 0.64)], h * 0.09, yang);
+                seal(reach * (t - 0.5), -h * 0.12, h * 0.11, yin);
+                break;
+            case 3:
+                for (const s of [-1, 1])
+                    curve(u => [s * reach * 0.42 + Math.cos(u * Math.PI * 2 + s * motion) * reach * 0.38 * (1 - u * 0.8),
+                        Math.sin(u * Math.PI * 2 + s * motion) * h * 0.42 * (1 - u * 0.65)], h * 0.065, s > 0 ? yang : yin);
+                break;
+            case 4:
+                curve(u => [u * reach, h * Math.sin(u * Math.PI * 2 - motion) * (0.32 - u * 0.18)], h * 0.095, yang);
+                curve(u => [u * reach * 0.9, h * (Math.sin(u * Math.PI * 2 - motion) * 0.26 + 0.12)], h * 0.045, yin);
+                break;
+            case 5:
+                for (const s of [-1, 1])
+                    curve(u => [s * reach * (0.85 - clamp(t * 1.1) * 0.5) * Math.sin(u * Math.PI),
+                        h * (u - 0.5) * 1.1], h * 0.11, s > 0 ? yang : yin);
+                break;
+            case 6:
+                for (let i = 0; i < 3; i++)
+                    curve(u => [(i - 1) * reach * 0.65 + Math.sin(u * Math.PI * 1.4 + motion) * reach * 0.18,
+                        h * (-0.8 + u * 1.25)], h * 0.07, i === 1 ? yang : yin);
+                break;
+            case 7:
+                curve(u => [Math.sin(u * Math.PI * 2 + motion) * reach * 0.85,
+                    Math.sin(u * Math.PI * 4 + motion * 2) * h * 0.38], h * 0.075, yang);
+                curve(u => [Math.sin(u * Math.PI * 2 - motion) * reach * 0.6,
+                    Math.sin(u * Math.PI * 4 - motion * 2) * h * 0.25], h * 0.05, yin);
+                break;
+            default: {
+                const r = h * (0.68 - t * 0.28), cx = reach * (0.15 + t * 0.3);
+                for (const s of [-1, 1]) {
+                    curve(u => [cx + Math.cos(u * Math.PI + motion + (s < 0 ? Math.PI : 0)) * r,
+                        Math.sin(u * Math.PI + motion + (s < 0 ? Math.PI : 0)) * r], h * 0.1, s > 0 ? yang : yin);
+                    seal(cx + s * Math.cos(motion) * r * 0.4, s * Math.sin(motion) * r * 0.4, h * 0.07, s > 0 ? yin : yang);
+                }
+                curve(u => [(u - 0.5) * reach * 1.7, h * (0.48 - Math.sin(u * Math.PI) * 0.1)], h * 0.025, yin);
             }
+        }
     }
     else if (art === 'feixian') {
-        // 飞仙只留一条斜贯长空的剑光和细尾迹。
-        const end = reach * grow, start = end * fade * 0.8;
-        line(start, -h * 0.8 + start / reach * h, end, -h * 0.8 + end / reach * h, 0xf3fcff);
-        for (let i = 1; i <= power + 1; i++)
-            line(start + h * 0.15, -h * 0.8 + start / reach * h - i * h * 0.045, end * 0.8, -h * 0.8 + end / reach * h * 0.8 - i * h * 0.045);
-        // 奥义：主剑光身后拖两道平行的残影，像同一剑被时光重放了两次。
-        if (power === 2)
-            for (let k = 1; k <= 2; k++) {
-                const d = k * h * 0.32;
-                line(start - d, -h * 0.8 + (start - d) / reach * h, end - d, -h * 0.8 + (end - d) / reach * h);
-            }
+        // 飞仙是轻薄羽锋与凌空斜落，绝不画成万剑的横向整排实体剑。
+        const falling = [4, 6, 8].includes(index), reverse = index === 2 || index === 5;
+        const tip = reach * (0.4 + clamp(t * 2.2) * 0.6);
+        const path = (u) => [reverse ? Math.sin(u * Math.PI) * tip : u * tip,
+            h * (index === 1 ? -0.18 + Math.sin(u * Math.PI) * 0.16
+                : index === 3 ? 0.36 - u * 1.12
+                    : index === 5 ? -0.65 + u * 0.9
+                        : falling ? -0.85 + u * 1.2 : 0.28 - Math.sin(u * Math.PI * 0.7) * 1.05)];
+        curve(path, h * (index === 8 ? 0.065 : 0.04), 0xe4f4ff);
+        const feathers = 3 + index % 3;
+        for (let i = 0; i < feathers; i++) {
+            const u = 0.2 + i * 0.13, a = path(u), b = path(Math.min(1, u + 0.2));
+            curve(v => [a[0] + (b[0] - a[0]) * v - Math.sin(v * Math.PI) * h * 0.25,
+                a[1] + (b[1] - a[1]) * v - Math.sin(v * Math.PI) * h * (0.18 + (index % 3) * 0.06)], h * 0.025, 0x8faec9);
+        }
+        if (index === 7)
+            curve(u => [reach * (0.2 + u * 0.7), -h * 0.65 + Math.sin(u * Math.PI) * h * 0.5], h * 0.025, white);
     }
     else if (art === 'wanjian') {
-        // 剑雨分列落下，短剑体、低高度，明确区别于飞仙的单道斜斩。
-        const count = [5, 9, 13][power];
+        // 万剑独占有护手的实体剑阵：列阵、护身、三才、汇流、回鞘、落阵、星斗、穿云、朝宗。
+        const count = index === 2 ? 3 : 5;
         for (let i = 0; i < count; i++) {
-            const cx = (i / (count - 1) - 0.5) * reach * 2;
-            const fall = Math.max(0, Math.min(1, (t - (i % 3) * 0.07) * 1.7));
-            const cy = h * (-0.8 + fall * 1.05);
-            line(cx, cy - h * 0.3, cx, cy);
-            line(cx - h * 0.07, cy - h * 0.24, cx + h * 0.07, cy - h * 0.24);
-            // 奥义：剑落到底时钉出一横接地刻痕，剑阵是真的"扎"进了地里。
-            if (power === 2 && fall > 0.92)
-                line(cx - h * 0.14, cy, cx + h * 0.14, cy, 0xfff0c7);
+            const lane = i / (count - 1) - 0.5, a = i * Math.PI * 2 / count + t * 2;
+            let cx, cy, angle;
+            if (index === 0 || index === 6) {
+                cx = lane * reach * 1.6;
+                cy = -h * (0.12 + Math.cos(lane * Math.PI) * (index === 6 ? 0.55 : 0.3));
+                angle = -Math.PI / 2;
+            }
+            else if (index === 1 || index === 4) {
+                cx = Math.cos(a) * reach * (index === 4 ? 0.9 - t * 0.55 : 0.72);
+                cy = Math.sin(a) * h * 0.4;
+                angle = a + Math.PI / 2;
+            }
+            else if (index === 5 || index === 8) {
+                const fall = clamp((t - (i % 3) * 0.08) * 1.8);
+                cx = lane * reach * 1.6;
+                cy = -h * 0.55 + fall * h;
+                angle = Math.PI / 2;
+                if (index === 8)
+                    cx *= 1 - t * 0.35;
+            }
+            else {
+                cx = reach * (0.15 + t * 0.75) - Math.abs(lane) * h;
+                cy = lane * h * (index === 3 ? 1.2 - t : index === 7 ? 0.45 : 1.1);
+                angle = index === 3 ? -lane * 0.4 : lane * 0.15;
+            }
+            sword(cx, cy, angle, h * (index === 7 ? 0.85 : 0.62));
+            if (index === 0 || index === 6)
+                seal(cx, h * 0.48, h * 0.025, color);
         }
     }
     else if (art === 'getsuga') {
-        const cx = reach * (0.1 + t * 0.75), rx = h * (0.25 + power * 0.07);
-        for (let i = 0; i <= power + 1; i++)
-            arc(cx - i * h * 0.075, rx, h * (0.5 + power * 0.1), -1.3, 2.6, i ? color : 0xd7edff);
-        // 奥义：最外层再推一圈更大的回声月牙，冲击波有"厚度"。
-        if (power === 2)
-            arc(cx * 1.3, rx * 1.55, h * 0.78, -1.05, 2.1, 0xd7edff);
+        // 月牙只有厚重月刃与深蓝内核；横月、回月、裂空、双弦、落月改变切面。
+        const cx = index === 2 ? reach * (0.8 - t * 0.65) : reach * (0.1 + t * 0.75);
+        const horizontal = [1, 4, 8].includes(index), falling = index === 7;
+        const rx = h * (horizontal ? 1.1 : 0.4 + power * 0.06), ry = h * (horizontal ? 0.25 : 0.55 + power * 0.04);
+        const start = index === 8 ? -Math.PI + t * 1.4 : index === 6 ? -2.2 + t * 0.7
+            : horizontal ? -Math.PI : falling ? -2.5 : -1.5, span = horizontal ? Math.PI : 3;
+        crescent(cx, rx, ry, start, span, h * 0.22, 0x74a4ff);
+        crescent(cx - h * 0.055, rx * 0.9, ry * 0.9, start, span, h * 0.14, 0x25395e);
+        if (index === 5)
+            crescent(cx - h * 0.55, rx * 0.7, ry * 0.7, -1.8, 3, h * 0.16, color);
+        if (index === 3 || index === 6)
+            for (const s of [-1, 1])
+                curve(u => [cx - h * (0.8 - u * 0.6), s * h * (0.1 + u * 0.28)], h * 0.045, 0x4963a2);
     }
     else {
-        // 火焰是有缺口的横扫弧与短余烬，不是完整的发光车轮。
-        const start = -Math.PI + t * Math.PI * 1.5, span = Math.PI * (0.75 + power * 0.15);
-        arc(0, reach * grow, h * 0.5, start, span);
-        arc(0, reach * grow * 0.88, h * 0.38, start + 0.1, span * 0.85, 0xffd389);
-        // 奥义：最外层一道白热火舌，火轮有了"刃口"。
-        if (power === 2)
-            arc(0, reach * grow * 1.14, h * 0.62, start - 0.06, span * 1.04, 0xffe9c8);
-        for (let i = 0; i < 3 + power * 2; i++) {
-            const a = start + span * i / (3 + power * 2);
-            const cx = Math.cos(a) * reach * grow, cy = Math.sin(a) * h * 0.5;
-            line(cx, cy, cx - h * 0.12, cy - h * (0.1 + (i % 2) * 0.08), 0xff623d);
+        // 日轮：橙红火舌、金色火芯、离散余烬，不借用月牙或普通剑阵。
+        const path = (u) => {
+            if (index === 5)
+                return [u * reach, Math.sin(u * Math.PI * 2 - t * 4) * h * 0.1];
+            if (index === 7)
+                return [u * reach, h * (-0.65 + u * 1.05)];
+            if (index === 1)
+                return [reach * (0.2 + u * 0.65), h * (0.36 - Math.sin(u * Math.PI * 0.8) * 1.05)];
+            if (index === 6)
+                return [reach * (0.3 + Math.cos(u * Math.PI * 1.8 + t) * 0.4), h * Math.sin(u * Math.PI * 1.8 + t) * 0.6];
+            const a = -Math.PI + u * Math.PI * (index === 4 ? 1.1 : 1.7) + t * (index === 3 ? -3 : 2);
+            return [Math.cos(a) * reach * (index === 2 ? 0.6 : 0.8), Math.sin(a) * h * (0.38 + index * 0.014)];
+        };
+        curve(path, h * 0.11, 0xe85536);
+        curve(path, h * 0.038, 0xffcb75);
+        for (let i = 0; i < 6; i++) {
+            const a = path((i + 1) / 8), b = path((i + 1.65) / 8);
+            curve(u => [a[0] + (b[0] - a[0]) * u - Math.sin(u * Math.PI) * h * 0.16,
+                a[1] + (b[1] - a[1]) * u - Math.sin(u * Math.PI) * h * (0.15 + (i % 2) * 0.08)], h * 0.035, i % 2 ? 0xffb35d : 0xf16c3e);
+            if (i % 2 === 0)
+                seal(a[0] - h * t * 0.2, a[1] - h * (0.18 + t * 0.12), h * 0.022, 0xffd281);
         }
     }
 }
@@ -213,7 +431,17 @@ export function paintSwordArt(p, cast, h) {
 export function paintBossPressure(p, w) {
     const h = w.fh;
     for (const e of w.enemies)
-        if (e.tag === 'boss') {
+        if (e.tag === 'boss' || e.duelist) {
+            if (e.enemyCast)
+                paintSwordArt({ ...p, line: (x0, y0, x1, y1, ink) => {
+                        const light = Math.max((ink >> 16) & 255, (ink >> 8) & 255, ink & 255) / 255;
+                        const tint = light > 0.93 ? 0xffd4c6 : (Math.round(240 * light) << 16) | (Math.round(128 * light) << 8) | Math.round(121 * light);
+                        p.line(x0, y0, x1, y1, tint);
+                    } }, e.enemyCast, h);
+            if ((e.guard ?? 0) > 0) {
+                const cx = e.x + e.face * h * 0.4;
+                p.line(cx, e.y - h * 0.9, cx + e.face * h * 0.12, e.y - h * 0.35, 0x8fd7de);
+            }
             const cells = Math.min(10, e.maxHp ?? 5), filled = Math.ceil(e.hp / (e.maxHp ?? 5) * cells), unit = h * 1.5 / cells;
             for (let i = 0; i < cells; i++)
                 p.line(e.x - h * 0.7 + i * unit, e.y - e.h * 1.14, e.x - h * 0.7 + (i + 0.7) * unit, e.y - e.h * 1.14, i < filled ? 0xff785c : 0x453b45);
@@ -223,13 +451,27 @@ export function paintBossPressure(p, w) {
                     p.line(e.x + Math.cos(a) * r, e.y - h * 0.5 + Math.sin(a) * r * 0.6, e.x + Math.cos(a) * (r + h * 0.3), e.y - h * 0.5 + Math.sin(a) * (r + h * 0.3) * 0.6, 0xfff0c7);
                 }
             if (e.windup >= 0) {
-                if (e.quakeX !== undefined)
+                if (e.duelist) {
+                    const next = duelistFormFor(e), form = SWORD_FORMS[next.art][next.formIndex], reach = form.reach * h;
+                    const start = e.x - (form.radial ? reach : 0), end = e.x + (form.radial ? reach : e.face * reach);
+                    p.line(start, w.ground - 0.6, end, w.ground - 0.6, 0xff674b);
+                    if (form.shape === 'rain')
+                        for (let i = 0; i < 5; i++) {
+                            const cx = e.x + (i / 4 * 1.8 - 0.9) * reach;
+                            p.line(cx, w.ground - h * 0.12, cx, w.ground - 0.6, 0xffc38b);
+                        }
+                    else
+                        p.line(e.x, e.y - h * 0.55, e.x + e.face * h * 0.8, e.y - h * 0.55, 0xffc38b);
+                }
+                else if (e.quakeX !== undefined)
                     for (const offset of bossQuakeOffsets(e)) {
                         const cx = Math.max(0, Math.min(w.w, e.quakeX + offset * h * 1.5));
                         p.line(cx - h * 0.48, w.ground - 0.6, cx + h * 0.48, w.ground - 0.6, 0xff674b);
                     }
-                else
-                    p.line(e.x, w.ground - 0.6, e.x + e.face * h * (bossPhase(e.hp, e.maxHp) > 1 ? 3 : 1.4), w.ground - 0.6, 0xff674b);
+                else {
+                    const reach = bossPhase(e.hp, e.maxHp) > 1 ? 3 : 1.4;
+                    p.line(e.x, w.ground - 0.6, e.x + e.face * h * reach, w.ground - 0.6, 0xff674b);
+                }
             }
         }
     for (const hazard of w.hazards) {

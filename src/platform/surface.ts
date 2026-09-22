@@ -13,7 +13,10 @@ export class PlaySurface {
     game.setDisplay(displayRows, target.tier);
     const help = game.showingInstructions;
     const width = Math.max(0, screenCols - 1);
-    const gameLeft = Math.max(1, screenCols - target.cols);
+    if (width === 0) return '';
+    if (target.cols > width || target.rows > displayRows)
+      target.resize(Math.min(target.cols, width), Math.min(target.rows, displayRows));
+    const gameLeft = 1;
     const mode = [screenTop, screenCols, displayRows, target.cols, target.rows, help].join(':');
     let clear = '';
     if (mode !== this.lastMode) {
@@ -26,8 +29,8 @@ export class PlaySurface {
     // An opaque Kitty image would cover text instructions even if those bytes follow the image.
     // Help owns plain text cells, not a blank image placement.
     const body = help ? (target.tier === 'graphics' ? target.disposeSeq() : '') : target.encode(screenTop, gameLeft);
-    const left = 1;
-    const available = help ? width : Math.max(0, gameLeft - 3);
+    const left = help ? 1 : target.cols + 3;
+    const available = help ? width : Math.max(0, Math.min(28, target.cols, width - left + 1));
     const lines = game.panelRows(available, displayRows);
     // Controls are text, not pixels. Clear previous text with padded rows on every content change.
     const panel = available === 0 ? '' : Array.from({ length: displayRows }, (_, i) => lines[i] ?? '').map((line, i) =>

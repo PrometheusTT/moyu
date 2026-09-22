@@ -54,7 +54,7 @@ export type PixelTarget = {
 
   /**
    * 一帧的字节。`screenTop` 是画布第一行在**真实屏幕**上的行号（1-based）；
-   * `screenLeft` 是左边缘（1-based，默认1）；宿主在左侧留出 HUD。
+   * `screenLeft` 是左边缘（1-based，默认1），由宿主布局决定。
    * 没有任何变化时返回 `''`（一个字节都不发）。
    */
   encode(screenTop: number, screenLeft?: number): string;

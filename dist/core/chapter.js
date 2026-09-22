@@ -41,6 +41,7 @@ export class ChapterDirector {
     chapterKills = 0;
     chapterBest = 0;
     saved = null;
+    encounterSpawned = false;
     chapter = 1;
     activeStep = 0;
     result = null;
@@ -66,6 +67,16 @@ export class ChapterDirector {
         }
         if (this.result !== null)
             return false;
+        if (this.activeStep >= PINCER_END && !this.encounterSpawned) {
+            if (this.chapter % 9 === 0)
+                this.encounterSpawned = world.spawnDuelist(this.side(this.chapter), this.chapter, true);
+            else if (this.chapter % 3 === 0)
+                this.encounterSpawned = world.spawnBoss(this.side(this.chapter), this.chapter);
+            else if (this.chapter % 5 === 0)
+                this.encounterSpawned = world.spawnDuelist(this.side(this.chapter), this.chapter);
+            else
+                this.encounterSpawned = true;
+        }
         if (this.activeStep < CHAPTER_STEPS)
             this.schedule(world);
         const killsBefore = world.kills;
@@ -75,7 +86,7 @@ export class ChapterDirector {
         this.chapterBest = Math.max(this.chapterBest, world.stepComboPeak);
         this.activeStep = Math.min(CHAPTER_STEPS, this.activeStep + 1);
         // 三十秒是出怪日程的终点。加时清场仍模拟、仍计分，绝不移除幸存敌人。
-        if (this.activeStep === CHAPTER_STEPS && world.enemies.length === 0 && world.respawn <= 0
+        if (this.activeStep === CHAPTER_STEPS && this.encounterSpawned && world.enemies.length === 0 && world.respawn <= 0
             && world.swordCast === null)
             this.finish(world);
         return true;
@@ -109,6 +120,7 @@ export class ChapterDirector {
         this.chapter = checkpoint.completed;
         this.activeStep = CHAPTER_STEPS;
         this.result = checkpoint.result;
+        this.encounterSpawned = true;
         this.saved = checkpoint;
         world.biome = (this.chapter - 1) % CHAPTER_COUNT;
         world.beginChapter();
@@ -124,6 +136,7 @@ export class ChapterDirector {
             world.rng.restore(this.saved.rngState);
         this.activeStep = 0;
         this.result = null;
+        this.encounterSpawned = false;
         this.chapterKills = 0;
         this.chapterBest = 0;
         // 第一刀面前直接放两人：不是等 AI 偶然挤在一起，而是一开始就明确给一次多杀机会。
@@ -160,11 +173,8 @@ export class ChapterDirector {
         }
         if (step >= PINCER_END) {
             const offset = step - PINCER_END;
-            // 每 3 章（第 3/6/9 章）的收尾段是 boss 战：开头挤出一个 boss（spawnBoss 满场会腾位，
-            // 保证一定出现），之后不再刷 fill —— 让玩家专心打 boss。第 1/4 章 %3≠0，日程断言不受影响。
-            if (this.chapter % 3 === 0) {
-                if (offset === 0)
-                    world.spawnBoss(this.side(this.chapter), this.chapter);
+            // 收尾对决交由 step 等待空位；停止普通刷怪，战斗本身不限时。
+            if (this.chapter % 3 === 0 || this.chapter % 5 === 0) {
                 return;
             }
             const interval = 150 - pressure * 15;

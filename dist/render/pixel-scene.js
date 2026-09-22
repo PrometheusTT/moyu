@@ -131,7 +131,7 @@ export function paintPixelWorld(c, world, context, previous, result = false, sce
         const body = interpolateFighter(fighter, previous?.get(fighter), context.interpolation);
         const blink = body.invuln > 0 && Math.floor(body.invuln * 18) % 2 === 0;
         // 变种本色：快刀手偏亮、重甲偏暗、boss 按阶段变色；其余走 foe。
-        let foeBase = body.tag === 'boss' ? bossColor(body.hp, body.maxHp)
+        let foeBase = body.duelist ? body.duelist === 'qingfeng' ? 0x7dcac8 : 0xb29aca : body.tag === 'boss' ? bossColor(body.hp, body.maxHp)
             : body.tag === 'brute' ? mix(palette.foe, palette.key, 0.4)
                 : body.tag === 'runner' ? mix(palette.foe, palette.hero, 0.3)
                     : palette.foe;
@@ -149,7 +149,7 @@ export function paintPixelWorld(c, world, context, previous, result = false, sce
         }
         drawBody(body, hero, base);
         // Boss 头顶小尖冠：强化"这是头目"的剪影辨识。
-        if (body.tag === 'boss') {
+        if (body.tag === 'boss' && !body.duelist) {
             const s = world.fh * 0.18;
             const topY = body.y - body.h * 0.74;
             const baseW = Math.max(2, Math.round(s * 2 * scale));

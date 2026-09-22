@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import type { GameInstance, GameModule } from '../../src/platform/types.ts';
 import { LogicalCanvas } from '../../src/platform/canvas.ts';
 import type { World } from '../../src/core/world.ts';
-import { freshCultivation } from '../../src/core/martial.ts';
+import { freshCultivation, freshFormProgress } from '../../src/core/martial.ts';
 
 function cartridge(id: string, create: GameModule['create']): GameModule {
   return {
@@ -332,9 +332,7 @@ test('two-row diff output stays lightweight enough for an SSH session', () => {
       bytes += size; peak = Math.max(peak, size);
     }
     assert.ok(bytes / 180 < 250, `cartridge ${game}: average diff grew to ${Math.round(bytes / 180)} bytes/frame`);
-    // 峰值预算给的是"多足生物同帧移动+碎裂"的爆发帧：敌人从火柴棍换成多节轮廓后，
-    // 一帧重绘的 cell 数上了一个台阶。800 字节 @15fps ≈ 12KB/s，SSH 仍然轻松。
-    assert.ok(peak < 800, `cartridge ${game}: a frame grew to ${peak} bytes`);
+    assert.ok(peak < 600, `cartridge ${game}: a frame grew to ${peak} bytes`);
     a.feed(Uint8Array.of(9));
   }
 });
@@ -367,6 +365,7 @@ test('Stick Slash restores legacy and v1 pre-checkpoint lifetime records', () =>
   legacy.restore?.({ kills: 7, bestCombo: 3 });
   assert.deepEqual(legacy.serialize?.(), {
     version: 2, kills: 7, bestCombo: 3, checkpoint: null, qi: 0,
+    formProgress: freshFormProgress(), selectedArt: 'dugu',
     cultivation: { ...freshCultivation(), insight: 7 },
   });
 
@@ -374,6 +373,7 @@ test('Stick Slash restores legacy and v1 pre-checkpoint lifetime records', () =>
   v1.restore?.({ version: 1, kills: 9, bestCombo: 4, checkpoint: null });
   assert.deepEqual(v1.serialize?.(), {
     version: 2, kills: 9, bestCombo: 4, checkpoint: null, qi: 0,
+    formProgress: freshFormProgress(), selectedArt: 'dugu',
     cultivation: { ...freshCultivation(), insight: 9 },
   });
 });

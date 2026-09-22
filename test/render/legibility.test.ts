@@ -231,7 +231,7 @@ test('斩击读得出来：整段挥刀是 3–8 个各自保持 ≥2 帧的关�
     }
     sigs.push(on.join(' '));
   }
-  assert.ok(sigs.length >= 8 && sigs.length <= 11, `320ms 快斩应有 8~11 个渲染帧，实际 ${sigs.length}`);
+  assert.ok(sigs.length >= 7 && sigs.length <= 9, `260ms 快斩应有 7~9 个渲染帧，实际 ${sigs.length}`);
 
   const id = new Map<string, number>();
   const runs: Array<{ id: number; n: number }> = [];

@@ -113,6 +113,8 @@ serialize?(): unknown;
 restore?(state: unknown): void;
 hud?(): string;
 combatHud?(rows: number): string[]; // 可选：简洁常驻摘要，不分页，不展示完整剑谱
+configureViewport?(width: number, height: number, tier: 'graphics' | 'braille' | 'half'): void;
+// 宿主绘制前传入目标像素尺寸；仅尺寸变化时更新，不能每帧重置游戏。render 本身仍保持纯绘制。
 details?(): string[]; // 可选：仅帮助页展示的附加说明
 ```
 

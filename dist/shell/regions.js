@@ -36,9 +36,9 @@ export const DEFAULT_GAME_ROWS = 1;
 export const MICRO_GAME_ROWS = 2;
 /** 终端至少要这么宽。半块渲染下像素宽度 = 列数。 */
 export const MIN_COLS = 60;
-/** 左侧约三分之一给 HUD，两列间隔，最末列永不写入以防滚屏。 */
+/** 原战场宽度减半，随窗口响应；最末列永不写入以防滚屏。 */
 export function fieldColsFor(cols) {
-    return Math.max(1, cols - Math.floor((cols - 1) / 3) - 3);
+    return Math.max(1, Math.round((cols - Math.floor((cols - 1) / 3) - 3) / 2));
 }
 /** 给独立 pocket/debug 布局保留的响应式高度；日常包裹模式固定使用两行。 */
 export function expandedGameRows(rows) {

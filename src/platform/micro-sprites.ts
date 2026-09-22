@@ -33,7 +33,7 @@ export const MICRO_FIGHTER = {
 export type MicroFighterPose = keyof typeof MICRO_FIGHTER;
 export function microPoseFor(f: Pick<Fighter, 'hurt' | 'atk' | 'onGround' | 'vx' | 'h' | 'walk'>): MicroFighterPose {
   if (f.hurt > 0) return 'hurt';
-  if (f.atk >= 0) return f.atk < 0.10 ? 'windup' : f.atk < 0.23 ? 'strike' : 'recover';
+  if (f.atk >= 0) return f.atk < 0.10 ? 'windup' : f.atk < 0.19 ? 'strike' : 'recover';
   if (!f.onGround) return 'jump';
   if (Math.abs(f.vx) > f.h * 0.12) return f.walk < 0.5 ? 'runA' : 'runB';
   return 'idle';
@@ -42,7 +42,7 @@ export function drawMicroFighter(c: GameCanvas, f: Fighter, centerX: number, bod
   if (f.kind !== 'player' && f.tag !== undefined) {
     const color = f.hurt > 0.16 ? 0xfff0c7 : f.windup >= 0 ? 0xe43834 : body;
     for (const s of fighterSegments({ ...f, x: Math.round(centerX / 2) * 2, y: 7,
-      walk: Math.floor(f.walk * 2) / 2, h: f.tag === 'boss' ? 9 : 6 })) {
+      walk: Math.floor(f.walk * 2) / 2, h: f.duelist ? 6 : f.tag === 'boss' ? 9 : 6 })) {
       if (s.part === 'head') c.pixel(Math.round(s.x0), Math.round(s.y0), blade);
       else c.line(s.x0, s.y0, s.x1, s.y1, color);
     }

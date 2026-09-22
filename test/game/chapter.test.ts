@@ -55,6 +55,8 @@ function setup(seed = 1, cleanAtDeadline = true): { world: World; director: Chap
   if (cleanAtDeadline) {
     const step = director.step.bind(director);
     director.step = (w, dt, input) => {
+      // 日程测试给收尾战留空位；满场等待的真实行为另测。
+      if (director.activeStep === PINCER_END - 1 && (director.chapter % 3 === 0 || director.chapter % 5 === 0)) w.enemies.length = 0;
       if (director.activeStep === CHAPTER_STEPS - 1 && w.phase === 'fight') {
         w.enemies.length = 0; w.respawn = 0;
       }
@@ -465,7 +467,7 @@ test('章节收尾旁白：每章一句、随章推进、越界安全', () => {
   assert.equal(director.chapterStory(), CHAPTER_STORY[1], '进第 2 章后旁白没换');
 });
 
-test('boss 章（第 3 章）一定出 boss —— 即便收尾段那一刻满场（被动/满员也不静默丢失）', () => {
+test('boss 章（第 3 章）在有空位时正常登场且不超过同屏上限', () => {
   const { world, director } = setup(7);   // enemyLimit=3, automaticSpawns off
   for (let c = 1; c < 3; c++) {
     while (director.result === null) director.step(world, STEP, NO_INTENT);

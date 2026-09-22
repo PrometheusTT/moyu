@@ -19,9 +19,11 @@
  */
 import { Rng } from "./rng.js";
 import { fighterSegments } from "./creature.js";
-import { MAX_QI, BOSS_HIT_QI, SWORD_ARTS, SWORD_FORMS, FULL_ART_NAMES, selectSwordForm, currentSwordForm, artLevel, artDuration, isSecretArt, freshCultivation } from "./martial.js";
+import { MAX_QI, BOSS_HIT_QI, SWORD_ARTS, SWORD_FORMS, FULL_ART_NAMES, selectSwordForm, currentSwordForm, artLevel, artDuration, artRecovery, isSecretArt, freshCultivation, freshFormProgress } from "./martial.js";
 import { poseAir, poseBossCharge, poseBossSlam, poseBossSweep, poseBossWindup, poseHurt, poseIdle, poseLand, poseSlash, poseWalk, poseWindup, segments } from "./stick.js";
 export const NO_INTENT = { move: 0, jump: false, slash: false, dash: false, spin: false, crouch: false };
+export const PLAYER_MOVE_MULTIPLIER = 1.2;
+export const SLASH_RECOVERY = 0.26;
 /**
  * Boss 阶段随剩余血量收紧：5-4 重压、3-2 暴走、1 困兽。
  * 纯函数、零副作用，测试可直接对照。
@@ -41,6 +43,12 @@ export function bossDifficulty(chapter) {
 }
 export function bossQuakeOffsets(f) {
     return (f.bossRank ?? 0) >= 4 ? [-2, -1, 0, 1, 2] : [-1, 0, 1];
+}
+/** 预警和实际出招使用同一份招式表，避免红线与判定范围不一致。 */
+export function duelistFormFor(f) {
+    const art = f.duelist === 'qingfeng' ? 'dugu' : 'liumai';
+    const forms = f.duelist === 'qingfeng' ? [1, 2, 3] : [0, 4, 5];
+    return { art, formIndex: forms[(f.atkSeq ?? 0) % (f.tag === 'boss' ? 3 : 2)] };
 }
 /**
  * 出招表：**确定性**地按 `seq` 轮换，零 RNG。
@@ -84,9 +92,11 @@ export class World {
     hazards = [];
     qi = 0;
     cultivation = freshCultivation();
+    formProgress = freshFormProgress();
     swordCast = null;
     selectedArt = 'dugu';
     artBossHits = new Map();
+    queuedArt = null;
     artNotice = '';
     artNoticeT = 0;
     buffered = { ...NO_INTENT };
@@ -184,8 +194,8 @@ export class World {
         for (const f of [this.player, ...this.enemies]) {
             f.x *= sx;
             f.y = this.ground;
-            f.h = f.kind === 'player' ? this.fh : Math.round(this.fh * (f.tag === 'boss' ? 1.6 : 0.9));
-            f.speed = f.kind === 'player' ? this.playerSpeed() : f.speed * ratio;
+            f.h = f.kind === 'player' ? this.fh : Math.round(this.fh * (f.duelist ? 1.05 : f.tag === 'boss' ? 1.6 : 0.9));
+            f.speed = f.kind === 'player' ? this.playerMoveSpeed() : f.speed * ratio;
             f.vx *= ratio;
             f.vy = 0;
             f.onGround = true;
@@ -216,6 +226,8 @@ export class World {
             f.speed *= ratio;
             if (f.quakeX !== undefined)
                 f.quakeX *= sx;
+            if (f.enemyCast)
+                f.enemyCast.x *= sx;
         }
         for (const item of [...this.pieces, ...this.blood, ...this.slashes, ...this.hazards])
             item.x *= sx;
@@ -260,6 +272,7 @@ export class World {
         this.slashes.length = 0;
         this.hitstop = 0;
         this.swordCast = null;
+        this.queuedArt = null;
         this.artBossHits.clear();
         this.hazards.length = 0;
         this.buffered = { ...NO_INTENT };
@@ -313,7 +326,6 @@ export class World {
             this.buffered = { ...NO_INTENT };
         }
         const killsBefore = this.kills;
-        let casting = this.swordCast !== null;
         if (this.phase === 'title' && (input.slash || input.move !== 0)) {
             this.phase = 'fight';
             this.spawnT = 0.35;
@@ -329,9 +341,10 @@ export class World {
         }
         for (const e of this.enemies)
             this.stepGrunt(dt, e);
-        casting ||= this.swordCast !== null;
+        const killsBeforeArt = this.kills;
         if (this.phase === 'fight')
             this.stepSwordArt(dt);
+        const artKills = this.kills - killsBeforeArt;
         if (this.phase === 'fight')
             this.stepHazards(dt);
         this.stepPieces(dt);
@@ -342,8 +355,7 @@ export class World {
         else if (this.phase === 'fight') {
             const earned = this.kills - killsBefore;
             this.cultivation.insight += earned;
-            if (!casting)
-                this.qi = Math.min(MAX_QI, this.qi + earned * 12);
+            this.qi = Math.min(MAX_QI, this.qi + (earned - artKills) * 12);
             this.heat += dt;
             if (this.automaticSpawns)
                 this.spawn(dt);
@@ -367,12 +379,15 @@ export class World {
     playerSpeed() {
         return this.fh < 8 ? Math.max(this.fh * 3.0, this.w / 2.0) : this.fh * 3.0;
     }
+    playerMoveSpeed() {
+        return this.playerSpeed() * (this.fh < 8 ? 1 : PLAYER_MOVE_MULTIPLIER);
+    }
     makePlayer() {
         return {
             kind: 'player', x: this.w * 0.5, y: this.ground, vx: 0, vy: 0,
             h: this.fh, face: 1, onGround: true, hp: PLAYER_HP,
             walk: 0, anim: 0, atk: -1, atkHit: false, atkQueued: false,
-            hurt: 0, land: 0, invuln: 0.6, windup: -1, cool: 0, speed: this.playerSpeed(),
+            hurt: 0, land: 0, invuln: 0.6, windup: -1, cool: 0, speed: this.playerMoveSpeed(),
             dashT: 0, dashCool: 0, spinT: 0, spinCool: 0,
             pose: poseIdle(0), armed: true,
         };
@@ -392,8 +407,15 @@ export class World {
             p.sweepCool = (p.sweepCool ?? 0) - dt;
         if ((p.lungeCool ?? 0) > 0)
             p.lungeCool = (p.lungeCool ?? 0) - dt;
+        if (this.phase !== 'fight')
+            this.queuedArt = null;
         if (input.art && this.phase === 'fight')
             this.castSwordArt(input.art);
+        else if (this.queuedArt && this.phase === 'fight' && (!this.swordCast || this.swordCast.age >= artRecovery(this.swordCast.full))) {
+            const art = this.queuedArt;
+            this.queuedArt = null;
+            this.castSwordArt(art);
+        }
         // 冲刺斩进行中：全程维持向前的冲量、每帧收割身上的杂兵，其它输入一律屏蔽。
         if (p.dashT > 0) {
             p.dashT -= dt;
@@ -459,7 +481,7 @@ export class World {
             if (input.move !== 0) {
                 if (!busy)
                     p.face = input.move > 0 ? 1 : -1;
-                p.vx += (input.move * p.speed - p.vx) * Math.min(1, dt * 28);
+                p.vx += (input.move * p.speed - p.vx) * Math.min(1, dt * 34);
             }
             if (input.jump && p.onGround) {
                 p.vy = -this.jumpV;
@@ -479,7 +501,7 @@ export class World {
                 p.atkHit = true;
                 this.resolveSlash(p);
             }
-            if (p.atk >= 0.32) {
+            if (p.atk >= SLASH_RECOVERY) {
                 p.atk = p.atkQueued ? 0 : -1;
                 p.atkHit = false;
                 p.atkQueued = false;
@@ -495,21 +517,27 @@ export class World {
      * grunt（hp=1）永远走不到这里，所以一刀一个的行为逐字节不变。
      */
     castSwordArt(art) {
-        if (this.swordCast !== null)
+        if (this.swordCast !== null && this.swordCast.age < artRecovery(this.swordCast.full)) {
+            // 只缓存收招前140ms内的一次输入；不排长队，不在早期乱按后自动连发。
+            if (artRecovery(this.swordCast.full) - this.swordCast.age <= 0.14)
+                this.queuedArt = art;
             return;
+        }
+        this.queuedArt = null;
         const spec = SWORD_ARTS[art];
         this.artNoticeT = 1.8;
         if (this.cultivation.insight < spec.unlock) {
             this.artNotice = `${spec.short}未悟 · 阅历${this.cultivation.insight}/${spec.unlock}`;
             return;
         }
-        const selection = selectSwordForm(art, this.qi);
+        const selection = selectSwordForm(art, this.qi, this.formProgress[art]);
         if (selection === null) {
             this.artNotice = `剑气不足 ${this.qi}/${spec.cost}`;
             return;
         }
         const level = artLevel(this.cultivation, art);
         this.qi -= selection.cost;
+        this.formProgress[art][selection.tier] = (this.formProgress[art][selection.tier] + 1) % (SWORD_FORMS[art].length / 3);
         this.selectedArt = art;
         this.artBossHits.clear();
         this.cultivation.mastery[art]++;
@@ -539,7 +567,7 @@ export class World {
             return;
         }
         const form = currentSwordForm(cast);
-        const pulse = cast.full ? Math.min(3, Math.floor(cast.age / 0.3))
+        const pulse = cast.full ? Math.min(2, Math.floor(cast.age / 0.4))
             : Math.min(form.qi >= 60 ? 1 : 0, Math.floor(cast.age / 0.32));
         if (pulse === cast.pulse)
             return;
@@ -563,7 +591,7 @@ export class World {
                 continue;
             if (e.tag === 'boss') {
                 const hits = this.artBossHits.get(e) ?? 0;
-                if (hits >= (cast.full ? 4 : form.qi >= 60 ? 2 : 1))
+                if (hits >= (cast.full ? 3 : form.qi >= 60 ? 2 : 1))
                     continue;
                 this.artBossHits.set(e, hits + 1);
             }
@@ -597,13 +625,21 @@ export class World {
         e.cool = Math.max(e.cool, 0.45);
         e.vx = dir * this.fh * 1.2;
         // 打断进行中的 boss 招式（挨打就收招），并在跨阶段那一下给一记闪光震屏当"暴走/困兽"节拍。
-        if (e.tag === 'boss') {
+        if (e.tag === 'boss' || e.duelist) {
             // 只奖励确实扣血的普通攻击，剑招自身不能回气形成永动。
             if (chargeQi)
                 this.qi = Math.min(MAX_QI, this.qi + BOSS_HIT_QI);
             e.dashT = 0;
             e.spinT = 0;
             delete e.quakeX;
+            delete e.enemyCast;
+            e.guard = 0;
+            if (e.duelist) {
+                e.pressureHits = (e.pressureHits ?? 0) + 1;
+                // 连续硬吃三刀后架剑，避免按住普攻便能永久压住剑客。
+                if (e.pressureHits % 3 === 0)
+                    e.guard = 0.5;
+            }
             this.slashes.push({ x: e.x, y: e.y - e.h * 0.45, r: e.h * 0.42,
                 a0: -2.4, a1: 0.4, life: 0.18, max: 0.18, big: true });
             if (bossPhase(before, e.maxHp) !== bossPhase(e.hp, e.maxHp)) {
@@ -613,6 +649,21 @@ export class World {
                 this.hitstop = Math.max(this.hitstop, 0.08);
             }
         }
+    }
+    /** 守势只挡一次正面普通刀；剑招、冲刺、旋斩和绕背均可破守。 */
+    swordGuard(e, p) {
+        if (!e.duelist || (e.guard ?? 0) <= 0 || (p.x - e.x) * e.face < 0 || !p.onGround)
+            return false;
+        e.guard = 0;
+        e.windup = 0.55; // 拼剑后先亮预警再反击，不能瞬间偷伤。
+        e.vx = -e.face * this.fh * 0.5;
+        this.qi = Math.min(MAX_QI, this.qi + 4);
+        this.artNotice = '铮！拼剑 · 剑招 / 绕背破守';
+        this.artNoticeT = 1.2;
+        this.hitstop = Math.max(this.hitstop, 0.035);
+        this.slashes.push({ x: (e.x + p.x) / 2, y: e.y - this.fh * 0.6, r: this.fh * 0.45,
+            a0: -2.6, a1: 0.6, life: 0.16, max: 0.16, big: true });
+        return true;
     }
     /** 冲刺斩起手：定住方向窜出去，给足穿过全程的无敌帧，取消手上的普通刀。 */
     startDash(p) {
@@ -739,6 +790,8 @@ export class World {
             // 竖直重叠：拿双方的身体区间比，跳劈砍不到脚下的人才合理（俯冲斩放宽了下界）。
             if (e.y - e.h > p.y + lowGate || e.y < p.y - this.fh * 1.05)
                 continue;
+            if (this.swordGuard(e, p))
+                continue;
             // 多段血的 boss 先掉血、被打断、短无敌；grunt 走不到这里（hp=1）。
             if (e.hp > 1) {
                 if (e.invuln <= 0) {
@@ -829,19 +882,14 @@ export class World {
      * boss 走单独入口就不会碰它。多段血、更大更慢，其余复用 makeGrunt（照常抽 5 个 RNG，
      * 确定性成立；boss 只由导演在第 3/6/9 章生成，不进裸 World / 字节预算测试的路径）。
      *
-     * boss 是特殊入场：满场就挤掉最先出现的一个杂兵给它腾位——否则玩家若在收尾段那一刻
-     * 放着 enemyLimit 个杂兵没清，boss 章会静默地整章没有 boss（招牌功能凭空消失）。
-     * 挤人不消耗 RNG、确定，且保证总数不超过 enemyLimit（≤3 的断言仍成立）。已有 boss 时不再生成。
+     * 满场返回 false，导演每帧重试并阻止提前结算；绝不能删掉存活杂兵腾位。
+     * 失败不消耗 RNG，且保证总数不超过 enemyLimit。已有 boss 时不再生成。
      */
     spawnBoss(side, chapter = 3) {
         if (this.enemies.some((e) => e.tag === 'boss'))
             return false;
-        while (this.enemies.length >= this.enemyLimit) {
-            const idx = this.enemies.findIndex((e) => e.tag !== 'boss');
-            if (idx < 0)
-                return false;
-            this.enemies.splice(idx, 1);
-        }
+        if (this.enemies.length >= this.enemyLimit)
+            return false;
         if (this.enemyLimit < 1)
             return false;
         const boss = this.makeGrunt(side);
@@ -859,6 +907,25 @@ export class World {
         this.flash = Math.max(this.flash, 0.6);
         this.shake = Math.min(4, this.shake + 1.6);
         this.hitstop = Math.max(this.hitstop, 0.06);
+        return true;
+    }
+    spawnDuelist(side, chapter, boss = false) {
+        if (this.enemies.length >= this.enemyLimit || this.enemies.some(e => e.duelist))
+            return false;
+        const e = this.makeGrunt(side), rank = bossDifficulty(chapter).rank;
+        e.duelist = Math.floor(chapter / (boss ? 9 : 5)) % 2 ? 'qingfeng' : 'xuanyi';
+        e.tag = boss ? 'boss' : 'swordsman';
+        delete e.species;
+        e.armed = true;
+        e.h = Math.round(this.fh * 1.05);
+        e.hp = e.maxHp = boss ? 16 + rank * 2 : 6 + Math.min(6, rank);
+        e.bossRank = rank;
+        e.speed = this.playerSpeed() * (e.duelist === 'qingfeng' ? 0.78 : 0.6);
+        e.cool = 0.7;
+        e.guard = 0;
+        this.enemies.push(e);
+        this.artNotice = `${boss ? '剑宗临阵' : '剑客问剑'} · ${e.duelist === 'qingfeng' ? '青锋' : '玄衣'}`;
+        this.artNoticeT = 2;
         return true;
     }
     makeGrunt(side, index = 0, count = 1) {
@@ -921,6 +988,10 @@ export class World {
             }
         }
         // boss 走独立 AI（多阶段冲撞/横扫）；grunt 路径逐字节不变。
+        if (e.duelist) {
+            this.stepDuelist(dt, e);
+            return;
+        }
         if (e.tag === 'boss') {
             this.stepBoss(dt, e);
             return;
@@ -961,6 +1032,83 @@ export class World {
         }
         this.integrate(dt, e);
         e.pose = this.poseFor(e);
+    }
+    /** 剑客共享玩家剑谱和骨架，但有独立伤害判定、可打断前摇与有限守势。 */
+    stepDuelist(dt, e) {
+        const p = this.player, alive = this.respawn <= 0 && this.phase === 'fight';
+        const phase = bossPhase(e.hp, e.maxHp), dx = p.x - e.x;
+        if (!alive) {
+            delete e.enemyCast;
+            e.windup = -1;
+            e.guard = 0;
+            e.vx *= Math.exp(-dt * 10);
+            this.integrate(dt, e);
+            e.pose = poseIdle(e.anim);
+            return;
+        }
+        if (e.enemyCast) {
+            const cast = e.enemyCast;
+            cast.age += dt;
+            const form = currentSwordForm(cast);
+            if (cast.pulse < 0 && cast.age >= (form.shape === 'rain' ? 0.3 : 0.16)) {
+                cast.pulse = 0;
+                const reach = this.fh * form.reach, front = (p.x - cast.x) * cast.face;
+                const inRange = form.radial ? Math.abs(front) <= reach : front >= 0 && front <= reach;
+                const high = form.shape === 'rain' ? p.y >= this.ground - this.fh * 0.3
+                    : Math.abs(p.y - p.h * 0.5 - cast.y) < this.fh * 0.4;
+                if (inRange && high) {
+                    const parry = Math.abs(dx) < this.fh * 1.6 && (e.x - p.x) * p.face >= 0
+                        && ((p.atk >= 0.08 && p.atk <= 0.23) || p.spinT > 0);
+                    if (parry) {
+                        this.qi = Math.min(MAX_QI, this.qi + 6);
+                        e.hurt = 0.22;
+                        e.cool = 0.8;
+                        this.artNotice = '铮！截剑成功 +6气';
+                        this.artNoticeT = 1;
+                        this.hitstop = Math.max(this.hitstop, 0.04);
+                        this.slashes.push({ x: (p.x + e.x) / 2, y: cast.y, r: this.fh * 0.5,
+                            a0: -2.4, a1: 0.5, life: 0.18, max: 0.18, big: true });
+                    }
+                    else if (p.invuln <= 0)
+                        this.hurtPlayer(p.x >= e.x ? 1 : -1);
+                }
+            }
+            // 青锋突刺前踏，玄衣落剑定身；出招不追踪瞬移。
+            e.vx = e.duelist === 'qingfeng' && cast.age < 0.24 ? e.face * e.speed * 1.25 : e.vx * Math.exp(-dt * 16);
+            if (cast.age >= 0.65) {
+                delete e.enemyCast;
+                e.cool = phase === 3 ? 0.62 : 0.85;
+                e.guard = e.duelist === 'xuanyi' ? 0.42 : 0.25;
+            }
+            e.pose = poseSlash(clamp(cast.age / 0.65, 0, 1));
+        }
+        else if (e.windup >= 0) {
+            e.windup -= dt;
+            e.vx *= Math.exp(-dt * 14);
+            e.pose = poseWindup(clamp(1 - e.windup / 0.65, 0, 1));
+            if (e.windup <= 0) {
+                const seq = e.atkSeq ?? 0;
+                e.enemyCast = { ...duelistFormFor(e),
+                    x: e.x, y: e.y - this.fh * 0.5, face: e.face, age: 0, pulse: -1, level: 1 };
+                e.atkSeq = seq + 1;
+                e.windup = -1;
+                e.guard = 0;
+            }
+        }
+        else {
+            e.guard = Math.max(0, (e.guard ?? 0) - dt);
+            e.face = dx >= 0 ? 1 : -1;
+            const distance = Math.abs(dx), preferred = this.fh * (e.duelist === 'qingfeng' ? 1.1 : 2.1);
+            if (e.cool <= 0 && distance < this.fh * (e.duelist === 'qingfeng' ? 2.6 : 3.8)) {
+                e.windup = phase === 3 ? 0.5 : 0.65;
+                e.guard = 0;
+            }
+            const direction = distance > preferred ? e.face : distance < this.fh * 0.65 && e.cool > 0.3 ? -e.face : 0;
+            e.vx += (direction * e.speed - e.vx) * Math.min(1, dt * 14);
+            e.walk += Math.abs(e.vx) * dt / this.fh;
+            e.pose = (e.guard ?? 0) > 0 ? poseWindup(0.4) : Math.abs(e.vx) > 1 ? poseWalk(e.walk) : poseIdle(e.anim);
+        }
+        this.integrate(dt, e);
     }
     /**
      * Boss AI：按剩余血量分三阶段，招式**确定性轮换**（用 `atkSeq` 计数，零新 RNG；
@@ -1130,6 +1278,7 @@ export class World {
         this.combo = 0;
         if (p.hp <= 0) {
             this.swordCast = null;
+            this.queuedArt = null;
             this.artBossHits.clear();
             // 玩家也是火柴人，也照样砍碎 —— 死法和杂兵一样才公平，而且好笑。
             this.dismember(p, p.y - p.h * 0.6, dir, 1.15);
@@ -1236,8 +1385,11 @@ export class World {
             f.walk = (f.walk + dt * (0.9 + Math.abs(f.vx) / (f.speed * 0.6))) % 1;
     }
     poseFor(f) {
-        if (f.kind === 'player' && this.swordCast !== null) {
-            return poseSlash(0.38, this.swordCast.art === 'liumai' ? 'lunge' : 'sweep');
+        if (f.kind === 'player' && this.swordCast !== null && f.atk < 0 && f.dashT <= 0 && f.spinT <= 0
+            && f.hurt <= 0 && this.swordCast.age < artRecovery(this.swordCast.full)) {
+            const cast = this.swordCast, form = currentSwordForm(cast), u = cast.age / artRecovery(cast.full);
+            const kind = cast.art === 'liumai' || form.shape === 'thrust' ? 'lunge' : form.shape === 'rain' ? 'air' : 'sweep';
+            return poseSlash(u < 0.12 ? 0.18 : u < 0.65 ? 0.38 : 0.85, kind);
         }
         // Boss 走专属姿态：冲撞/横扫/前摇各有夸张剪影，让玩家能从起手预判招式。
         // 放在玩家/杂兵的通用分支之前——玩家/grunt 不带 boss tag，永不命中，裸 World 逐字节不变。
@@ -1259,7 +1411,7 @@ export class World {
         if (f.spinT > 0)
             return poseSlash(clamp(1 - f.spinT / SPIN_TIME, 0, 1));
         if (f.atk >= 0)
-            return poseSlash(f.atk < 0.1 ? (f.h < 8 ? 0.05 : 0.18) : f.atk < 0.23 ? 0.38 : 0.85, f.atkKind ?? 'normal');
+            return poseSlash(f.atk < 0.1 ? (f.h < 8 ? 0.05 : 0.18) : f.atk < 0.19 ? 0.38 : 0.85, f.atkKind ?? 'normal');
         if (f.windup >= 0)
             return poseWindup(clamp(1 - f.windup / (f.tag === 'boss' ? BOSS_WINDUP : GRUNT_WINDUP), 0, 1));
         if (f.hurt > 0)

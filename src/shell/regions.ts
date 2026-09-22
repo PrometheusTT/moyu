@@ -51,7 +51,7 @@ export type Layout = {
   /** 游戏区第一行（真实坐标，1-based）。 */
   gameTop: number;
   gameRows: number;
-  /** 画布占右侧约三分之二，左侧是当前剑招与战斗摘要。 */
+  /** 紧凑战场：原三分之二宽度减半，右侧是当前剑招与战斗摘要。 */
   fieldCols: number;
 };
 
@@ -71,9 +71,9 @@ export type LayoutInput = {
   expanded?: boolean | undefined;
 };
 
-/** 左侧约三分之一给 HUD，两列间隔，最末列永不写入以防滚屏。 */
+/** 原战场宽度减半，随窗口响应；最末列永不写入以防滚屏。 */
 export function fieldColsFor(cols: number): number {
-  return Math.max(1, cols - Math.floor((cols - 1) / 3) - 3);
+  return Math.max(1, Math.round((cols - Math.floor((cols - 1) / 3) - 3) / 2));
 }
 
 /** 给独立 pocket/debug 布局保留的响应式高度；日常包裹模式固定使用两行。 */
