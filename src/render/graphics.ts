@@ -198,13 +198,14 @@ export class GraphicsTarget implements PixelTarget {
     if (b64.length <= CHUNK) {
       out += `${APC}${keys};${b64}${ST}`;
     } else {
-      // 分块：键只写在第一块，后续块只带 `m`（协议要求，多写终端会当错误）。
+      // 后续块允许 m/q；每块都要 q=2，iTerm2 不会继承首块的静默标志。
+      // 否则末块会产生 i=0;OK 回包，污染内层 CLI 的输入。
       for (let at = 0; at < b64.length; at += CHUNK) {
         const part = b64.slice(at, at + CHUNK);
         const more = at + CHUNK < b64.length ? 1 : 0;
         out += at === 0
           ? `${APC}${keys},m=1;${part}${ST}`
-          : `${APC}m=${more};${part}${ST}`;
+          : `${APC}m=${more},q=2;${part}${ST}`;
       }
     }
     this.prev.set(this.buf);

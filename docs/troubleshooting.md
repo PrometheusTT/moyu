@@ -46,6 +46,17 @@ moyu doctor
 确认当前平台是受支持的 macOS、Linux 或 WSL，以及 Node 架构与安装时使用的架构一致。不要从
 另一台机器复制 `node_modules`。
 
+## iTerm2 中 Claude 正常启动，但 Ctrl+] 没反应
+
+Claude 会启用 xterm `modifyOtherKeys` 扩展键盘模式。此时 iTerm2 的 `Ctrl+]` 发送
+`ESC[27;5;93~`，与普通 shell 中的 `0x1d` 不同。旧版 Moyu 漏掉了前一种编码；因此
+普通按键检测正常，并不代表进入 Claude 后也能切换。更新到包含此修复的版本后，退出并
+重新运行 `moyu -- claude`（源码目录使用 `./bin/moyu -- claude`），已运行的进程不会热更新。
+
+如果游戏打开后 Claude 输入框出现重复的 `Gi=0;OK`，这是旧版图像分块未在每块设置
+`q=2` 导致的终端回包；同一修复已补齐。临时可用
+`MOYU_TIER=braille ./bin/moyu -- claude` 避开图像回包，但键盘编码问题仍需更新。
+
 ## 图片不显示
 
 先区分“能力探测失败”和“终端确实不支持”：

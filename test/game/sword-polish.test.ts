@@ -95,3 +95,17 @@ test('接招缓存遇到气不足或换章不会扣费、跳进度或在下一�
     assert.equal(w.cultivation.mastery.liumai, 0); assert.deepEqual(w.formProgress.liumai, [0, 0, 0]);
   }
 });
+
+
+test('剑招方向经过顿帧与接招缓存后仍保留，不受后续走位覆盖', () => {
+  for (const face of [-1, 1] as const) {
+    const w = world(); w.hitstop = 0.04;
+    w.step(dt, { ...NO_INTENT, art: 'getsuga', artFace: face });
+    for (let i = 0; i < 4; i++) w.step(dt, { ...NO_INTENT, move: face === 1 ? -1 : 1 });
+    assert.equal(w.swordCast?.face, face);
+    while (w.swordCast!.age < 0.33) w.step(dt, NO_INTENT);
+    w.step(dt, { ...NO_INTENT, art: 'feixian', artFace: face });
+    for (let i = 0; i < 10; i++) w.step(dt, { ...NO_INTENT, move: face === 1 ? -1 : 1 });
+    assert.equal(w.swordCast?.art, 'feixian'); assert.equal(w.swordCast?.face, face);
+  }
+});

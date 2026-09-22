@@ -303,7 +303,8 @@ export class World {
         if (input.slash || input.jump || input.dash || input.spin || input.art) {
             this.buffered = { ...input, slash: input.slash || this.buffered.slash,
                 jump: input.jump || this.buffered.jump, dash: !!(input.dash || this.buffered.dash),
-                spin: !!(input.spin || this.buffered.spin), art: input.art ?? this.buffered.art };
+                spin: !!(input.spin || this.buffered.spin), art: input.art ?? this.buffered.art,
+                artFace: input.art ? input.artFace : this.buffered.artFace };
             this.bufferT = 0.18;
         }
         // 震动和闪白**不**受顿帧影响：它们是冲击的表现，不是世界的一部分。
@@ -410,11 +411,11 @@ export class World {
         if (this.phase !== 'fight')
             this.queuedArt = null;
         if (input.art && this.phase === 'fight')
-            this.castSwordArt(input.art);
+            this.castSwordArt(input.art, input.artFace ?? (input.move || p.face));
         else if (this.queuedArt && this.phase === 'fight' && (!this.swordCast || this.swordCast.age >= artRecovery(this.swordCast.full))) {
             const art = this.queuedArt;
             this.queuedArt = null;
-            this.castSwordArt(art);
+            this.castSwordArt(art.art, art.face);
         }
         // 冲刺斩进行中：全程维持向前的冲量、每帧收割身上的杂兵，其它输入一律屏蔽。
         if (p.dashT > 0) {
@@ -516,11 +517,11 @@ export class World {
      * 短无敌把"一次冲刺 11 帧重判"锁成一段血，否则 boss 会被一次冲刺直接连成秒杀。
      * grunt（hp=1）永远走不到这里，所以一刀一个的行为逐字节不变。
      */
-    castSwordArt(art) {
+    castSwordArt(art, face) {
         if (this.swordCast !== null && this.swordCast.age < artRecovery(this.swordCast.full)) {
             // 只缓存收招前140ms内的一次输入；不排长队，不在早期乱按后自动连发。
             if (artRecovery(this.swordCast.full) - this.swordCast.age <= 0.14)
-                this.queuedArt = art;
+                this.queuedArt = { art, face };
             return;
         }
         this.queuedArt = null;
@@ -543,6 +544,7 @@ export class World {
         this.cultivation.mastery[art]++;
         this.artNotice = `${isSecretArt(art) && this.cultivation.mastery[art] === 1 ? '悟得秘技！' : ''}${spec.name} · ${selection.full ? FULL_ART_NAMES[art] : SWORD_FORMS[art][selection.index].name}`;
         const p = this.player;
+        p.face = face;
         this.swordCast = { art, x: p.x, y: p.y - this.fh * 0.5, face: p.face, age: 0, pulse: -1, level,
             formIndex: selection.index, full: selection.full };
         p.atk = -1;

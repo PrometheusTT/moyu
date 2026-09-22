@@ -30,6 +30,34 @@ test('Ctrl+] toggles in legacy and Kitty keyboard protocols', () => {
   assert.deepEqual(kinds(r, b('\x1b[93;5:3u')), []);
 });
 
+test('iTerm2 Ctrl+] toggles with Claude modifyOtherKeys enabled, including split CSI', () => {
+  for (const focus of ['cli', 'game'] as const) for (const mods of [5, 6]) {
+    const raw = b(`\x1b[27;${mods};93~`);
+    const chunks = [[raw], ...Array.from({ length: raw.length - 2 }, (_, i) =>
+      [raw.subarray(0, i + 2), raw.subarray(i + 2)])];
+    for (const split of chunks) {
+      const result = routed(new InputRouter({ focus }), split);
+      assert.deepEqual(result.kinds, ['toggle-focus']);
+      assert.equal(result.forwarded.length, 0);
+    }
+  }
+});
+
+test('modifyOtherKeys leaves unrelated keys and pasted shortcuts byte-exact', () => {
+  for (const focus of ['cli', 'game'] as const) {
+    for (const seq of ['\x1b[27;5;99~', '\x1b[27;5;103~', '\x1b[27;7;93~',
+      '\x1b[200~\x1b[27;5;93~\x1b[201~']) {
+      const actions = new InputRouter({ focus }).route(b(seq));
+      assert.ok(actions.every(action => action.kind !== 'toggle-focus'));
+      const bytes = Uint8Array.from(actions.flatMap(action => 'bytes' in action ? [...action.bytes] : []));
+      assert.deepEqual(bytes, b(seq));
+      if (focus === 'cli' || seq.startsWith('\x1b[200~')) {
+        assert.ok(actions.every(action => action.kind === 'forward'));
+      }
+    }
+  }
+});
+
 test('only Moyu-owned Kitty keys consume release events', () => {
   const cases = ['\x1b[97;1:3u', '\x1b[103;5:3u', '\x1b[99;5:3u'];
   for (const seq of cases) {

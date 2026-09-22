@@ -37,6 +37,8 @@ export type Intent = {
   /** 蹲下（S/↓ 的缓冲窗）。挥刀时按住 → 低扫「蹲斩」。可选：省略视为未按。 */
   crouch?: boolean;
   art?: SwordArt | undefined;
+  /** 组合指令开始时的朝向，独立于指令内的移动键。 */
+  artFace?: -1 | 1 | undefined;
 };
 
 export const NO_INTENT: Intent = { move: 0, jump: false, slash: false, dash: false, spin: false, crouch: false };
@@ -224,7 +226,7 @@ export class World {
   swordCast: SwordCast | null = null;
   selectedArt: SwordArt = 'dugu';
   private artBossHits = new Map<Fighter, number>();
-  private queuedArt: SwordArt | null = null;
+  private queuedArt: { art: SwordArt; face: -1 | 1 } | null = null;
   artNotice = '';
   artNoticeT = 0;
   private buffered: Intent = { ...NO_INTENT };
@@ -430,7 +432,8 @@ export class World {
     if (input.slash || input.jump || input.dash || input.spin || input.art) {
       this.buffered = { ...input, slash: input.slash || this.buffered.slash,
         jump: input.jump || this.buffered.jump, dash: !!(input.dash || this.buffered.dash),
-        spin: !!(input.spin || this.buffered.spin), art: input.art ?? this.buffered.art };
+        spin: !!(input.spin || this.buffered.spin), art: input.art ?? this.buffered.art,
+        artFace: input.art ? input.artFace : this.buffered.artFace };
       this.bufferT = 0.18;
     }
 
@@ -528,9 +531,9 @@ export class World {
     if ((p.sweepCool ?? 0) > 0) p.sweepCool = (p.sweepCool ?? 0) - dt;
     if ((p.lungeCool ?? 0) > 0) p.lungeCool = (p.lungeCool ?? 0) - dt;
     if (this.phase !== 'fight') this.queuedArt = null;
-    if (input.art && this.phase === 'fight') this.castSwordArt(input.art);
+    if (input.art && this.phase === 'fight') this.castSwordArt(input.art, input.artFace ?? (input.move || p.face));
     else if (this.queuedArt && this.phase === 'fight' && (!this.swordCast || this.swordCast.age >= artRecovery(this.swordCast.full))) {
-      const art = this.queuedArt; this.queuedArt = null; this.castSwordArt(art);
+      const art = this.queuedArt; this.queuedArt = null; this.castSwordArt(art.art, art.face);
     }
 
     // 冲刺斩进行中：全程维持向前的冲量、每帧收割身上的杂兵，其它输入一律屏蔽。
@@ -623,10 +626,10 @@ export class World {
    * 短无敌把"一次冲刺 11 帧重判"锁成一段血，否则 boss 会被一次冲刺直接连成秒杀。
    * grunt（hp=1）永远走不到这里，所以一刀一个的行为逐字节不变。
    */
-  private castSwordArt(art: SwordArt): void {
+  private castSwordArt(art: SwordArt, face: -1 | 1): void {
     if (this.swordCast !== null && this.swordCast.age < artRecovery(this.swordCast.full)) {
       // 只缓存收招前140ms内的一次输入；不排长队，不在早期乱按后自动连发。
-      if (artRecovery(this.swordCast.full) - this.swordCast.age <= 0.14) this.queuedArt = art;
+      if (artRecovery(this.swordCast.full) - this.swordCast.age <= 0.14) this.queuedArt = { art, face };
       return;
     }
     this.queuedArt = null;
@@ -649,6 +652,7 @@ export class World {
     this.cultivation.mastery[art]++;
     this.artNotice = `${isSecretArt(art) && this.cultivation.mastery[art] === 1 ? '悟得秘技！' : ''}${spec.name} · ${selection.full ? FULL_ART_NAMES[art] : SWORD_FORMS[art][selection.index]!.name}`;
     const p = this.player;
+    p.face = face;
     this.swordCast = { art, x: p.x, y: p.y - this.fh * 0.5, face: p.face, age: 0, pulse: -1, level,
       formIndex: selection.index, full: selection.full };
     p.atk = -1; p.atkQueued = false;

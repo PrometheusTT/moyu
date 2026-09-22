@@ -6,7 +6,7 @@ const enc = new TextEncoder();
 const hit = (k: Keys, s: string, now: number): Cmd[] => k.feed(enc.encode(s), now);
 
 /** 两档窗口的实际数字。改了实现这里要跟着改 —— 这是手感的定义，不该悄悄漂。 */
-const FIRST = 340;
+const FIRST = 550;
 const HOLD = 150;
 
 test('第一次按下给长窗口，桥过自动重复的首次延迟（否则走路会一顿一顿的）', () => {
@@ -19,7 +19,7 @@ test('第一次按下给长窗口，桥过自动重复的首次延迟（否则�
 
 test('进到重复流里窗口收紧到 150ms，松手才跟手', () => {
   const k = new Keys();
-  hit(k, 'd', 1000);              // 第一次：窗口到 1340
+  hit(k, 'd', 1000);              // 第一次：窗口到 1550
   hit(k, 'd', 1200);              // 还在窗口内 → 认定是自动重复，收紧到 1200+150
   assert.equal(k.intent(1349).move, 1);
   assert.equal(k.intent(1350).move, 0, `重复流里的窗口该是 ${HOLD}ms，不是 ${FIRST}ms`);
@@ -142,4 +142,30 @@ test('clear() 清掉 latch —— 焦点离开游戏时角色不能自己走', (
   hit(k, 'j', 1000);
   k.clear();
   assert.deepEqual(k.intent(1000), { move: 0, jump: false, slash: false });
+});
+
+
+test('500ms 首次重复延迟不会让长按中途停步，重复结束后150ms内松开', () => {
+  const k = new Keys(); hit(k, 'd', 1000);
+  for (let now = 1000; now < 1500; now += 16) assert.equal(k.intent(now).move, 1);
+  for (let now = 1500; now <= 1800; now += 50) {
+    hit(k, 'd', now); assert.equal(k.intent(now + 49).move, 1);
+  }
+  assert.equal(k.intent(1950).move, 0);
+});
+
+test('回头和攻击后重新移动保留起步窗口，旧方向不会恢复', () => {
+  for (const middle of ['a', 'j', 'w']) {
+    const k = new Keys(); hit(k, 'd', 1000); hit(k, middle, 1050); hit(k, 'd', 1100);
+    assert.equal(k.intent(1599).move, 1, middle);
+    assert.equal(k.intent(1650).move, 0, middle);
+  }
+  const k = new Keys(); hit(k, 'd', 1000); hit(k, 'a', 1020); hit(k, 'a', 1220);
+  assert.equal(k.intent(1370).move, 0, '左键结束后不能恢复右键的旧窗口');
+});
+
+test('同一批重复字节和快速双击不截短起步窗口', () => {
+  const k = new Keys(); hit(k, 'ddd', 1000); hit(k, 'd', 1040);
+  assert.equal(k.intent(1500).move, 1);
+  assert.equal(k.intent(1550).move, 0);
 });

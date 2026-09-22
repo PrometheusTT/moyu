@@ -532,3 +532,54 @@ test('Boss地裂锁定落点，有预警延迟、范围伤害、跳跃可躲且�
     assert.equal(w.hazards.length, 0, 'Boss死亡后不能残留伤害区或冻结的预警');
   }
 });
+
+
+test('真实 Arcade 输入到剑招：四种三键技左右均按起始朝向释放，分块与合并一致', () => {
+  for (const face of [-1, 1] as const) for (const batched of [false, true]) {
+    for (const [keys, art] of [['sdu', 'feixian'], ['sai', 'wanjian'], ['wdj', 'getsuga'], ['waj', 'hinokami']] as const) {
+      const builtin = BUILTIN_GAMES[0]!;
+      const game = builtin.create({ seed: 71, random: () => 0.5 });
+      const w = (game as unknown as { world: World }).world;
+      w.qi = 300; w.cultivation.insight = 100; w.player.invuln = 999;
+      const module: GameModule = { manifest: { ...builtin.manifest, id: 'aim-regression' },
+        create: () => ({ update: game.update.bind(game), render: () => {} }) };
+      const arcade = new Arcade(join(mkdtempSync(join(tmpdir(), 'moyu-aim-')), 'events'), [module]);
+      arcade.enter(); arcade.advance(1000);
+      arcade.feed(Buffer.from(face === -1 ? 'a' : 'd'), 1001); arcade.advance(1017);
+      assert.equal(w.player.face, face);
+      let now = 1100;
+      for (const key of batched ? [keys] : [...keys]) {
+        arcade.feed(Buffer.from(key), now); arcade.advance(now + 17); now += 120;
+      }
+      assert.equal(w.swordCast?.art, art, `${keys}/${face}/${batched}`);
+      assert.equal(w.swordCast?.face, face, `${keys}/${face}/${batched}`);
+      assert.equal(w.player.face, face);
+      // The direction embedded in the command must not turn the player back on the next frame.
+      arcade.advance(now + 17); assert.equal(w.player.face, face);
+    }
+  }
+});
+
+test('Arcade 起步、转向、技能后的首个方向不会提前断流，停止后无旧方向回弹', () => {
+  for (const direction of ['d', '\x1b[C']) for (const middle of ['', 'a', 'u', 'i', 'j']) {
+    const received: GameInput[] = [];
+    const module: GameModule = { manifest: { ...BUILTIN_GAMES[0]!.manifest, id: 'walk-regression' },
+      create: () => ({ update: (_dt, input) => received.push(input), render: () => {} }) };
+    const arcade = new Arcade(join(mkdtempSync(join(tmpdir(), 'moyu-walk-')), 'events'), [module]);
+    arcade.enter(); arcade.advance(1000);
+    if (middle) {
+      arcade.feed(Buffer.from(direction), 1001); arcade.advance(1017);
+      arcade.feed(Buffer.from(middle), 1040);
+    }
+    arcade.feed(Buffer.from(direction), 1080);
+    for (let now = 1100; now < 1580; now += 20) {
+      arcade.advance(now); assert.equal(received.at(-1)?.right, true, `${direction}/${middle}/${now}`);
+    }
+    for (let now = 1580; now <= 1780; now += 50) {
+      arcade.feed(Buffer.from(direction), now); arcade.advance(now + 17);
+      assert.equal(received.at(-1)?.right, true);
+    }
+    arcade.advance(1940);
+    assert.equal(received.at(-1)?.right, false); assert.equal(received.at(-1)?.left, false);
+  }
+});

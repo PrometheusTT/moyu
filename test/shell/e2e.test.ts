@@ -366,6 +366,22 @@ test('默认只占一行，Ctrl+] 一键展开并用 Esc 返回', async () => {
   } finally { s.kill(); }
 });
 
+test('iTerm2 modifyOtherKeys Ctrl+] opens the game and returns to CLI in a real PTY', async () => {
+  const s = await launch();
+  try {
+    await s.waitFor(w => standbyPaint(w) && w.includes('INNER-READY'), '待机和内层启动');
+    const enter = s.wire().length;
+    s.send('\x1b[27;5;93~');
+    await s.waitFor(w => w.slice(enter).includes(LIVE_PANEL), '扩展 Ctrl+] 显示游戏');
+    const leave = s.wire().length;
+    s.send('\x1b[27;5;93~');
+    await s.waitFor(w => standbyPaint(w.slice(leave)), '扩展 Ctrl+] 返回待机');
+    const cli = s.wire().length;
+    s.send('p');
+    await s.waitFor(w => w.slice(cli).includes('INNER-HELLO'), '输入归还内层 CLI');
+  } finally { s.kill(); }
+});
+
 test('stable standby has no frame loop output until an external transition invalidates it', async () => {
   const s = await launch();
   try {

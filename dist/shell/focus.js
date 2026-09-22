@@ -278,7 +278,10 @@ export class InputRouter {
                         i = scan.end;
                         continue;
                     }
-                    if (seq === '\x1b[24~') {
+                    // Claude enables xterm modifyOtherKeys level 2. iTerm2 then sends Ctrl+]
+                    // as CSI 27;5;93~ instead of 0x1d (6 also includes Shift). Keep this after
+                    // paste handling, and leave every unrelated modified key byte-exact.
+                    if (seq === '\x1b[24~' || /^\x1b\[27;[56];93~$/.test(seq)) {
                         flush(i);
                         emit({ kind: 'toggle-focus' });
                         i = scan.end;

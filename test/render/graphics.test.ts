@@ -43,6 +43,7 @@ function decode(s: string): Frame {
     const semi = body.indexOf(';');
     assert.ok(semi >= 0, 'APC 里必须有 `;` 分隔键和载荷');
     const keys = parseKeys(body.slice(0, semi), chunks === 0);
+    assert.equal(keys.get('q'), '2', `第 ${chunks + 1} 块必须抑制终端回包`);
     if (chunks === 0) first = keys;
     b64 += body.slice(semi + 1);
     chunks++;
@@ -70,7 +71,7 @@ function parseKeys(src: string, isFirst: boolean): Map<string, string> {
     const k = kv.slice(0, eq);
     // 词汇表锁死：加新键必须先在这里过一遍脑子。
     assert.ok(KEYS_FIRST.has(k), `APC 里出现了意料之外的键 ${JSON.stringify(k)}`);
-    if (!isFirst) assert.equal(k, 'm', `后续块只能带 m=，实际带了 ${k}= —— 协议要求，多写终端会当错误`);
+    if (!isFirst) assert.ok(k === 'm' || k === 'q', `后续块只能带 m/q，实际带了 ${k}=`);
     assert.ok(!out.has(k), `键 ${k} 重复了`);
     out.set(k, kv.slice(eq + 1));
   }
@@ -128,7 +129,7 @@ test('APC 的键就是协议要的那几个，值和缓冲/格数对得上', () 
   assert.equal(k.get('C'), '1', 'C=1：别动光标');
 });
 
-test('大到要分块时，键只写在首块、m 标志正确、拼回来还是同一幅图', () => {
+test('分块时每块抑制回包、m 标志正确、拼回来还是同一幅图', () => {
   const t = new GraphicsTarget(40, 2, 8, 17);         // 320×34
   // 纯噪声：deflate 压不动，于是必然跨过 4096 的分块线。种子化，字节数每次一样。
   let seed = 0x9e3779b9;

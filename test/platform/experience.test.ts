@@ -148,11 +148,11 @@ test('direction latches bridge the first repeat delay, then release quickly once
   for (const interval of [1000 / 15, 1000 / 30]) {
     const first = recorder();
     first.game.advance(1000); first.game.feed(Buffer.from('d'), 1000);
-    for (let now = 1000 + interval; now < 1340; now += interval) first.game.advance(now);
+    for (let now = 1000 + interval; now < 1550; now += interval) first.game.advance(now);
     assert.ok(first.steps.length > 0);
     assert.ok(first.steps.every(s => s.right), `${interval}ms 首按窗口中断`);
-    first.game.advance(1375);
-    assert.equal(first.steps.at(-1)?.right, false, `${interval}ms 首按窗口没有在 340ms 后释放`);
+    first.game.advance(1585);
+    assert.equal(first.steps.at(-1)?.right, false, `${interval}ms 首按窗口没有在 550ms 后释放`);
 
     const repeated = recorder();
     repeated.game.advance(2000); repeated.game.feed(Buffer.from('d'), 2000);

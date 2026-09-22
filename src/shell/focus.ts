@@ -256,7 +256,12 @@ export class InputRouter {
             flush(i); emit({ kind: 'forward', bytes }); this.pasting = seq === '\x1b[200~'; i = scan.end; continue;
           }
           if (this.pasting) { if (runStart < 0) runStart = i; i = scan.end; continue; }
-          if (seq === '\x1b[24~') { flush(i); emit({ kind: 'toggle-focus' }); i = scan.end; continue; }
+          // Claude enables xterm modifyOtherKeys level 2. iTerm2 then sends Ctrl+]
+          // as CSI 27;5;93~ instead of 0x1d (6 also includes Shift). Keep this after
+          // paste handling, and leave every unrelated modified key byte-exact.
+          if (seq === '\x1b[24~' || /^\x1b\[27;[56];93~$/.test(seq)) {
+            flush(i); emit({ kind: 'toggle-focus' }); i = scan.end; continue;
+          }
           const escapePhase = scan.key?.code === 27 && !scan.reply;
           if (escapePhase && scan.key!.event === 1 && (scan.key!.ctrl || scan.key!.alt)) {
             // A modified Escape press belongs to the wrapped CLI. Modifiers may be released

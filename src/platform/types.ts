@@ -22,6 +22,8 @@ export type GameInput = {
   special?: boolean;
   /** 终端按顺序输入方向+动作，短窗口识别剑谱招式。 */
   art?: import('../core/martial.ts').SwordArt;
+  /** 组合指令开始时的朝向，独立于指令内的移动键。 */
+  artFace?: -1 | 1 | undefined;
 };
 
 export type GameCanvas = {

@@ -1,25 +1,26 @@
-/**
- * 按键 → 意图。终端输入的根本问题是**没有"松开"事件**，所以"按住往右走"必须靠 latch 猜。
- *
- * ## latch 的两档窗口（这是手感的全部）
- *
- * 终端只在按下和**自动重复**时给字节。macOS 的自动重复是"首次延迟 ~250–500ms，
- * 之后每 ~35ms 一次"。所以：
- *
- *   - **第一次**按下给一个长窗口（`FIRST_MS`，340ms）：它要**桥过首次延迟**那段空白，
- *     否则按住不动的头 0.3 秒会先走一步、停一下、再接着走 —— 一顿一顿的。
- *   - 一旦进到重复流里（上一个窗口还没过期就又来了字节），窗口收紧到 `HOLD_MS`（150ms）：
- *     这时候字节每 35ms 就来一个，窗口只需要覆盖一个间隔，松手才跟手。
- *
- * 150ms 是**下限**，不是调出来的数：自动重复间隔本身就在这个量级，再小就会把
- * "按住"误判成"松开又按下"。想要真正的按住/松开，只有 kitty 键盘协议（tmux 不透传），
- * 那是外壳层的事，这里必须在没有它的情况下也能玩。
- *
- * 跳和砍是**脉冲**（按一次算一次，被读走就清掉），所以点按精确、按住则由动作自身的
- * 时长和冷却决定节奏 —— 不需要为"连按"和"按住"写两套逻辑。
- */
-const FIRST_MS = 340;
-const HOLD_MS = 150;
+/** Legacy terminals have no key-up: bridge the initial repeat delay, then stop promptly. */
+export const FIRST_DIRECTION_MS = 550;
+export const REPEAT_DIRECTION_MS = 150;
+export class DirectionHold {
+    key = '';
+    started = 0;
+    last = 0;
+    repeating = false;
+    press(key, until, now) {
+        if (key !== this.key || now >= until || now < this.last) {
+            this.key = key;
+            this.started = this.last = now;
+            this.repeating = false;
+            return now + FIRST_DIRECTION_MS;
+        }
+        // Batched bytes / quick double taps must not cut short the initial grace period.
+        if (now > this.last && (this.repeating || now - this.started >= 180))
+            this.repeating = true;
+        this.last = now;
+        return this.repeating ? now + REPEAT_DIRECTION_MS : Math.max(until, now + REPEAT_DIRECTION_MS);
+    }
+    interrupt() { this.key = ''; this.repeating = false; }
+}
 export class Keys {
     /**
      * 转义序列的状态，**跨 chunk 保留**。
@@ -30,6 +31,7 @@ export class Keys {
      * 不整段跳过的话，光是查一次背景色就能让角色自己挥刀乱走。
      */
     st = 'ground';
+    directionHold = new DirectionHold();
     leftUntil = 0;
     rightUntil = 0;
     jumpPulse = false;
@@ -118,17 +120,21 @@ export class Keys {
     press(k, now) {
         switch (k) {
             case 'left':
-                this.leftUntil = now + (now < this.leftUntil ? HOLD_MS : FIRST_MS);
+                this.leftUntil = this.directionHold.press('left', this.leftUntil, now);
+                this.rightUntil = 0;
                 this.lastDir = -1;
                 break;
             case 'right':
-                this.rightUntil = now + (now < this.rightUntil ? HOLD_MS : FIRST_MS);
+                this.rightUntil = this.directionHold.press('right', this.rightUntil, now);
+                this.leftUntil = 0;
                 this.lastDir = 1;
                 break;
             case 'jump':
+                this.directionHold.interrupt();
                 this.jumpPulse = true;
                 break;
             case 'slash':
+                this.directionHold.interrupt();
                 this.slashPulse = true;
                 break;
         }
@@ -145,6 +151,7 @@ export class Keys {
     }
     /** 焦点离开游戏 / 暂停时用：别让 latch 里残留的方向让角色自己走。 */
     clear() {
+        this.directionHold.interrupt();
         this.st = 'ground';
         this.leftUntil = 0;
         this.rightUntil = 0;

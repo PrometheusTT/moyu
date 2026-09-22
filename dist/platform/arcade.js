@@ -1,3 +1,4 @@
+import { DirectionHold } from "../input/keys.js";
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { homedir } from 'node:os';
@@ -103,21 +104,30 @@ function paintClearBurst(c, pulse) {
     }
 }
 const HOST_POLL_MS = 100;
-const FIRST_DIRECTION_MS = 340;
-const REPEAT_DIRECTION_MS = 150;
 class InputLatch {
     sequence = [];
     pendingArt;
+    pendingArtFace;
+    directionHold = new DirectionHold();
     record(key, now) {
+        if (!'ASD'.includes(key))
+            this.directionHold.interrupt();
         this.sequence = this.sequence.filter(item => now - item.at <= 650 && now >= item.at);
         if ('WASD'.includes(key)) {
             if (this.sequence.at(-1)?.key !== key)
-                this.sequence.push({ key, at: now });
+                this.sequence.push({ key, at: now, face: this.lastHorizontal });
             this.sequence = this.sequence.slice(-2);
         }
         else {
             const combo = [...this.sequence.map(item => item.key), key].join('>');
-            this.pendingArt ??= ART_IDS.find(art => SWORD_ARTS[art].keys === combo);
+            const art = ART_IDS.find(art => SWORD_ARTS[art].keys === combo);
+            if (!this.pendingArt && art) {
+                this.pendingArt = art;
+                this.pendingArtFace = this.sequence[0].face;
+                // A/D inside a completed command name must not force its aim or leave a walk latch.
+                this.leftUntil = this.rightUntil = 0;
+                this.lastHorizontal = this.pendingArtFace;
+            }
             this.sequence = [];
         }
     }
@@ -132,8 +142,16 @@ class InputLatch {
     primary = false;
     secondary = false;
     special = false;
-    hold(until, now) {
-        return now + (now < until ? REPEAT_DIRECTION_MS : FIRST_DIRECTION_MS);
+    hold(key, until, now) {
+        if (key === 'down') {
+            this.directionHold.interrupt();
+            return now + (now < until ? 150 : 340);
+        }
+        if (key === 'left')
+            this.rightUntil = 0;
+        if (key === 'right')
+            this.leftUntil = 0;
+        return this.directionHold.press(key, until, now);
     }
     feed(bytes, now) {
         let played = false;
@@ -154,13 +172,13 @@ class InputLatch {
                         this.upUntil = now + 340;
                     }
                     else if (b === 0x42)
-                        this.downUntil = this.hold(this.downUntil, now);
+                        this.downUntil = this.hold('down', this.downUntil, now);
                     else if (b === 0x43) {
-                        this.rightUntil = this.hold(this.rightUntil, now);
+                        this.rightUntil = this.hold('right', this.rightUntil, now);
                         this.lastHorizontal = 1;
                     }
                     else if (b === 0x44) {
-                        this.leftUntil = this.hold(this.leftUntil, now);
+                        this.leftUntil = this.hold('left', this.leftUntil, now);
                         this.lastHorizontal = -1;
                     }
                     if (b >= 0x41 && b <= 0x44) {
@@ -194,21 +212,23 @@ class InputLatch {
             if (b === 0x65 || b === 0x45)
                 return 'view';
             if (b === 0x61 || b === 0x68) {
-                this.leftUntil = this.hold(this.leftUntil, now);
+                this.leftUntil = this.hold('left', this.leftUntil, now);
                 this.lastHorizontal = -1;
             }
             else if (b === 0x64 || b === 0x6c) {
-                this.rightUntil = this.hold(this.rightUntil, now);
+                this.rightUntil = this.hold('right', this.rightUntil, now);
                 this.lastHorizontal = 1;
             }
             else if (b === 0x73)
-                this.downUntil = this.hold(this.downUntil, now);
+                this.downUntil = this.hold('down', this.downUntil, now);
             else if (b === 0x77 || b === 0x6b) {
                 this.up = true;
                 this.upUntil = now + 340;
             }
-            else if (b === 0x20)
+            else if (b === 0x20) {
                 this.jump = true;
+                this.directionHold.interrupt();
+            }
             else if (b === 0x6a || b === 0x66 || b === 0x3b)
                 this.primary = true;
             else if (b === 0x75)
@@ -233,15 +253,19 @@ class InputLatch {
         const art = this.pendingArt ?? (this.secondary && now < this.downUntil ? 'dugu'
             : this.special && now < this.downUntil ? 'liumai'
                 : this.special && now < this.upUntil ? 'taiji' : undefined);
+        const artFace = this.pendingArtFace;
         this.pendingArt = undefined;
+        this.pendingArtFace = undefined;
         const out = { left, right, up: this.up,
             down: now < this.downUntil, jump: this.jump, primary: this.primary, secondary: this.secondary, special: this.special };
         this.up = this.jump = this.primary = this.secondary = this.special = false;
-        return art ? { ...out, art } : out;
+        return art ? { ...out, art, ...(artFace === undefined ? {} : { artFace }) } : out;
     }
     clear() {
         this.sequence = [];
         this.pendingArt = undefined;
+        this.pendingArtFace = undefined;
+        this.directionHold.interrupt();
         this.leftUntil = this.rightUntil = this.downUntil = 0;
         this.upUntil = 0;
         this.escape = 'ground';
@@ -289,7 +313,7 @@ class StickGame {
             : input.down && input.special ? 'liumai' : input.up && input.special ? 'taiji' : undefined);
         const intent = { move: input.left === input.right ? 0 : input.left ? -1 : 1,
             jump: !art && (input.jump || input.up), slash: !art && input.primary,
-            dash: !art && input.secondary === true, spin: !art && input.special === true, art,
+            dash: !art && input.secondary === true, spin: !art && input.special === true, art, artFace: input.artFace,
             crouch: input.down === true };
         this.world.enemyLimit = Math.min(6, 3 + Math.floor((this.director.chapter - 1) / 5));
         // 结算短暂停留后继续无尽关卡；J 可跳过停留，任务暂停仍由宿主控制。
@@ -586,7 +610,7 @@ class StickGame {
                     return `${['起手', '60气', '100气'][tier]}档 · 耗${spec.cost + tier * 3}气：${SWORD_FORMS[art].slice(tier * count, (tier + 1) * count).map(f => f.name).join(' → ')}`;
                 }), `高档末式收势：${FULL_ART_NAMES[art]}`];
         });
-        return ['剑谱：三档轮换 · 按键不变', '两键340ms / 三键650ms · 每档记忆进度',
+        return ['剑谱：三档轮换 · 按键不变', '两键340ms / 三键650ms · 每档记忆进度', '三键招式按起始朝向释放，左右键位不变',
             `储气上限${MAX_QI} · 每式少量扣气，不清空`,
             '各剑法演出及衍生招式为游戏编排', ...arts, `击破+12气 · 普通命中剑客/Boss+${BOSS_HIT_QI}气`,
             '剑招不回气 · 高档轮完自动收势', '剑客：正面普攻可拼剑，剑招/绕背破守', '收招时追击；蓄势时跳跃或冲刺躲避', '战斗不限时，全部击败才结算'];
