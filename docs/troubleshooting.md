@@ -74,6 +74,13 @@ Claude 会启用 xterm `modifyOtherKeys` 扩展键盘模式。此时 iTerm2 的 
 `q=2` 导致的终端回包；同一修复已补齐。临时可用
 `MOYU_TIER=braille ./bin/moyu -- claude` 避开图像回包，但键盘编码问题仍需更新。
 
+## Windows WezTerm 中 Ctrl+] 没反应
+
+WezTerm 在 Windows 上默认支持 ConPTY 的 Win32 Input Mode。这个模式会发送包含按下和松开事件的
+`CSI Vk;Sc;Uc;Kd;Cs;Rc_`，旧版 Moyu 没有识别它。更新 Moyu 后退出并重新运行
+`moyu -- <cli>`；源码目录先运行 `npm run compile`，再用 `./bin/moyu -- <cli>`。
+`F12` 仍可作为备用切换键。若更新后依然无效，请检查 WezTerm 自定义键位是否截获了 `Ctrl+]`。
+
 ## 图片不显示
 
 先区分“能力探测失败”和“终端确实不支持”：

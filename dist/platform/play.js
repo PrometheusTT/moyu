@@ -8,6 +8,7 @@ import { Arcade } from "./arcade.js";
 import { loadGameModules } from "./registry.js";
 import { PlaySurface } from "./surface.js";
 import { fieldColsFor } from "../shell/regions.js";
+import { InputRouter } from "../shell/focus.js";
 function oneLine(value) { return value.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim() || '未知错误'; }
 function reported(value) {
     return Number.isSafeInteger(value) && value !== undefined && value > 0 ? value : null;
@@ -48,6 +49,7 @@ export async function cmdPlay(id) {
         return 2;
     }
     const arcade = prepared.arcade;
+    const input = new InputRouter({ focus: 'game' });
     const wasRaw = process.stdin.isRaw;
     let restoreOptions = {};
     const teardown = new Teardown(() => restoreOptions);
@@ -127,21 +129,26 @@ export async function cmdPlay(id) {
     }
     else
         layout();
-    if (caps.leftover.length > 0)
-        arcade.feed(caps.leftover);
     return new Promise((resolve) => {
-        process.stdin.on('data', (b) => {
-            const f12 = b.length === 5 && b.toString('latin1') === '\x1b[24~';
-            const oneKeyClose = b.length === 1 && (b[0] === 0x1d || b[0] === 0x1b);
-            if (b.includes(0x03) || f12 || oneKeyClose || arcade.feed(b)) {
-                void finish().finally(() => { resolve(0); });
-            }
-            else if (arcade.takeViewToggle()) {
-                expanded = !expanded;
-                layout();
-            }
-        });
+        const onInput = (chunk) => {
+            input.route(chunk, (action) => {
+                if (done)
+                    return;
+                const interrupt = action.kind === 'forward' && action.bytes.includes(0x03);
+                if (action.kind === 'toggle-focus' || interrupt
+                    || (action.kind === 'game' && arcade.feed(action.bytes))) {
+                    void finish().finally(() => { resolve(0); });
+                }
+                else if (arcade.takeViewToggle()) {
+                    expanded = !expanded;
+                    layout();
+                }
+            });
+        };
+        process.stdin.on('data', onInput);
         process.stdout.on('resize', layout);
+        if (caps.leftover.length > 0)
+            onInput(caps.leftover);
         timer = setInterval(() => {
             if (done || !active || !size.usable)
                 return;

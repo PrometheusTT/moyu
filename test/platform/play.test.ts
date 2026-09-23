@@ -106,7 +106,7 @@ test('moyu play persists the active cartridge before one-key exit', { timeout: 1
     await waitFor(() => wire.includes('贪吃蛇'), '贪吃蛇帮助');
     child.write('d');
     await waitFor(() => wire.includes('最高 1'), '非默认战绩');
-    child.write('\x1d');
+    child.write('\x1b[221;27;29;1;8;1_\x1b[221;27;29;0;0;1_');
     const result = await Promise.race([
       exited,
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('退出超时')), 3000)),

@@ -43,6 +43,51 @@ test('iTerm2 Ctrl+] toggles with Claude modifyOtherKeys enabled, including split
   }
 });
 
+test('WezTerm Win32 Ctrl+] toggles on key-down and consumes key-up across PTY splits', () => {
+  for (const focus of ['cli', 'game'] as const) {
+    for (const char of [0, 29, 93]) {
+      const down = b(`\x1b[221;27;${char};1;8;1_`);
+      const up = b(`\x1b[221;27;${char};0;0;1_`);
+      for (let cut = 2; cut < down.length; cut++) {
+        const r = new InputRouter({ focus });
+        assert.deepEqual(r.route(down.subarray(0, cut)), [], `cut=${cut}`);
+        assert.deepEqual(kinds(r, down.subarray(cut)), ['toggle-focus'], `cut=${cut}`);
+        assert.deepEqual(kinds(r, up), [], 'key release must not enter the CLI');
+      }
+    }
+  }
+});
+
+test('Win32 Input Mode preserves CLI keys and translates game controls', () => {
+  const normal = b('\x1b[74;36;106;1;0;1_');
+  const release = b('\x1b[74;36;106;0;0;1_');
+  const cli = routed(new InputRouter(), [normal, release]);
+  assert.deepEqual(cli.forwarded, Uint8Array.from([...normal, ...release]));
+  assert.deepEqual(cli.kinds, ['forward', 'forward']);
+
+  const game = new InputRouter({ focus: 'game' });
+  assert.deepEqual(game.route(normal), [{ kind: 'game', bytes: b('j') }]);
+  assert.deepEqual(game.route(release), []);
+  const up = game.route(b('\x1b[38;72;0;1;0;1_'));
+  assert.equal(up[0]?.kind, 'game');
+  assert.deepEqual([...('bytes' in up[0]! ? up[0].bytes : [])], [...b('\x1b[A')]);
+  assert.deepEqual(kinds(game, b('\x1b[123;88;0;1;0;1_')), ['toggle-focus']);
+  assert.deepEqual(kinds(game, b('\x1b[123;88;0;0;0;1_')), []);
+});
+
+test('Win32 unrelated modifiers and pasted hotkeys keep their original bytes', () => {
+  const ctrlG = b('\x1b[71;34;7;1;8;1_');
+  const altBracket = b('\x1b[221;27;93;1;10;1_');
+  const pasted = b('\x1b[200~\x1b[221;27;29;1;8;1_\x1b[201~');
+  for (const focus of ['cli', 'game'] as const) {
+    for (const raw of [ctrlG, altBracket, pasted]) {
+      const result = routed(new InputRouter({ focus }), [raw]);
+      assert.deepEqual(result.forwarded, raw);
+      assert.ok(result.kinds.every(kind => kind === 'forward'));
+    }
+  }
+});
+
 test('modifyOtherKeys leaves unrelated keys and pasted shortcuts byte-exact', () => {
   for (const focus of ['cli', 'game'] as const) {
     for (const seq of ['\x1b[27;5;99~', '\x1b[27;5;103~', '\x1b[27;7;93~',

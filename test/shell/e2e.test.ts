@@ -382,6 +382,24 @@ test('iTerm2 modifyOtherKeys Ctrl+] opens the game and returns to CLI in a real 
   } finally { s.kill(); }
 });
 
+test('WezTerm Win32 Ctrl+] opens and closes the game without leaking key release', async () => {
+  const s = await launch();
+  try {
+    await s.waitFor(w => standbyPaint(w) && w.includes('INNER-READY'), '待机和内层启动');
+    const down = '\x1b[221;27;29;1;8;1_';
+    const up = '\x1b[221;27;29;0;0;1_';
+    const enter = s.wire().length;
+    s.send(down + up);
+    await s.waitFor(w => w.slice(enter).includes(LIVE_PANEL), 'Win32 Ctrl+] 显示游戏');
+    const leave = s.wire().length;
+    s.send(down + up);
+    await s.waitFor(w => standbyPaint(w.slice(leave)), 'Win32 Ctrl+] 返回待机');
+    const cli = s.wire().length;
+    s.send('p');
+    await s.waitFor(w => w.slice(cli).includes('INNER-HELLO'), '输入归还内层 CLI');
+  } finally { s.kill(); }
+});
+
 test('stable standby has no frame loop output until an external transition invalidates it', async () => {
   const s = await launch();
   try {

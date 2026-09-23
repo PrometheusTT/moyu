@@ -19,6 +19,16 @@ function parseKitty(params) {
     return { code, ctrl: ((mods - 1) & 4) !== 0, alt: ((mods - 1) & 2) !== 0,
         event: subParam(params, 1, 1) ?? 1 };
 }
+function parseWin32(seq) {
+    // ConPTY's Win32 Input Mode: CSI Vk;Sc;Uc;Kd;Cs;Rc_. The flags in Cs are
+    // KEY_EVENT_RECORD.dwControlKeyState, not xterm/Kitty modifier numbers.
+    const match = /^\x1b\[(\d+);(\d+);(\d+);([01]);(\d+);(\d+)_$/.exec(seq);
+    if (match === null)
+        return null;
+    const state = Number(match[5]);
+    return { vk: Number(match[1]), char: Number(match[3]), down: match[4] === '1',
+        ctrl: (state & 0x0c) !== 0, alt: (state & 0x03) !== 0 };
+}
 function scanEscTail(buf, tailAt) {
     const next = buf[tailAt];
     if (next === undefined || next < 0x20)
@@ -90,6 +100,7 @@ export class InputRouter {
     terminalString = 'normal';
     csiOverflow = false;
     kittyEscapeOwner = null;
+    win32OwnedVk = null;
     constructor(opts = {}) { this.focus = opts.focus ?? 'cli'; }
     get heldBytes() {
         return this.held.length + (this.terminalString.endsWith('-esc') ? 1 : 0);
@@ -107,6 +118,41 @@ export class InputRouter {
         if (owner === 'game')
             return 'drop';
         return this.focus === 'cli' ? { kind: 'forward', bytes } : 'drop';
+    }
+    win32Action(key, bytes) {
+        // Key-up can arrive after the modifiers or focus have changed. Keep ownership
+        // through that event, and suppress auto-repeat while the key is held.
+        if (this.win32OwnedVk === key.vk) {
+            if (!key.down)
+                this.win32OwnedVk = null;
+            return 'drop';
+        }
+        if (key.down)
+            this.win32OwnedVk = null;
+        // Uc can be translated Ctrl+], a literal ']', or zero depending on layout.
+        const bracket = key.ctrl && !key.alt
+            && (key.vk === 0xdd || key.char === 0x1d || key.char === 93);
+        const f12 = key.vk === 0x7b && !key.ctrl && !key.alt;
+        const escape = this.focus === 'game' && key.vk === 0x1b && !key.ctrl && !key.alt;
+        if (bracket || f12 || escape) {
+            if (!key.down)
+                return 'drop';
+            this.win32OwnedVk = key.vk;
+            return { kind: 'toggle-focus' };
+        }
+        if (this.focus === 'cli')
+            return 'pass';
+        if (key.ctrl || key.alt)
+            return { kind: 'forward', bytes };
+        if (!key.down)
+            return 'drop';
+        const arrow = key.vk === 0x25 ? '\x1b[D' : key.vk === 0x27 ? '\x1b[C'
+            : key.vk === 0x26 ? '\x1b[A' : key.vk === 0x28 ? '\x1b[B' : null;
+        if (arrow !== null)
+            return { kind: 'game', bytes: Buffer.from(arrow, 'latin1') };
+        if (key.char >= 0x20 && key.char <= 0x7e)
+            return { kind: 'game', bytes: Uint8Array.of(key.char) };
+        return 'pass';
     }
     route(chunk, onAction) {
         const pendingStringEsc = this.terminalString.endsWith('-esc') && chunk.length > 0;
@@ -284,6 +330,21 @@ export class InputRouter {
                     if (seq === '\x1b[24~' || /^\x1b\[27;[56];93~$/.test(seq)) {
                         flush(i);
                         emit({ kind: 'toggle-focus' });
+                        i = scan.end;
+                        continue;
+                    }
+                    const win32 = parseWin32(seq);
+                    if (win32 !== null) {
+                        const action = this.win32Action(win32, bytes);
+                        if (action === 'pass') {
+                            if (runStart < 0)
+                                runStart = i;
+                        }
+                        else {
+                            flush(i);
+                            if (action !== 'drop')
+                                emit(action);
+                        }
                         i = scan.end;
                         continue;
                     }

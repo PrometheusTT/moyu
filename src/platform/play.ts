@@ -9,6 +9,7 @@ import { loadGameModules } from './registry.ts';
 import { PlaySurface } from './surface.ts';
 import type { GameModule } from './types.ts';
 import { fieldColsFor } from '../shell/regions.ts';
+import { InputRouter } from '../shell/focus.ts';
 import type { PixelTarget } from '../render/target.ts';
 
 export type PlayPreparation = { arcade: Arcade; error?: never } | { arcade?: never; error: string };
@@ -48,6 +49,7 @@ export async function cmdPlay(id?: string): Promise<number> {
   const prepared = preparePlay(modules, id);
   if (prepared.error !== undefined) { process.stderr.write(`${prepared.error}\n`); return 2; }
   const arcade = prepared.arcade;
+  const input = new InputRouter({ focus: 'game' });
   const wasRaw = process.stdin.isRaw;
   let restoreOptions = {};
   const teardown = new Teardown(() => restoreOptions);
@@ -106,16 +108,20 @@ export async function cmdPlay(id?: string): Promise<number> {
   process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?7l\x1b[?25l');
   if (size.usable) { active = true; arcade.resume(); arcade.enter(); }
   else layout();
-  if (caps.leftover.length > 0) arcade.feed(caps.leftover);
   return new Promise<number>((resolve) => {
-    process.stdin.on('data', (b: Buffer) => {
-      const f12 = b.length === 5 && b.toString('latin1') === '\x1b[24~';
-      const oneKeyClose = b.length === 1 && (b[0] === 0x1d || b[0] === 0x1b);
-      if (b.includes(0x03) || f12 || oneKeyClose || arcade.feed(b)) {
-        void finish().finally(() => { resolve(0); });
-      } else if (arcade.takeViewToggle()) { expanded = !expanded; layout(); }
-    });
+    const onInput = (chunk: Uint8Array): void => {
+      input.route(chunk, (action) => {
+        if (done) return;
+        const interrupt = action.kind === 'forward' && action.bytes.includes(0x03);
+        if (action.kind === 'toggle-focus' || interrupt
+          || (action.kind === 'game' && arcade.feed(action.bytes))) {
+          void finish().finally(() => { resolve(0); });
+        } else if (arcade.takeViewToggle()) { expanded = !expanded; layout(); }
+      });
+    };
+    process.stdin.on('data', onInput);
     process.stdout.on('resize', layout);
+    if (caps.leftover.length > 0) onInput(caps.leftover);
     timer = setInterval(() => {
       if (done || !active || !size.usable) return;
       const now = Date.now();
