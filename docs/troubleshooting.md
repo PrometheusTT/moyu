@@ -60,7 +60,7 @@ npm install
 moyu doctor
 ```
 
-确认当前平台是受支持的 macOS、Linux 或 WSL，以及 Node 架构与安装时使用的架构一致。不要从
+确认当前平台是受支持的 macOS、Linux 或 Windows（原生或 WSL），以及 Node 架构与安装时使用的架构一致。不要从
 另一台机器复制 `node_modules`。
 
 ## iTerm2 中 Claude 正常启动，但 Ctrl+] 没反应

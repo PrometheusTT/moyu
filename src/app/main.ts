@@ -98,8 +98,9 @@ function launchCommand(argv: string[]): string[] {
     return ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', file, ...argv.slice(1)];
   }
   if (/\.(?:cmd|bat)$/i.test(file)) {
-    // Node and ConPTY cannot execute batch files directly. Use cmd only for that case.
-    return [process.env.ComSpec || 'cmd.exe', '/d', '/s', '/c', `"${file}"`, ...argv.slice(1)];
+    // ConPTY cannot execute batch files directly. node-pty quotes paths with spaces;
+    // adding our own quotes or /s makes cmd treat those quotes as part of the filename.
+    return [process.env.ComSpec || 'cmd.exe', '/d', '/c', file, ...argv.slice(1)];
   }
   return argv;
 }
