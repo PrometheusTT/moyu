@@ -122,3 +122,33 @@ test('moyu play persists the active cartridge before one-key exit', { timeout: 1
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('moyu play selects Kitty pixels in WezTerm and removes the image on exit', { timeout: 12000 }, async () => {
+  const root = new URL('../../', import.meta.url).pathname;
+  const { spawn } = await loadPty();
+  const child = spawn(path.join(root, 'bin', 'moyu'), ['play', 'stick-slash'], {
+    cols: 80, rows: 20, cwd: root, encoding: null, handleFlowControl: false,
+    env: { ...process.env, TERM: 'xterm-256color', TERM_PROGRAM: 'WezTerm', WEZTERM_PANE: '1',
+      MOYU_TIER: '', MOYU_FORCE_GRAPHICS: '', MOYU_CELL: '8x17',
+      TMUX: '', STY: '', SSH_CONNECTION: '' },
+  });
+  let wire = ''; let exit: { exitCode: number } | null = null;
+  child.onData(bytes => { wire += Buffer.from(bytes).toString('latin1'); });
+  const exited = new Promise<{ exitCode: number }>(resolve => child.onExit(value => { exit = value; resolve(value); }));
+  try {
+    const deadline = Date.now() + 8000;
+    while (!wire.includes('\x1b_Ga=T') && exit === null && Date.now() < deadline)
+      await new Promise(resolve => setTimeout(resolve, 20));
+    assert.ok(wire.includes('\x1b_Ga=T,f=24'), 'standalone play should send a Kitty image frame');
+    child.write('\x1d');
+    const result = await Promise.race([exited,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('退出超时')), 3000))]);
+    assert.equal(result.exitCode, 0);
+    assert.ok(wire.includes('\x1b_Ga=d,d=I'), 'the image must be deleted before returning to the terminal');
+  } finally {
+    if (exit === null) {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+      await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 1000))]);
+    }
+  }
+});

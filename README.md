@@ -55,25 +55,46 @@ Moyu 是一个轻量、local-first 的终端游戏宿主。它把 Codex、Claude
 ### 环境要求
 
 - Node ≥ 20（Node.js 20 或更高版本）
-- macOS、Linux，或 Windows WSL
+- macOS、Linux，或 Windows 10/11 + WSL（Windows 原生 PowerShell 暂不运行游戏）
 - 一个交互式终端；普通 UTF-8 + ANSI 终端即可使用字符渲染
 
-### 安装
+### macOS：安装与开玩
 
 ```sh
-npm install --global moyu-game
-moyu doctor
+npm install --global 'github:PrometheusTT/moyu#feat/live-on-enter'
+moyu play
 ```
 
-发布包包含编译后的 `dist/`，安装过程不需要 TypeScript、不执行构建脚本，也不会启动后台
-服务。需要验证尚未发布的默认分支时，也可以使用
-`npm install --global github:PrometheusTT/moyu`。
+已有 Node 20+ 时只需这两条命令；没有 Node、但已装 Homebrew 时，可运行
+`curl -fsSL https://raw.githubusercontent.com/PrometheusTT/moyu/feat/live-on-enter/install/macos.sh -o /tmp/moyu-install.sh && sh /tmp/moyu-install.sh`
+自动安装 Node 和 Moyu。脚本见 [`install/macos.sh`](./install/macos.sh)。需要高清图形档，请在
+Kitty、Ghostty 或 WezTerm 中运行；系统自带 Terminal.app 会退回字符档。
+
+### Windows：一次设置，以后直接玩
+
+在**管理员 PowerShell** 中运行以下命令。安装器会安装 WezTerm 和 WSL Ubuntu，
+再在 WSL 内安装 Node 与 Moyu；已有的组件会跳过。若 Windows 要求重启，重启并完成
+Ubuntu 首次创建用户名后，**再运行同一条命令**即可继续。
+
+```powershell
+$file = Join-Path $env:TEMP 'moyu-install.ps1'; Invoke-WebRequest https://raw.githubusercontent.com/PrometheusTT/moyu/feat/live-on-enter/install/windows.ps1 -OutFile $file; powershell -NoProfile -ExecutionPolicy Bypass -File $file
+```
+
+完成后打开 WezTerm 的 `WSL:Ubuntu` 标签页，输入 `moyu play`。Windows 本机只负责显示，
+Moyu 和 Node 运行在 WSL 内；无需安装 Linux 图形桌面。安装器是可检查、可重复运行的
+[`install/windows.ps1`](./install/windows.ps1)，不会覆盖现有 WezTerm 配置。
+
+两端都可运行 `moyu doctor --caps` 查看自动选档，或运行 `moyu doctor --gfx` 检查高清图片链路。
+`moyu play` 现在也会自动使用终端支持的最高清晰度，不能显示图片时自动退回字符档。
+
+当前从 GitHub 的 `feat/live-on-enter` 分支安装；`moyu-game` 尚未发布到 npm registry。
+安装包包含编译后的 `dist/`，安装过程不需要 TypeScript、不执行构建脚本，也不会启动后台服务。
 
 升级或卸载：
 
 ```sh
-npm install --global moyu-game@latest  # 升级到最新稳定版
-npm uninstall --global moyu-game       # 卸载
+npm install --global 'github:PrometheusTT/moyu#feat/live-on-enter'  # 升级
+npm uninstall --global moyu-game                              # 卸载
 ```
 
 ### 开始玩

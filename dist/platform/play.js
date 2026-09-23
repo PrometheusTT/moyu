@@ -1,4 +1,7 @@
 import { BrailleTarget } from "../render/braille.js";
+import { GraphicsTarget } from "../render/graphics.js";
+import { Canvas } from "../render/canvas.js";
+import { probeCaps } from "../render/caps.js";
 import { fitRow } from "../render/text.js";
 import { Teardown } from "../shell/teardown.js";
 import { Arcade } from "./arcade.js";
@@ -46,17 +49,18 @@ export async function cmdPlay(id) {
     }
     const arcade = prepared.arcade;
     const wasRaw = process.stdin.isRaw;
-    const teardown = new Teardown(() => ({}));
+    let restoreOptions = {};
+    const teardown = new Teardown(() => restoreOptions);
     let expanded = true;
     const geometry = () => playGeometry(process.stdout.columns, process.stdout.rows, expanded);
     let size = geometry();
-    const target = new BrailleTarget(size.targetCols, size.rows, { defaultBackground: true, defaultForeground: 0xecf0f8 });
+    let target;
     const surface = new PlaySurface();
     let done = false, timer = null, active = false;
     const layout = () => {
         size = geometry();
         target.resize(size.targetCols, size.rows);
-        arcade.setDisplay(size.rows, 'braille');
+        arcade.setDisplay(size.rows, target.tier);
         target.invalidate();
         if (size.usable) {
             if (!active)
@@ -96,9 +100,26 @@ export async function cmdPlay(id) {
         process.stdin.pause();
     });
     await teardown.acquire({});
+    let caps;
+    try {
+        process.stdin.setRawMode(true);
+        process.stdin.resume();
+        caps = await probeCaps({ stdin: process.stdin, write: value => { process.stdout.write(value); },
+            env: process.env, cols: size.cols, rows: process.stdout.rows ?? 24, tty: true });
+        target = caps.tier === 'graphics' ? new GraphicsTarget(size.targetCols, size.rows, caps.cellW, caps.cellH)
+            : caps.tier === 'braille' ? new BrailleTarget(size.targetCols, size.rows, { defaultBackground: true, defaultForeground: 0xecf0f8 }) : new Canvas(size.targetCols, size.rows);
+        restoreOptions = caps.tier === 'graphics' ? { deleteImage: true } : {};
+        await teardown.update(restoreOptions);
+    }
+    catch (error) {
+        teardown.run();
+        try {
+            await teardown.released();
+        }
+        catch { /* local terminal restoration already ran */ }
+        throw error;
+    }
     process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?7l\x1b[?25l');
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
     if (size.usable) {
         active = true;
         arcade.resume();
@@ -106,6 +127,8 @@ export async function cmdPlay(id) {
     }
     else
         layout();
+    if (caps.leftover.length > 0)
+        arcade.feed(caps.leftover);
     return new Promise((resolve) => {
         process.stdin.on('data', (b) => {
             const f12 = b.length === 5 && b.toString('latin1') === '\x1b[24~';
@@ -123,11 +146,11 @@ export async function cmdPlay(id) {
             if (done || !active || !size.usable)
                 return;
             const now = Date.now();
-            arcade.setDisplay(size.rows, 'braille');
+            arcade.setDisplay(size.rows, target.tier);
             arcade.advance(now);
             const row = `\x1b[1;1H\x1b[38;2;196;202;218m\x1b[48;2;24;26;36m${fitRow(arcade.name, '? 帮助', size.targetCols)}\x1b[0m`;
             process.stdout.write(row + surface.render(arcade, target, 2, size.cols, size.rows));
-        }, 1000 / 30);
+        }, 1000 / caps.fps);
         timer.unref();
     });
 }

@@ -11,6 +11,16 @@ moyu doctor --caps
 提交 Issue 时请说明操作系统、终端名称和版本、本地/SSH/tmux 路径、Moyu commit，以及问题发生
 在 `moyu play` 还是 `moyu -- <cli>`。分享输出前删除用户名、主机名、IP、token 和私有路径。
 
+## Windows 安装停在 WSL 设置
+
+首次启用 WSL 可能需要重启 Windows，并在 Ubuntu 窗口里创建 Linux 用户。完成后在管理员
+PowerShell **重跑同一条安装命令**，安装器会跳过已安装的 WezTerm 和 WSL，继续安装 Node 与 Moyu。
+请在 WezTerm 的 `WSL:Ubuntu` 标签页运行 `moyu play`；在 PowerShell 或 Windows Terminal
+输入 `moyu` 不会调用 WSL 内的安装。无需安装 Linux 图形桌面。
+
+如果 WezTerm 没显示 `WSL:Ubuntu`，先在 PowerShell 运行 `wsl -l -v` 确认 Ubuntu 已完成首次
+启动，再重新打开 WezTerm。在该标签页内运行 `moyu doctor --caps` 检查图形档。
+
 ## 安装后找不到 `moyu`
 
 ```sh
@@ -22,16 +32,10 @@ npm list --global --depth=0
 
 ```sh
 npm uninstall --global moyu-game
-npm install --global moyu-game
+npm install --global 'github:PrometheusTT/moyu#feat/live-on-enter'
 ```
 
-如果 npm registry 中尚未发布所需版本，可以安装 GitHub 默认分支：
-
-```sh
-npm install --global github:PrometheusTT/moyu
-```
-
-两种安装方式都不需要本机 TypeScript。如果错误提到 `tsc`、`prepare` 或临时目录死软链，
+当前 `moyu-game` 尚未发布到 npm registry。安装时不需要本机 TypeScript。如果错误提到 `tsc`、`prepare` 或临时目录死软链，
 请附上 Node/npm 版本创建 Bug Report。
 
 ## PTY 原生模块加载失败
