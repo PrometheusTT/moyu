@@ -39,8 +39,9 @@ function run(args, marker, afterMarker) {
     child.onExit(({ exitCode }) => {
       clearTimeout(timer);
       try {
-        assert.equal(exitCode, 0, output.slice(-1500));
-        assert.ok(output.includes(marker), output.slice(-1500));
+        const diagnostic = `${output.slice(0, 1000)}\n[tail]\n${output.slice(-1000)}`;
+        assert.equal(exitCode, 0, diagnostic);
+        assert.ok(output.includes(marker), diagnostic);
         resolve(output);
       } catch (error) { reject(error); }
     });
@@ -48,7 +49,7 @@ function run(args, marker, afterMarker) {
 }
 
 try {
-  fs.writeFileSync(path.join(home, 'moyu-native-test.ps1'), "Write-Output 'MOYU_PS_OK'\n");
+  fs.writeFileSync(path.join(home, 'moyu-native-test.ps1'), "Write-Host 'MOYU_PS_OK'\nStart-Sleep -Seconds 1\n");
   const play = await run(['play', 'stick-slash'], '\x1b[?1049h', child => {
     setTimeout(() => child.write('\x1d'), 500);
   });
