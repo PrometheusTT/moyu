@@ -169,7 +169,7 @@ test('README 必须写到 Codex 那个信任步骤 —— 不做这一步 hook �
   assert.match(readme, /moyu install --write/);
   assert.match(readme, /~\/\.codex\/hooks\.json/);
   // 这条 hook 到底往外写什么，是别人愿不愿意装的前提。承诺没了就等于没承诺。
-  assert.match(readme, /不写.*错误文本|错误文本/);
+  assert.match(readme, /never prompts, output, or error text/);
 });
 
 test('bin/moyu 里的重装提示和 repository 对得上（换仓库名时最容易漏的一处）', () => {

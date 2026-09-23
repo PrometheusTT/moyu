@@ -1,6 +1,6 @@
 # Support
 
-[English](./README.en.md) · [简体中文](./README.md)
+[English](./README.md) · [简体中文](./README.zh-CN.md)
 
 For help, run `moyu doctor` and `moyu doctor --caps`, then check [Troubleshooting (English)](./docs/troubleshooting.en.md) or [中文故障排查](./docs/troubleshooting.md). If the problem remains, open a [Bug report](https://github.com/PrometheusTT/moyu/issues/new?template=bug_report.yml). Include the Moyu commit, Node version, OS, terminal/version, connection path, and minimal steps. Redact credentials, prompts, IPs, hostnames, and private paths.
 

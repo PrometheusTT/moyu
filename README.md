@@ -1,40 +1,23 @@
-# 摸鱼 Moyu · 火柴快斩
+# Moyu · Stick Slash
 
-[English](./README.en.md) · [问题排查](./docs/troubleshooting.md) · [参与共创](./CONTRIBUTING.md)
+A stick-figure action game inside your terminal. Play on its own or wrap Codex, Claude Code, or another coding CLI. While you work, Moyu occupies one quiet row. Press `Ctrl+]` to play and press it again to return; progress is saved automatically.
 
-在终端里玩的火柴人动作游戏。可以独立运行，也可以包住 Codex、Claude Code 等 coding CLI：工作时只占底部一行，按 `Ctrl+]` 进入游戏，再按一次回到工作。游戏会暂停并保存进度。
+![A straw-hatted stick fighter slashing through a bamboo grove](./cover-stick-slash.png)
 
-![斗笠火柴人在竹林中挥剑的火柴快斩封面](./cover-stick-slash.png)
+[简体中文](./README.zh-CN.md) · [Quick start](#quick-start) · [Controls](#controls) · [Sword arts](#sword-arts) · [Troubleshooting](./docs/troubleshooting.en.md)
 
-## 玩法
+## Quick start
 
-`J` 快斩，`A/D` 移动，空格或 `K` 跳跃，`U` 冲刺斩，`I` 旋斩。依次按 `S`、`K` 可解控并短暂霸体防御；防御时不能移动或出招，仍会受伤。按 `?` 查看剑谱，`Esc` 或 `q` 返回 CLI，`F12` 可代替 `Ctrl+]` 切换。
+Requires **Node >= 20** and an interactive terminal. macOS, Linux, and native Windows 10/11 are supported.
 
-每关约 30 秒刷怪，清空敌人才结算。每三关有 Boss，招式与控制逐步增加；玩家通过击破积累剑气、阅历和剑法熟练度，提升生命上限并缩短部分冷却。剑谱、成长和关卡进度自动保存。
-
-## 终端与画质
-
-需要 **Node ≥ 20** 和交互式终端。Moyu 会探测图形能力，自动选择 Kitty Graphics、彩色 Braille 或半块字符；运行 `moyu doctor --caps` 查看实际档位。
-
-| 终端 | 系统 | 预期画质 |
-| --- | --- | --- |
-| Kitty、Ghostty、WezTerm | macOS / Linux；WezTerm 也支持 Windows 原生 | 可尝试 Kitty Graphics 高清档，失败时回退字符档 |
-| iTerm2、macOS Terminal、VS Code 终端 | macOS / Linux | 字符档；iTerm2 图片协议暂未实现 |
-| Windows Terminal / PowerShell | Windows 原生或 WSL | 字符档；高清建议用 WezTerm |
-| SSH、tmux、screen | 跨平台 | 通常使用字符档 |
-
-以上是支持路径和自动化测试覆盖，具体终端版本、字体与远程链路的画面仍需[人工验证](./docs/terminal-qa.md)。
-
-## 安装
-
-macOS / Linux（已安装 Node）：
+On macOS or Linux with Node installed:
 
 ```sh
 npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main'
 moyu play stick-slash
 ```
 
-macOS 缺少 Node 时可用[安装脚本](./install/macos.sh)。Windows 10/11 **无需 WSL**，在 PowerShell 中运行：
+If your Mac does not have Node, use the [macOS installer](./install/macos.sh). Windows does **not** require WSL. Run this in PowerShell:
 
 ```powershell
 $file = Join-Path $env:TEMP 'moyu-native-install.ps1'
@@ -42,38 +25,123 @@ Invoke-WebRequest https://raw.githubusercontent.com/PrometheusTT/moyu/main/insta
 powershell -NoProfile -ExecutionPolicy Bypass -File $file
 ```
 
-安装器会补齐 Node 和 WezTerm。完成后新开 WezTerm 的 PowerShell 标签页，运行 `moyu play stick-slash`。已有 coding CLI 时运行 `moyu -- codex` 或 `moyu -- claude`；Windows 上须先安装对应 CLI 的 Windows 版本。
+The installer sets up Node and WezTerm if needed. Open a new WezTerm PowerShell tab, then run `moyu play stick-slash`. If you already have a coding CLI installed, you can wrap it instead:
 
-## 更新
+```sh
+moyu -- codex
+moyu -- claude
+```
 
-当前只从 GitHub `main` 安装，尚未发布到 npm registry。为确保拿到同版本号下的最新提交，先卸载包，再重新安装；存档不会随 npm 包删除。macOS / Linux：
+On Windows, install the native Windows version of the CLI you want to wrap. Moyu currently installs from GitHub `main`, not the npm registry.
+
+## Controls
+
+When Moyu wraps a coding CLI, keys belong to that CLI until you enter the game.
+
+| Key | Action |
+| --- | --- |
+| `Ctrl+]` | Enter or leave the game; `F12` is an alternative |
+| `Esc` / `q` | Return to the CLI without ending its session |
+| `E` | Expand or collapse the battlefield |
+| `?` | Pause and view the sword-art guide and unlock progress; `[` / `]` changes pages |
+| `A` / `D` | Move left / right |
+| `J` | Quick slash; movement, crouching, and jumping change the strike |
+| Space / `K` | Jump |
+| `U` / `I` | Dash slash / spin slash |
+| `S` → `K` | Iron Guard: break control and defend in place; you cannot move or attack, but still take damage |
+
+Enter combinations in order; do not hold their keys together. `Ctrl+C`, `Ctrl+G`, and `Ctrl+Space` remain available to the coding CLI.
+
+## Play and progression
+
+Enemies spawn for about 30 seconds per stage. Defeat every remaining enemy and boss to finish the stage. A boss appears every three stages; mantis, scarab, crystal, and spider bosses rotate in. Early bosses have simpler moves, while later ones add combos, knockback, and brief control effects. Red ground marks and blue ice fields warn you to dodge.
+
+Hits build qi for sword arts. Defeats build insight, which unlocks arts and permanently improves your maximum health and some cooldowns. Using an art raises its mastery and reach. Sword arts, insight, qi, and stage checkpoints save automatically.
+
+## Sword arts
+
+Press each key in sequence. The unlock number is **insight**, not the number of times you cast the art. The qi column is the base cost for its first tier.
+
+| Keys | Art | Unlock insight | Base qi |
+| --- | --- | ---: | ---: |
+| `S` → `U` | Nine Swords (独孤九剑) | Starting art | 10 |
+| `S` → `I` | Six Meridian Swords (六脉神剑) | 12 | 15 |
+| `W` → `I` | Taiji Sword (太极剑) | 36 | 15 |
+| `W` → `D` → `J` | Moon Fang (月牙天冲), secret art | 48 | 20 |
+| `S` → `D` → `U` | Heavenly Flying Sword (天外飞仙) | 60 | 20 |
+| `W` → `A` → `J` | Sun Breathing (日之呼吸), secret art | 80 | 20 |
+| `S` → `A` → `I` | Myriad Swords (万剑归宗) | 100 | 20 |
+
+Qi below 60 uses the first set of forms; 60–99 uses the second; 100 or more uses the third. Later tiers cost 3 or 6 extra qi. Forms rotate within each tier, and the last form in the highest tier has a finishing move. Press `?` in-game for individual forms and your progress. `S` → `K` is a separate defensive move: Iron Guard initially lasts 0.8 seconds with a 6-second cooldown. It clears control and prevents knockback or stagger during the guard, but it is not invulnerability.
+
+## Terminals and graphics
+
+Moyu probes your terminal and chooses Kitty Graphics, color Braille, or half-block text. Run `moyu doctor --caps` to see the selected tier and `moyu doctor --gfx` to check image output.
+
+| Terminal | Platform | Expected output |
+| --- | --- | --- |
+| Kitty, Ghostty, WezTerm | macOS / Linux; WezTerm also on native Windows | High-resolution graphics when the capability probe succeeds; text fallback otherwise |
+| iTerm2 | macOS | High-resolution play reported by the project author; check your own tier with `moyu doctor --caps` |
+| macOS Terminal | macOS | Character rendering |
+| VS Code integrated terminal | Cross-platform | Character rendering |
+| Windows Terminal | Native Windows or WSL | Character rendering; use WezTerm for the high-resolution path on Windows |
+| SSH, tmux, screen | Cross-platform | Usually character rendering |
+
+The iTerm2 report is a manual play test, not a guarantee for every version or setup. Moyu does not implement iTerm2's proprietary inline-image protocol. Terminal versions, fonts, and remote links still need [manual checks](./docs/terminal-qa.md).
+
+## Task integration
+
+Task integration is optional. When enabled, Moyu saves the game and updates its status when an agent task starts, finishes, or needs confirmation:
+
+```sh
+moyu setup                       # Install detected Codex / Claude Code hooks
+moyu install                     # Preview configuration changes
+moyu install --write             # Apply changes and back up the original file
+moyu install --uninstall --write # Remove Moyu hooks
+```
+
+Codex uses `~/.codex/hooks.json`; Claude Code uses `~/.claude/settings.json`. The installer merges existing settings. Hooks record only events and timestamps, never prompts, output, or error text. If Codex shows `Hooks need review`, choose `Trust all and continue` to enable the new hooks.
+
+## Update
+
+To get the latest GitHub commit even when the package version is unchanged, remove and reinstall the package. Saves are kept. On macOS / Linux:
 
 ```sh
 npm uninstall --global moyu-game
 npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main'
 ```
 
-Windows PowerShell：
+Windows PowerShell:
 
 ```powershell
 npm.cmd uninstall --global moyu-game
 npm.cmd install --global "https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main"
 ```
 
-更新后退出并重新打开 Moyu；已经运行的进程不会热更新。
+Restart Moyu after updating; running processes do not reload automatically.
 
-## 语言
+## Language
 
-内置游戏的 HUD、帮助、章节和战斗提示会按系统语言显示中文或英文；其他语言回退英文。可用 `MOYU_LANG=zh` 或 `MOYU_LANG=en` 覆盖。Windows PowerShell 示例：`$env:MOYU_LANG='en'; moyu play stick-slash`。第三方 Cartridge 使用自己的文案。
+Built-in game HUDs, help, chapters, and combat messages follow the system locale: Chinese for Chinese locales, English otherwise. Set `MOYU_LANG=zh` or `MOYU_LANG=en` to override. PowerShell example: `$env:MOYU_LANG='en'; moyu play stick-slash`. Third-party Cartridges provide their own text.
 
-## 共创
+## Create with us
 
-欢迎报告 Bug、改进终端适配、翻译或设计新敌人和招式。先查阅 [Issues](https://github.com/PrometheusTT/moyu/issues)，再提交 Issue 或 Pull Request；小修复可直接发 PR。开发时运行 `npm ci`、`npm run check`、`npm run compile`，并把 `dist/` 与源码一起提交。新游戏可按 [Cartridge API](./docs/cartridge-api.md) 制作本地插件，详见[贡献指南](./CONTRIBUTING.md)。
+Bug reports, terminal testing, translations, enemies, and sword arts are welcome. Search [Issues](https://github.com/PrometheusTT/moyu/issues) first, then open an Issue or Pull Request; small fixes can go straight to a PR. You can also build a local game with the [Cartridge quickstart](./docs/cartridge-quickstart.en.md). See the [contribution guide](./CONTRIBUTING.en.md) for the full workflow.
 
-可选任务联动：`moyu setup` 安装 Codex / Claude Code hook；`moyu install` 可先预览，`moyu install --write` 才写入。Codex 首次出现 `Hooks need review` 时须选 `Trust all and continue`。配置位于 `~/.codex/hooks.json` 或 `~/.claude/settings.json`；hook 不写 prompt、输出或错误文本。
+Source development requires Node.js 22.6 or later:
 
-## 卸载
+```sh
+git clone https://github.com/PrometheusTT/moyu.git
+cd moyu
+npm ci
+npm run check
+npm run compile
+```
 
-如果启用了任务联动，先运行 `moyu install --uninstall --write` 移除 Moyu hook，再运行 `npm uninstall --global moyu-game`（Windows 用 `npm.cmd`）。存档和本地 Cartridge 留在 `~/.moyu`；只有确定不再需要时才手动删除该目录。Node 和 WezTerm 是独立软件，不会被卸载。
+Commit the generated `dist/` alongside source changes.
 
-使用问题见[故障排查](./docs/troubleshooting.md)，安全问题见[安全策略](./SECURITY.md)。
+## Uninstall
+
+If you enabled task integration, run `moyu install --uninstall --write` first, then `npm uninstall --global moyu-game` (`npm.cmd` on Windows). Saves and local Cartridges remain in `~/.moyu`; delete that directory manually only if you no longer want them. Node and WezTerm are separate applications and remain installed.
+
+If the terminal state looks wrong after a crash, run `moyu doctor --reset`. More help is in [Troubleshooting](./docs/troubleshooting.en.md). This project uses the [MIT License](./LICENSE); report security issues through the [security policy](./SECURITY.md).

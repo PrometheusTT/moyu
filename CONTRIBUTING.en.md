@@ -1,6 +1,6 @@
 # Contributing to Moyu
 
-[简体中文](./CONTRIBUTING.md) · [Back to README](./README.en.md)
+[简体中文](./CONTRIBUTING.md) · [Back to README](./README.md)
 
 Moyu shares a terminal with another program. A small change can swallow input or leave the terminal in raw mode, so please keep PRs focused and include evidence for behavior that users can see.
 
