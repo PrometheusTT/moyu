@@ -61,7 +61,7 @@ Moyu 是一个轻量、local-first 的终端游戏宿主。它把 Codex、Claude
 ### macOS：安装与开玩
 
 ```sh
-npm install --global 'github:PrometheusTT/moyu#feat/live-on-enter'
+npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/feat/live-on-enter'
 moyu play
 ```
 
@@ -87,13 +87,13 @@ Moyu 和 Node 运行在 WSL 内；无需安装 Linux 图形桌面。安装器是
 两端都可运行 `moyu doctor --caps` 查看自动选档，或运行 `moyu doctor --gfx` 检查高清图片链路。
 `moyu play` 现在也会自动使用终端支持的最高清晰度，不能显示图片时自动退回字符档。
 
-当前从 GitHub 的 `feat/live-on-enter` 分支安装；`moyu-game` 尚未发布到 npm registry。
+当前从 GitHub 的 `feat/live-on-enter` 分支压缩包安装，无需 Git 或 SSH 密钥；`moyu-game` 尚未发布到 npm registry。
 安装包包含编译后的 `dist/`，安装过程不需要 TypeScript、不执行构建脚本，也不会启动后台服务。
 
 升级或卸载：
 
 ```sh
-npm install --global 'github:PrometheusTT/moyu#feat/live-on-enter'  # 升级
+npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/feat/live-on-enter'  # 升级
 npm uninstall --global moyu-game                              # 卸载
 ```
 

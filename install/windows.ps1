@@ -1,7 +1,7 @@
 # Run from PowerShell on Windows. Re-running after a WSL-required reboot is safe.
 param(
     [string]$Distribution = 'Ubuntu',
-    [string]$PackageSpec = 'github:PrometheusTT/moyu#feat/live-on-enter'
+    [string]$PackageSpec = 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/feat/live-on-enter'
 )
 
 $ErrorActionPreference = 'Stop'

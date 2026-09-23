@@ -50,6 +50,24 @@ test('包目录本身在软链下面也要能跑（macOS 的 /tmp 就是 /privat
   assert.match(out, /^摸鱼/, '入口判断被软链骗了 —— 装完的包会静默什么都不做');
 });
 
+test('GitHub 源码压缩包装到 node_modules 后仍从 dist 启动', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-archive-'));
+  const installed = path.join(dir, 'node_modules', 'moyu-game');
+  try {
+    fs.mkdirSync(path.join(installed, 'bin'), { recursive: true });
+    fs.cpSync(path.join(root, 'src'), path.join(installed, 'src'), { recursive: true });
+    fs.cpSync(path.join(root, 'dist'), path.join(installed, 'dist'), { recursive: true });
+    fs.copyFileSync(path.join(root, 'package.json'), path.join(installed, 'package.json'));
+    const entry = path.join(installed, 'bin', 'moyu');
+    fs.copyFileSync(path.join(root, 'bin', 'moyu'), entry);
+    fs.chmodSync(entry, 0o755);
+    const out = execFileSync(entry, ['--help'], { encoding: 'utf8' });
+    assert.match(out, /^摸鱼/, 'Node 22+ 不允许剥离 node_modules 内的 TypeScript，安装版必须选 dist');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('仓库入口只在 Node 支持类型剥离时运行 src，否则退回 dist', () => {
   const launcher = fs.readFileSync(path.join(root, 'bin', 'moyu'), 'utf8');
   assert.match(launcher, /node_major/);
@@ -155,9 +173,9 @@ test('README 必须写到 Codex 那个信任步骤 —— 不做这一步 hook �
 
 test('bin/moyu 里的重装提示和 repository 对得上（换仓库名时最容易漏的一处）', () => {
   const sh = fs.readFileSync(path.join(root, 'bin/moyu'), 'utf8');
-  const m = /npm i -g (github:[\w.-]+\/[\w.-]+|[a-z0-9@/-]+)/.exec(sh);
+  const m = /npm i -g https:\/\/codeload\.github\.com\/([\w.-]+\/[\w.-]+)\/tar\.gz\/refs\/heads\/[\w./-]+/.exec(sh);
   assert.notEqual(m, null, 'bin/moyu 的报错里该告诉人怎么重装');
-  assert.equal(m?.[1], `github:${repoSlug()}`, 'dist/ 找不到时给的重装命令必须真能装出这个包');
+  assert.equal(m?.[1], repoSlug(), 'dist/ 找不到时给的重装命令必须真能装出这个包');
 });
 
 /* ── 从 GitHub 装的那条路 ──────────────────────────────────────────────────
@@ -303,7 +321,12 @@ test('typescript 必须在 devDependencies 里（构建和上面那条漂移检�
 test('README 给的 GitHub 安装命令必须真能装成这个包', () => {
   const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
   const slug = repoSlug();
-  assert.ok(readme.includes(`github:${slug}`), `README 里没有 npm i -g github:${slug}`);
+  const archive = `https://codeload.github.com/${slug}/tar.gz/refs/heads/feat/live-on-enter`;
+  assert.ok(readme.includes(archive), `README 里没有可直接下载的 ${archive}`);
+  for (const script of ['macos.sh', 'wsl.sh', 'windows.ps1']) {
+    assert.ok(fs.readFileSync(path.join(root, 'install', script), 'utf8').includes(archive),
+      `${script} 的安装源和 README 不一致`);
+  }
   assert.match(readme, /Node ≥ 20|Node >= 20/, '装的人第一件要知道的事是 Node 版本');
 });
 

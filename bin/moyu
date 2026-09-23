@@ -31,7 +31,9 @@ node_major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null) || {
 }
 node_minor=$(node -p 'process.versions.node.split(".")[1]' 2>/dev/null) || exit 1
 
-if [ -f "$root/src/app/main.ts" ] && [ -f "$root/src/app/supervisor.ts" ] \
+# GitHub 源码压缩包也带 src/，但装进 node_modules 后 Node 不允许直接剥离其中的 TS。
+# 只有真实 checkout 才从源码启动；安装包始终运行随包提供的 dist/。
+if [ -e "$root/.git" ] && [ -f "$root/src/app/main.ts" ] && [ -f "$root/src/app/supervisor.ts" ] \
   && [ "${MOYU_DIST:-}" != 1 ] \
   && { [ "$node_major" -gt 22 ] || { [ "$node_major" -eq 22 ] && [ "$node_minor" -ge 6 ]; }; }; then
   supervisor="$root/src/app/supervisor.ts"
@@ -44,6 +46,6 @@ elif [ -f "$root/dist/app/main.js" ] && [ -f "$root/dist/app/supervisor.js" ]; t
   exec node "$supervisor" "$worker" "$@"
 else
   printf 'moyu: 找不到 %s\n' "$root/dist/app/supervisor.js / $root/dist/app/main.js" >&2
-  printf 'moyu: dist/ 本该跟包一起发的。重装：npm i -g github:PrometheusTT/moyu（在仓库里的话：npm run compile）\n' >&2
+  printf 'moyu: dist/ 本该跟包一起发的。重装：npm i -g https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/feat/live-on-enter（在仓库里的话：npm run compile）\n' >&2
   exit 1
 fi

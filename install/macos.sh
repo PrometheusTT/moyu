@@ -2,7 +2,7 @@
 # Install Moyu from the GitHub branch on macOS without changing shell profiles.
 set -eu
 
-package_spec=${1:-github:PrometheusTT/moyu#feat/live-on-enter}
+package_spec=${1:-https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/feat/live-on-enter}
 
 if [ "$(uname -s)" != Darwin ]; then
   printf 'This installer is for macOS. On Windows, use install/windows.ps1.\n' >&2

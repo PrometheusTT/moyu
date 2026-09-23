@@ -2,7 +2,7 @@
 # Invoked by windows.ps1 inside an installed WSL distribution.
 set -euo pipefail
 
-package_spec=${1:-github:PrometheusTT/moyu#feat/live-on-enter}
+package_spec=${1:-https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/feat/live-on-enter}
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 if [[ -s "$NVM_DIR/nvm.sh" ]]; then
   # shellcheck source=/dev/null
