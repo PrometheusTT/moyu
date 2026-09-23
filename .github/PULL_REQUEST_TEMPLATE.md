@@ -1,20 +1,20 @@
-## 变更摘要
+## Summary / 变更摘要
 
-<!-- 用 2–5 句话说明做了什么，以及用户会观察到什么变化。 -->
+<!-- In 2–5 sentences, explain what changed and what users will notice. / 简述用户可见变化。 -->
 
-## 背景与动机
+## Context / 背景与动机
 
-<!-- 链接 Issue，或描述当前行为、影响范围和为什么需要现在修改。 -->
+<!-- Link an Issue or describe the current behavior and impact. / 链接 Issue 或描述现状与影响。 -->
 
 Closes #
 
-## 实现说明
+## Implementation / 实现说明
 
-<!-- 说明关键边界、取舍，以及没有采用其他方案的原因。 -->
+<!-- Explain key boundaries and tradeoffs. / 说明边界与取舍。 -->
 
-## 验证
+## Validation / 验证
 
-<!-- 列出实际运行过的命令和人工环境；不要只写“测试通过”。 -->
+<!-- List commands and manual environments actually checked. / 列出实际验证。 -->
 
 - [ ] `npm run typecheck`
 - [ ] `npm test`
@@ -23,20 +23,20 @@ Closes #
 - [ ] `npm pack --dry-run`
 - [ ] `git diff --check`
 
-## 终端与兼容性影响
+## Terminal and compatibility impact / 终端与兼容性影响
 
-<!-- 如不适用请写 N/A。否则说明终端、OS、Node、SSH/tmux、主题、字体和尺寸。 -->
+<!-- Use N/A if not applicable; otherwise note terminal, OS, Node, SSH/tmux, theme, font, and size. / 不适用写 N/A。 -->
 
-## 截图或录屏
+## Screenshots or recording / 截图或录屏
 
-<!-- 视觉变化请提供；同时写明截图环境。不要包含 prompt、token 或私有内容。 -->
+<!-- Include captures for visual changes and their environment. Remove prompts, tokens, and private data. / 视觉变化请附脱敏截图。 -->
 
 ## Checklist
 
-- [ ] 改动保持聚焦，没有覆盖或格式化无关文件。
-- [ ] Bug 修复包含回归测试；新增行为包含正常、失败和回退路径。
-- [ ] 涉及 `src/` 的发布变化已经重新生成并包含对应 `dist/`。
-- [ ] 没有新增 npm 安装期脚本或破坏 Node.js 20 发布兼容。
-- [ ] 涉及终端状态时，已验证正常退出、信号和异常恢复。
-- [ ] 用户行为、API 或发布流程变化已经更新 README/文档/CHANGELOG。
-- [ ] 我已阅读 CONTRIBUTING、SECURITY 和行为准则。
+- [ ] Changes are focused; unrelated files are untouched. / 改动聚焦。
+- [ ] Bugs have regression tests; new behavior covers failure and fallback paths. / 测试覆盖回退。
+- [ ] Published `src/` changes include regenerated `dist/`. / 已更新发布物。
+- [ ] No install-time npm scripts or Node 20 compatibility breaks. / 保持安装兼容。
+- [ ] Terminal changes cover exit, signals, and recovery. / 已验证终端恢复。
+- [ ] User-facing changes update README, docs, or CHANGELOG. / 已更新文档。
+- [ ] I read CONTRIBUTING, SECURITY, and the Code of Conduct. / 已阅读贡献与安全说明。

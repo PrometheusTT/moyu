@@ -10,12 +10,13 @@ import { PlaySurface } from './surface.ts';
 import type { GameModule } from './types.ts';
 import { fieldColsFor } from '../shell/regions.ts';
 import { InputRouter } from '../shell/focus.ts';
+import { isEnglish } from '../i18n.ts';
 import type { PixelTarget } from '../render/target.ts';
 
 export type PlayPreparation = { arcade: Arcade; error?: never } | { arcade?: never; error: string };
 export type PlayGeometry = Readonly<{ cols: number; rows: number; targetCols: number; usable: boolean }>;
 
-function oneLine(value: string): string { return value.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim() || '未知错误'; }
+function oneLine(value: string): string { return value.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim() || (isEnglish() ? 'Unknown error' : '未知错误'); }
 function reported(value: number | undefined): number | null {
   return Number.isSafeInteger(value) && value !== undefined && value > 0 ? value : null;
 }
@@ -33,18 +34,18 @@ export function playGeometry(columns: number | undefined, terminalRows: number |
 }
 
 export function preparePlay(modules: GameModule[], id?: string): PlayPreparation {
-  if (id !== undefined && !modules.some((m) => m.manifest.id === id)) return { error: `找不到游戏 ${id}` };
+  if (id !== undefined && !modules.some((m) => m.manifest.id === id)) return { error: isEnglish() ? `Game not found: ${id}` : `找不到游戏 ${id}` };
   const arcade = new Arcade(undefined, modules, id);
   if (id !== undefined) {
     const failure = arcade.failureFor(id);
-    if (failure !== undefined) return { error: `游戏 ${id} 启动失败：${oneLine(failure)}` };
+    if (failure !== undefined) return { error: isEnglish() ? `Could not start ${id}: ${oneLine(failure)}` : `游戏 ${id} 启动失败：${oneLine(failure)}` };
   }
-  if (arcade.available === 0) return { error: '没有可用游戏：请检查已安装 Cartridge' };
+  if (arcade.available === 0) return { error: isEnglish() ? 'No games available. Check installed Cartridges.' : '没有可用游戏：请检查已安装 Cartridge' };
   return { arcade };
 }
 
 export async function cmdPlay(id?: string): Promise<number> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) { process.stderr.write('moyu play 需要真终端\n'); return 2; }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) { process.stderr.write(isEnglish() ? 'moyu play needs an interactive terminal\n' : 'moyu play 需要真终端\n'); return 2; }
   const modules = await loadGameModules();
   const prepared = preparePlay(modules, id);
   if (prepared.error !== undefined) { process.stderr.write(`${prepared.error}\n`); return 2; }
@@ -71,7 +72,7 @@ export async function cmdPlay(id?: string): Promise<number> {
     } else {
       active = false;
       arcade.pause();
-      process.stdout.write('\x1b[H\x1b[2J\x1b[38;2;120;126;140m终端太小，放大后继续\x1b[0m');
+      process.stdout.write(`\x1b[H\x1b[2J\x1b[38;2;120;126;140m${isEnglish() ? 'Terminal too small; enlarge it to continue' : '终端太小，放大后继续'}\x1b[0m`);
     }
   };
   const finish = async (): Promise<void> => {
@@ -126,7 +127,7 @@ export async function cmdPlay(id?: string): Promise<number> {
       if (done || !active || !size.usable) return;
       const now = Date.now();
       arcade.setDisplay(size.rows, target.tier); arcade.advance(now);
-      const row = `\x1b[1;1H\x1b[38;2;196;202;218m\x1b[48;2;24;26;36m${fitRow(arcade.name, '? 帮助', size.targetCols)}\x1b[0m`;
+      const row = `\x1b[1;1H\x1b[38;2;196;202;218m\x1b[48;2;24;26;36m${fitRow(arcade.name, isEnglish() ? '? Help' : '? 帮助', size.targetCols)}\x1b[0m`;
       process.stdout.write(row + surface.render(arcade, target, 2, size.cols, size.rows));
     }, 1000 / caps.fps);
     timer.unref();

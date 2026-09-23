@@ -25,7 +25,7 @@ stealing input, damaging terminal state, or making users wait through setup.
 - Two rows are the default, not a universal game resolution. E explicitly opens six protected
   bottom rows (four when space is limited), and returns to micro mode only when the cartridge supports
   it; an unsupported or too-small view hands input back to the wrapped CLI. Esc always leaves play.
-- First entry and cartridge switches show controls until a gameplay input; ? reopens help.
+- First entry starts live play; cartridge switches show controls until a gameplay input. ? reopens help.
   Ordinary hide/resume returns directly to the preserved scene. Hidden play, help, and unsupported
   display sizes pause simulation while host events keep polling.
 - If a wrapped CLI exposes no recognizable composer, play safely falls back to a two-row bottom
@@ -66,7 +66,7 @@ stealing input, damaging terminal state, or making users wait through setup.
 
 ## Platform contract
 
-- The first release supports macOS, Linux, and Windows through WSL.
+- The release supports macOS, Linux, native Windows, and Windows through WSL.
 - First run is playable without hooks, an account, a daemon, or network access.
 - Local third-party JavaScript cartridges are explicitly trusted code. The installer must say so.
 - Built-in cartridges prove three different workloads: action, grid movement, and falling blocks.

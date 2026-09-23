@@ -9,7 +9,8 @@ import { loadGameModules } from "./registry.js";
 import { PlaySurface } from "./surface.js";
 import { fieldColsFor } from "../shell/regions.js";
 import { InputRouter } from "../shell/focus.js";
-function oneLine(value) { return value.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim() || '未知错误'; }
+import { isEnglish } from "../i18n.js";
+function oneLine(value) { return value.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim() || (isEnglish() ? 'Unknown error' : '未知错误'); }
 function reported(value) {
     return Number.isSafeInteger(value) && value !== undefined && value > 0 ? value : null;
 }
@@ -26,20 +27,20 @@ export function playGeometry(columns, terminalRows, expanded) {
 }
 export function preparePlay(modules, id) {
     if (id !== undefined && !modules.some((m) => m.manifest.id === id))
-        return { error: `找不到游戏 ${id}` };
+        return { error: isEnglish() ? `Game not found: ${id}` : `找不到游戏 ${id}` };
     const arcade = new Arcade(undefined, modules, id);
     if (id !== undefined) {
         const failure = arcade.failureFor(id);
         if (failure !== undefined)
-            return { error: `游戏 ${id} 启动失败：${oneLine(failure)}` };
+            return { error: isEnglish() ? `Could not start ${id}: ${oneLine(failure)}` : `游戏 ${id} 启动失败：${oneLine(failure)}` };
     }
     if (arcade.available === 0)
-        return { error: '没有可用游戏：请检查已安装 Cartridge' };
+        return { error: isEnglish() ? 'No games available. Check installed Cartridges.' : '没有可用游戏：请检查已安装 Cartridge' };
     return { arcade };
 }
 export async function cmdPlay(id) {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
-        process.stderr.write('moyu play 需要真终端\n');
+        process.stderr.write(isEnglish() ? 'moyu play needs an interactive terminal\n' : 'moyu play 需要真终端\n');
         return 2;
     }
     const modules = await loadGameModules();
@@ -73,7 +74,7 @@ export async function cmdPlay(id) {
         else {
             active = false;
             arcade.pause();
-            process.stdout.write('\x1b[H\x1b[2J\x1b[38;2;120;126;140m终端太小，放大后继续\x1b[0m');
+            process.stdout.write(`\x1b[H\x1b[2J\x1b[38;2;120;126;140m${isEnglish() ? 'Terminal too small; enlarge it to continue' : '终端太小，放大后继续'}\x1b[0m`);
         }
     };
     const finish = async () => {
@@ -155,7 +156,7 @@ export async function cmdPlay(id) {
             const now = Date.now();
             arcade.setDisplay(size.rows, target.tier);
             arcade.advance(now);
-            const row = `\x1b[1;1H\x1b[38;2;196;202;218m\x1b[48;2;24;26;36m${fitRow(arcade.name, '? 帮助', size.targetCols)}\x1b[0m`;
+            const row = `\x1b[1;1H\x1b[38;2;196;202;218m\x1b[48;2;24;26;36m${fitRow(arcade.name, isEnglish() ? '? Help' : '? 帮助', size.targetCols)}\x1b[0m`;
             process.stdout.write(row + surface.render(arcade, target, 2, size.cols, size.rows));
         }, 1000 / caps.fps);
         timer.unref();

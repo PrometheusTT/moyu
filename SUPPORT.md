@@ -1,5 +1,11 @@
 # Support
 
+[English](./README.en.md) · [简体中文](./README.md)
+
+For help, run `moyu doctor` and `moyu doctor --caps`, then check [Troubleshooting (English)](./docs/troubleshooting.en.md) or [中文故障排查](./docs/troubleshooting.md). If the problem remains, open a [Bug report](https://github.com/PrometheusTT/moyu/issues/new?template=bug_report.yml). Include the Moyu commit, Node version, OS, terminal/version, connection path, and minimal steps. Redact credentials, prompts, IPs, hostnames, and private paths.
+
+For features or Cartridge ideas, use [Feature request](https://github.com/PrometheusTT/moyu/issues/new?template=feature_request.yml). Developers can start with the [English contribution guide](./CONTRIBUTING.en.md) or [中文贡献指南](./CONTRIBUTING.md). Report security issues through the [Security Policy](./SECURITY.md), not a public Issue.
+
 ## 使用问题
 
 先运行：

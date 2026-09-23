@@ -12,7 +12,8 @@ import { Canvas } from "../render/canvas.js";
 import { paintWorldTo } from "../render/scene.js";
 import { fitRow } from "../render/text.js";
 import { Teardown } from "../shell/teardown.js";
-import { Game, TITLE } from "./game.js";
+import { Game, displayTitle } from "./game.js";
+import { isEnglish } from "../i18n.js";
 const FPS = 30;
 const FRAME_MS = 1000 / FPS;
 /** 小于这个尺寸就没法玩了（火柴人会矮到看不出四肢）。 */
@@ -23,7 +24,8 @@ const SGR_HUD = '\x1b[38;2;158;166;188m\x1b[48;2;24;26;36m';
 const SGR_BANNER = '\x1b[38;2;255;238;238m\x1b[48;2;138;22;30m';
 export async function cmdDemo(seed) {
     if (!process.stdout.isTTY || !process.stdin.isTTY) {
-        process.stderr.write(`moyu demo 需要一个真终端（现在 stdin/stdout 不是 TTY）。\n${TITLE}\n`);
+        process.stderr.write(isEnglish() ? `moyu demo needs an interactive terminal.\n${displayTitle()}\n`
+            : `moyu demo 需要一个真终端（现在 stdin/stdout 不是 TTY）。\n${displayTitle()}\n`);
         return 2;
     }
     return new Demo(seed).run();
@@ -94,7 +96,9 @@ class Demo {
         if (this.tooSmall) {
             if (!this.toldSmall) {
                 this.toldSmall = true;
-                process.stdout.write(`\x1b[2J\x1b[1;1H终端太小了（至少 ${MIN_COLS}×${MIN_ROWS}）。放大窗口就自动开始。`);
+                process.stdout.write(isEnglish()
+                    ? `\x1b[2J\x1b[1;1HTerminal too small (needs ${MIN_COLS}×${MIN_ROWS}). Enlarge the window to continue.`
+                    : `\x1b[2J\x1b[1;1H终端太小了（至少 ${MIN_COLS}×${MIN_ROWS}）。放大窗口就自动开始。`);
             }
             return;
         }

@@ -36,6 +36,7 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { constants as osConstants } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { isEnglish } from "../i18n.js";
 const FPS = 30;
 const FRAME_MS = 1000 / FPS;
 const HOST_EVENT_MS = 100;
@@ -117,6 +118,27 @@ const COMPOSER_SETTLE_MS = 60;
 /** Repaint authorization is causally useful only near the resize/refresh/control that created it. */
 const COMPOSER_PERMIT_MS = 750;
 function usage() {
+    if (isEnglish())
+        return [
+            'Moyu — a stick-figure action game for your terminal',
+            '',
+            'Usage:',
+            '  moyu play [game-id]       Play in a standalone terminal; Tab switches games',
+            '  moyu -- <command...>      Play while a coding CLI runs (for example, moyu -- codex)',
+            '  moyu games list          List built-in and local Cartridges',
+            '  moyu setup               Install optional task-event hooks',
+            '  moyu install             Preview hook changes; add --write to apply',
+            '  moyu install --uninstall Preview hook removal; add --write to apply',
+            '  moyu doctor              Check the installation and terminal',
+            '  moyu doctor --caps       Show the selected rendering tier',
+            '  moyu doctor --gfx        Test Kitty Graphics directly',
+            '  moyu doctor --reset      Restore terminal state after a crash',
+            '  moyu demo                Run the full-screen combat demo',
+            '',
+            'In game: WASD/arrows move · J slash · Space jump · ? help · Esc/q back',
+            `While wrapping a CLI: ${hotkeyHint('cli')} · F12 alternate · Ctrl+G/Ctrl+C stay with the CLI`,
+            'Language: follows your system locale; set MOYU_LANG=en or MOYU_LANG=zh to override.',
+        ].join('\n');
     return [
         '摸鱼 —— Agent 在干活，你在掌机里',
         '',
@@ -843,7 +865,8 @@ class Shell {
             // 没有"从可见变成不可见"这回事，也没有东西需要重绘。
             this.write(`\x1b[H\x1b[2J${fullScrollRegionSeq()}`);
             this.arbiter.initialize(['too-small']);
-            process.stderr.write(`moyu: ${first.reason}，游戏区先收起（放大终端后自动出现）\r\n`);
+            process.stderr.write(isEnglish() ? `moyu: terminal is too small; game area is hidden until you enlarge it\r\n`
+                : `moyu: ${first.reason}，游戏区先收起（放大终端后自动出现）\r\n`);
         }
         const innerRows = this.layout?.innerRows ?? t.rows;
         try {

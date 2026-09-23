@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { BUILTIN_GAMES } from "./arcade.js";
+import { isEnglish, uiName } from "../i18n.js";
 const MANIFEST = 'moyu.game.json';
 function root() { return path.join(process.env.MOYU_HOME ?? path.join(homedir(), '.moyu'), 'games'); }
 export function validateManifest(value) {
@@ -100,9 +101,9 @@ export async function cmdGames(args) {
     const action = args[0] ?? 'list';
     if (action === 'list') {
         for (const game of BUILTIN_GAMES)
-            process.stdout.write(`${game.manifest.id.padEnd(16)} ${game.manifest.name}  内置\n`);
+            process.stdout.write(`${game.manifest.id.padEnd(16)} ${uiName(game.manifest.name)}  ${isEnglish() ? 'Built-in' : '内置'}\n`);
         for (const game of installed())
-            process.stdout.write(`${game.manifest.id.padEnd(16)} ${game.manifest.name}  本地\n`);
+            process.stdout.write(`${game.manifest.id.padEnd(16)} ${game.manifest.name}  ${isEnglish() ? 'Local' : '本地'}\n`);
         return 0;
     }
     if (action === 'add') {
@@ -116,47 +117,56 @@ export async function cmdGames(args) {
             return 2;
         }
         if (BUILTIN_GAMES.some((g) => g.manifest.id === manifest.id)) {
-            process.stderr.write(`${manifest.id} 是内置游戏 id，不能覆盖\n`);
+            process.stderr.write(isEnglish() ? `${manifest.id} is a built-in game ID and cannot be replaced\n`
+                : `${manifest.id} 是内置游戏 id，不能覆盖\n`);
             return 2;
         }
         if (!args.includes('--yes')) {
-            process.stdout.write([
+            process.stdout.write((isEnglish() ? [
+                `Will install ${manifest.name} (${manifest.id})`,
+                `Source: ${source}`,
+                'Local JavaScript Cartridges are trusted code and can access your files and network.',
+                `After reviewing the code, run: moyu games add ${JSON.stringify(source)} --yes`,
+            ] : [
                 `将安装 ${manifest.name} (${manifest.id})`,
                 `来源：${source}`,
                 '本地 JavaScript Cartridge 是受信任代码，可读取当前用户能访问的文件和网络。',
                 `确认信任后运行：moyu games add ${JSON.stringify(source)} --yes`,
-            ].join('\n') + '\n');
+            ]).join('\n') + '\n');
             return 2;
         }
         const dest = path.join(root(), manifest.id);
         if (fs.existsSync(dest)) {
-            process.stderr.write(`已存在 ${manifest.id}，请先 remove\n`);
+            process.stderr.write(isEnglish() ? `${manifest.id} already exists; remove it first\n`
+                : `已存在 ${manifest.id}，请先 remove\n`);
             return 2;
         }
         fs.mkdirSync(root(), { recursive: true, mode: 0o700 });
         fs.cpSync(source, dest, { recursive: true, errorOnExist: true, force: false });
-        process.stdout.write(`已安装 ${manifest.name} → ${dest}\n`);
+        process.stdout.write(isEnglish() ? `Installed ${manifest.name} → ${dest}\n` : `已安装 ${manifest.name} → ${dest}\n`);
         return 0;
     }
     if (action === 'remove') {
         const id = args[1] ?? '';
         if (!/^[a-z0-9][a-z0-9-]{1,62}$/.test(id)) {
-            process.stderr.write('请指定合法的游戏 id\n');
+            process.stderr.write(isEnglish() ? 'Specify a valid game ID\n' : '请指定合法的游戏 id\n');
             return 2;
         }
         const dest = path.join(root(), id);
         if (!fs.existsSync(dest)) {
-            process.stderr.write(`没有安装 ${id}\n`);
+            process.stderr.write(isEnglish() ? `${id} is not installed\n` : `没有安装 ${id}\n`);
             return 2;
         }
         if (!args.includes('--yes')) {
-            process.stdout.write(`将删除 ${dest}\n确认后运行：moyu games remove ${id} --yes\n`);
+            process.stdout.write(isEnglish() ? `Will remove ${dest}\nConfirm with: moyu games remove ${id} --yes\n`
+                : `将删除 ${dest}\n确认后运行：moyu games remove ${id} --yes\n`);
             return 2;
         }
         fs.rmSync(dest, { recursive: true });
-        process.stdout.write(`已移除 ${id}\n`);
+        process.stdout.write(isEnglish() ? `Removed ${id}\n` : `已移除 ${id}\n`);
         return 0;
     }
-    process.stderr.write('用法：moyu games list | add <目录> [--yes] | remove <id> [--yes]\n');
+    process.stderr.write(isEnglish() ? 'Usage: moyu games list | add <directory> [--yes] | remove <id> [--yes]\n'
+        : '用法：moyu games list | add <目录> [--yes] | remove <id> [--yes]\n');
     return 2;
 }

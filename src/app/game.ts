@@ -11,6 +11,7 @@
 import { World, NO_INTENT, type Intent } from '../core/world.ts';
 import { Keys } from '../input/keys.ts';
 import { SignalTail } from '../bridge/signal.ts';
+import { isEnglish } from '../i18n.ts';
 
 /** 固定步长 60Hz。渲染是 30fps —— 两者解耦，掉帧不影响物理。 */
 const STEP = 1 / 60;
@@ -20,6 +21,7 @@ const MAX_CATCHUP = 0.25;
 const POLL_EVERY = 8;
 
 export const TITLE = '谁不想在Claude Code干活的时候酣畅淋漓地砍一顿火柴小人';
+export const displayTitle = (): string => isEnglish() ? 'Stick Slash: take a break, cut through the chaos' : TITLE;
 
 export class Game {
   readonly world: World;
@@ -94,7 +96,8 @@ export class Game {
     // 不是锦上添花。OSC 9 不被支持的终端会忽略它，无害。
     // The legacy full-screen demo keeps its explicit notification. The coding shell uses
     // Arcade, whose task completion path is intentionally silent and only changes the bar.
-    this.alert = `\x07\x1b]9;摸鱼：${why}（砍了 ${this.lastScore} 个）\x07`;
+    this.alert = isEnglish() ? `\x07\x1b]9;Moyu: task update (${this.lastScore} defeated)\x07`
+      : `\x07\x1b]9;摸鱼：${why}（砍了 ${this.lastScore} 个）\x07`;
   }
 
   /** 取走待发的通知字节。 */
@@ -110,6 +113,22 @@ export class Game {
    */
   hud(): { left: string; right: string; short: string; urgent: boolean } {
     const w = this.world;
+    if (isEnglish()) {
+      switch (w.phase) {
+        case 'title': return { left: displayTitle(), right: 'J slash · A/D move · Space jump',
+          short: 'Press J to slash', urgent: false };
+        case 'clear': return { left: '★ Task complete — screen clear', right: `${w.taskKills} defeated`,
+          short: '★ Task complete!', urgent: true };
+        case 'paused': return { left: `★ Task complete · ${this.lastScore} defeated · Best combo ${w.bestCombo}`,
+          right: 'J keep fighting · Wait for next task', short: `★ Complete · ${this.lastScore} defeated`, urgent: true };
+        case 'fight': {
+          const hp = w.respawn > 0 ? 'Down' : `HP ${w.player.hp}/${w.player.maxHp ?? 4}`;
+          const combo = w.combo >= 2 ? ` · Combo ${w.combo}` : '';
+          return { left: `${w.taskKills} defeated${combo} · ${hp}`, right: 't finish · q quit',
+            short: `${w.taskKills} defeated${w.combo >= 2 ? ` ×${w.combo}` : ''} · ${hp}`, urgent: false };
+        }
+      }
+    }
     switch (w.phase) {
       case 'title':
         return { left: TITLE, right: 'J 砍 · A/D 走 · 空格 跳', short: '按 J 砍火柴小人', urgent: false };

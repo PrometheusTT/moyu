@@ -46,6 +46,7 @@ function smokeEnv(home) {
     MOYU_HOME: home,
     MOYU_EVENTS: path.join(home, 'events.log'),
     MOYU_TIER: 'braille',
+    MOYU_LANG: 'zh', // Stable golden text regardless of the host system locale.
     MOYU_REDUCE_MOTION: '1',
     TERM: 'xterm-256color',
   });

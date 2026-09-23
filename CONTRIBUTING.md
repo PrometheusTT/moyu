@@ -1,5 +1,7 @@
 # Contributing to Moyu
 
+[English](./CONTRIBUTING.en.md) · [返回首页](./README.md)
+
 感谢你愿意改进 Moyu。终端程序的失败半径比普通 CLI 更大：一个小错误可能吞掉用户输入、打乱
 coding CLI 输出，或让终端退出后仍停留在 raw mode。因此，本项目欢迎小而清晰、带验证证据的
 改动，并把终端所有权与向后兼容视为第一优先级。
@@ -125,8 +127,8 @@ test: cover split Kitty keyboard sequences
 
 ## 文档与语言
 
-面向用户的主要文档目前使用简体中文；API 名称、命令和协议术语保留英文。欢迎补充准确的
-英文文档，但请避免提交机器翻译后未经人工校对的大段内容。
+面向用户的说明提供[中文](./README.md)和[英文](./README.en.md)版本；API 名称、命令和协议术语保留英文。
+新增游戏文案须覆盖 `MOYU_LANG=zh` 和 `MOYU_LANG=en`，不要提交未经校对的大段机器翻译。
 
 ## 获得帮助
 

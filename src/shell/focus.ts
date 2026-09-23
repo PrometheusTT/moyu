@@ -1,5 +1,6 @@
 /** Byte-exact input routing for the coding CLI and the foreground cartridge. */
 import type { Focus } from './regions.ts';
+import { isEnglish } from '../i18n.ts';
 
 export const PREFIX = 0x07; // Kept public as the explicit statement that Ctrl+G is passthrough.
 
@@ -343,5 +344,6 @@ export class InputRouter {
 }
 
 export function hotkeyHint(focus: Focus): string {
-  return focus === 'game' ? 'J 动作 · WASD 移动 · Esc 返回' : 'Ctrl+] 摸鱼';
+  return isEnglish() ? focus === 'game' ? 'J slash · WASD move · Esc back' : 'Ctrl+] Play Moyu'
+    : focus === 'game' ? 'J 动作 · WASD 移动 · Esc 返回' : 'Ctrl+] 摸鱼';
 }

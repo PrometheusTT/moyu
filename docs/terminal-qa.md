@@ -136,6 +136,8 @@ image placement, theme contrast, or remote latency on a particular terminal.
 | Ghostty | Kitty-protocol path and full-frame replacement | Manual image placement check pending |
 | WezTerm | Capability and fallback paths | Manual client check pending |
 | VS Code integrated terminal | Character fallback and PTY ownership paths | Manual client check pending |
+| Windows Terminal / native PowerShell | Character fallback and native Node/ConPTY path | Manual client check pending |
+| WezTerm / native Windows | Win32 input mode, graphics negotiation, and Node/ConPTY smoke test | Manual client check pending |
 | Windows Terminal / WSL | Character fallback and Node/PTY platform target | Manual WSL check pending |
 | Termius / SSH | SSH 15 fps path, probe budget, and character fallback | Real remote latency/font check pending |
 | tmux | Graphics probing is skipped; character fallback remains | Manual pane/resize check pending |

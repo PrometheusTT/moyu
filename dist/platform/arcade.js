@@ -18,6 +18,7 @@ import { LogicalCanvas } from "./canvas.js";
 import { drawMicroFighter } from "./micro-sprites.js";
 import { NativePixelCanvas } from "./pixel-canvas.js";
 import { paintPixelWorld, snapshotFighters } from "../render/pixel-scene.js";
+import { isEnglish, uiName, artName, formName, fullArtName, chapterName, chapterStory, englishBattleNotice } from "../i18n.js";
 const EMPTY_INPUT = { left: false, right: false, up: false, down: false, jump: false, primary: false, secondary: false, special: false };
 const BG = 0x090a0e, GRID = 0x151722, INK = 0xecf0f8, ACCENT = 0xe43834, AMBER = 0xa67c00;
 // 展开 braille 的战斗残留配色：暗红血迹、瘫地断肢的灰、杂兵碎块的棕。
@@ -34,7 +35,7 @@ function cooldownTrack(remaining, total, cells) {
 export function cooldownBar(remaining, total, cells = 4) {
     const left = Math.max(0, Number.isFinite(remaining) ? remaining : 0);
     const seconds = Math.ceil(left * 10 - 1e-9) / 10;
-    return `${cooldownTrack(left, total, cells)}${left <= 0 ? '就绪' : `${Math.max(0.1, seconds).toFixed(1)}秒`}`;
+    return `${cooldownTrack(left, total, cells)}${left <= 0 ? isEnglish() ? 'Ready' : '就绪' : `${Math.max(0.1, seconds).toFixed(1)}${isEnglish() ? 's' : '秒'}`}`;
 }
 /** 字符档下按变种取本色（图形/braille 档在各自渲染器里用调色板混色）。导出供渲染回归测试锁定区分度。 */
 export function foeColor(tag) {
@@ -593,6 +594,8 @@ class StickGame {
         restoreArts();
     }
     hud() {
+        if (isEnglish())
+            return this.hudEnglish();
         const result = this.director.result;
         if (result !== null) {
             const checkpoint = this.director.checkpoint();
@@ -622,7 +625,34 @@ class StickGame {
             : (p.slowT ?? 0) > 0 ? '减速，按S>K解控' : '可行动';
         return `${life} 气${w.qi}/${MAX_QI} · 火柴快斩 · ${state} · ${skills} · ${headline}${battle}${cleanup} · ${growth} · ${w.kills}击破${combo}${pulse}`;
     }
+    hudEnglish() {
+        const result = this.director.result, w = this.world;
+        if (result !== null) {
+            const checkpoint = this.director.checkpoint();
+            const title = chapterName(result.chapter, this.director.chapterTitle());
+            const story = chapterStory(result.chapter, this.director.chapterStory());
+            return w.phase === 'fight'
+                ? `Chapter ${result.chapter} clear · ${result.score} pts · J next / auto continue · Total ${checkpoint.score} pts ${checkpoint.kills} kills Best combo ${checkpoint.bestCombo} · ${title} · ${story}`
+                : `Chapter ${result.chapter} clear · ${title} · ${story} · ${result.score} pts · Waiting for next task`;
+        }
+        const p = w.player, growth = playerGrowth(w.cultivation.insight);
+        const next = ART_IDS.find(art => !isSecretArt(art) && w.cultivation.insight < SWORD_ARTS[art].unlock);
+        const life = w.respawn > 0 ? 'Respawning' : `HP ${p.hp}/${p.maxHp ?? 4}`;
+        const state = (p.armorT ?? 0) > 0 ? `Guarding ${p.armorT.toFixed(1)}s`
+            : (p.stunT ?? 0) > 0 ? 'Stunned: S>K to break free'
+                : (p.slowT ?? 0) > 0 ? 'Slowed: S>K to break free' : 'Ready to act';
+        const skills = `Guard S>K ${cooldownBar(p.armorCool ?? 0, growth.armorCooldown)} · Dash U ${cooldownBar(p.dashCool, 0.7 * growth.skillCooldown)} · Spin I ${cooldownBar(p.spinCool, 1.6 * growth.skillCooldown)}`;
+        const headline = w.artNoticeT > 0 ? englishBattleNotice(w.artNotice)
+            : `Stage ${this.director.chapter}: ${chapterName(this.director.chapter, this.director.chapterTitle())}`;
+        const boss = w.enemies.find(e => e.tag === 'boss');
+        const battle = boss ? ` · BOSS ${uiName(BOSS_NAMES[boss.bossKind ?? 'spider'])} ${boss.hp}/${boss.maxHp ?? 5}${boss.quakeX !== undefined ? boss.bossKind === 'crystal' ? ' Ice field! Jump or leave the blue line' : ' Ground strike! Jump or leave the red line' : boss.windup >= 0 ? ' Charging!' : ''}` : '';
+        const cleanup = this.director.activeStep >= 1800 ? ` · Clear remaining ${w.enemies.length}` : '';
+        const training = `Cultivation ${growth.level}${growth.nextInsight === null ? ' Max' : ` Insight ${w.cultivation.insight}/${growth.nextInsight}`} · ${next ? `Next ${artName(next, true)} ${w.cultivation.insight}/${SWORD_ARTS[next].unlock}` : 'All arts unlocked'}`;
+        return `${life} Qi ${w.qi}/${MAX_QI} · Stick Slash · ${state} · ${skills} · ${headline}${battle}${cleanup} · ${training} · ${w.kills} kills${w.combo >= 2 ? ` · Combo ${w.combo}` : ''}${this.readyPulse > 0 ? ' Ready✦' : ''}`;
+    }
     details() {
+        if (isEnglish())
+            return this.detailsEnglish();
         const w = this.world;
         const growth = playerGrowth(w.cultivation.insight);
         const arts = ART_IDS.flatMap(art => {
@@ -653,7 +683,45 @@ class StickGame {
             '各剑法演出及衍生招式为游戏编排', ...arts, `击破+12气 · 普通命中剑客/Boss+${BOSS_HIT_QI}气`,
             '剑招不回气 · 高档轮完自动收势', '剑客：正面普攻可拼剑，剑招/绕背破守', '收招时追击；蓄势时跳跃或冲刺躲避', '战斗不限时，全部击败才结算'];
     }
+    detailsEnglish() {
+        const w = this.world, growth = playerGrowth(w.cultivation.insight);
+        const arts = ART_IDS.flatMap(art => {
+            const spec = SWORD_ARTS[art];
+            if (isSecretArt(art) && w.cultivation.mastery[art] === 0)
+                return [art === 'getsuga' ? 'Secret Moon Scroll: 48 insight, then up > right > slash'
+                        : 'Secret Sun Scroll: 80 insight, then up > left > slash'];
+            const selection = selectSwordForm(art, w.qi, w.formProgress[art]);
+            const status = w.cultivation.insight < spec.unlock ? `Insight ${w.cultivation.insight}/${spec.unlock}`
+                : `Mastery ${artLevel(w.cultivation, art)} · ${selection ? selection.full ? fullArtName(art) : formName(art, selection.index) : `Needs ${spec.cost} qi`}`;
+            return [`${spec.keys} ${artName(art)} · ${status}`,
+                ...[0, 1, 2].map(tier => {
+                    const count = SWORD_FORMS[art].length / 3;
+                    return `${['Opening', '60 qi', '100 qi'][tier]} tier · Costs ${spec.cost + tier * 3} qi: ${SWORD_FORMS[art].slice(tier * count, (tier + 1) * count).map((_, i) => formName(art, tier * count + i)).join(' → ')}`;
+                }), `Final high-tier form: ${fullArtName(art)}`];
+        });
+        return ['Sword Arts: three rotating tiers · same key combos', 'Two keys within 340ms / three within 650ms · each tier remembers progress',
+            'Three-key arts aim in your starting direction',
+            `Cultivation ${growth.level} · Max HP ${growth.maxHp} · ${growth.nextInsight === null ? 'Max level' : `Next level ${w.cultivation.insight}/${growth.nextInsight} insight`}`,
+            'Grow at 20/60/120/220/360/540 insight; progress is saved',
+            `Dash/spin cooldown reduced ${Math.round((1 - growth.skillCooldown) * 100)}%; normal slash damage unchanged`,
+            `S>K Iron Guard: break control, defend in place for ${growth.armorDuration.toFixed(2)}s; still take damage`,
+            `Cannot move, attack or jump during guard; costs no qi; cooldown ${growth.armorCooldown.toFixed(2)}s`,
+            'Cooldown bars fill left to right; numbers show seconds remaining',
+            'Early bosses: single strikes, short dashes and one ice field',
+            'Later bosses add double strikes, strong knockback and multiple ice fields',
+            'Jump or leave the blue line to evade slowing ice',
+            'Mantis gains short control at stage 33; charging scarab resists interruption at stage 39',
+            `Max qi ${MAX_QI}; each form spends a little, not the whole meter`,
+            'Sword arts and derived forms are original game interpretations', ...arts,
+            `Kill +12 qi; normal hits on duelists/bosses +${BOSS_HIT_QI} qi`,
+            'Sword arts do not restore qi; high tiers end with a finisher',
+            'Duelists can parry frontal slashes; use an art or attack from behind',
+            'Punish recovery; dodge a charge by jumping or dashing',
+            'Combat has no time limit; defeat every enemy to clear the stage'];
+    }
     combatHud(rows) {
+        if (isEnglish())
+            return this.combatHudEnglish(rows);
         const w = this.world, p = w.player, result = this.director.result;
         const life = w.respawn > 0 ? '重生中' : `血${p.hp}/${p.maxHp ?? 4}`;
         const defense = (p.armorT ?? 0) > 0 ? `防御中 ${p.armorT.toFixed(1)}秒` : (p.stunT ?? 0) > 0 ? '受控：S>K 解控'
@@ -688,6 +756,43 @@ class StickGame {
                         `${nextForm} · 修${growth.level}重`, armorCd, attackCd,
                         following ? `接 ${SWORD_FORMS[w.selectedArt][following.index].name}` : '攒气续招 · 战斗不限时'];
         return [...lines.slice(0, rows - 1), '?谱 E大小 Esc退'];
+    }
+    combatHudEnglish(rows) {
+        const w = this.world, p = w.player, result = this.director.result;
+        const life = w.respawn > 0 ? 'Respawning' : `HP ${p.hp}/${p.maxHp ?? 4}`;
+        const defense = (p.armorT ?? 0) > 0 ? `Guarding ${p.armorT.toFixed(1)}s`
+            : (p.stunT ?? 0) > 0 ? 'Stunned: S>K breaks free'
+                : (p.slowT ?? 0) > 0 ? 'Slowed: S>K breaks free' : 'Ready';
+        const growth = playerGrowth(w.cultivation.insight);
+        const status = `${life} Qi ${w.qi} ${defense}`;
+        const guardCd = `Guard S>K ${cooldownBar(p.armorCool ?? 0, growth.armorCooldown, 3)}`;
+        const attackCd = `Dash U ${cooldownBar(p.dashCool, 0.7 * growth.skillCooldown, 3)} Spin I ${cooldownBar(p.spinCool, 1.6 * growth.skillCooldown, 3)}`;
+        const compactCd = `G${cooldownTrack(p.armorCool ?? 0, growth.armorCooldown, 3)} D${cooldownTrack(p.dashCool, 0.7 * growth.skillCooldown, 3)} S${cooldownTrack(p.spinCool, 1.6 * growth.skillCooldown, 3)}`;
+        const boss = w.enemies.find(e => e.tag === 'boss') ?? w.enemies.find(e => e.duelist);
+        const threat = boss ? `${boss.duelist ? boss.duelist === 'qingfeng' ? 'Azure Blade' : 'Dark Robe' : uiName(BOSS_NAMES[boss.bossKind ?? 'spider'])} ${boss.hp}/${boss.maxHp ?? 5}` : '';
+        const warning = boss?.quakeX !== undefined ? boss.bossKind === 'crystal' ? 'Ice field! Jump / leave blue line' : 'Ground strike! Jump / leave red line'
+            : boss && (boss.followupT ?? 0) > 0 ? bossAbilities(boss).stun ? 'Double slash! Second hit stuns' : 'Double slash! Dodge the second hit'
+                : boss && boss.windup >= 0 ? 'Charging! Dodge now' : (boss?.guard ?? 0) > 0 ? 'Guarding: use an art / attack from behind' : '';
+        const selected = selectSwordForm(w.selectedArt, w.qi, w.formProgress[w.selectedArt]), cast = w.swordCast;
+        const following = cast ? selected : selected ? selectSwordForm(w.selectedArt, w.qi - selected.cost, w.formProgress[w.selectedArt].map((n, i) => n + (i === selected.tier ? 1 : 0))) : null;
+        const nextForm = cast ? cast.full ? fullArtName(cast.art) : formName(cast.art, cast.formIndex ?? 0)
+            : selected ? `${SWORD_ARTS[w.selectedArt].keys} ${selected.full ? fullArtName(w.selectedArt) : formName(w.selectedArt, selected.index)}`
+                : `Build qi ${w.qi}/${SWORD_ARTS[w.selectedArt].cost}`;
+        if (rows <= 2)
+            return [result ? `${life} · Stage ${this.director.chapter} clear`
+                    : (p.armorT ?? 0) > 0 ? `${life} · Guarding ${p.armorT.toFixed(1)}s`
+                        : warning ? `${life} · ${warning}` : `${life} Qi ${w.qi} · ${nextForm}`,
+                result ? 'Clear! J next ? arts' : `${compactCd}${warning ? ' !' : ''} ? arts`];
+        if (result)
+            return [...[`Chapter ${result.chapter} clear`, chapterName(result.chapter, this.director.chapterTitle()),
+                    `${result.score} pts · ${result.kills} kills`, 'J next / auto continue', ''].slice(0, rows - 1), '? arts E size Esc back'];
+        const lines = rows <= 3 ? [status, compactCd]
+            : rows <= 4 ? [status, warning || threat || nextForm, compactCd]
+                : rows <= 5 ? [status, warning || threat || `Stage ${this.director.chapter}`, nextForm, compactCd]
+                    : [status, warning || threat || `Stage ${this.director.chapter}: ${chapterName(this.director.chapter, this.director.chapterTitle())}`,
+                        `${nextForm} · Cultivation ${growth.level}`, guardCd, attackCd,
+                        following ? `Next ${formName(w.selectedArt, following.index)}` : 'Build qi for the next form · No time limit'];
+        return [...lines.slice(0, rows - 1), '? arts E size Esc back'];
     }
 }
 function savedCount(value) {
@@ -786,7 +891,10 @@ class SnakeGame {
     serialize() { return { best: this.best }; }
     restore(v) { if (typeof v?.best === 'number')
         this.best = v.best; }
-    hud() { return `贪吃蛇 · ${this.score} · 最高 ${this.best} · Tab 换游戏`; }
+    hud() {
+        return isEnglish() ? `Snake · ${this.score} · Best ${this.best} · Tab switch game`
+            : `贪吃蛇 · ${this.score} · 最高 ${this.best} · Tab 换游戏`;
+    }
 }
 const SHAPES = [
     [[0, 0], [1, 0], [2, 0], [3, 0]], [[0, 0], [1, 0], [0, 1], [1, 1]],
@@ -906,7 +1014,10 @@ class BlocksGame {
     serialize() { return { best: this.best }; }
     restore(v) { if (typeof v?.best === 'number')
         this.best = v.best; }
-    hud() { return `落块 · ${this.score} · 最高 ${this.best} · Tab 换游戏`; }
+    hud() {
+        return isEnglish() ? `Blocks · ${this.score} · Best ${this.best} · Tab switch game`
+            : `落块 · ${this.score} · 最高 ${this.best} · Tab 换游戏`;
+    }
     renderExpanded(c) {
         c.clear(BG);
         const ox = 28, oy = 2;
@@ -1034,7 +1145,7 @@ export class Arcade {
     }
     failureFor(id) { return this.failures.get(id); }
     get available() { return this.slots.length; }
-    get name() { return this.slots[this.active]?.module.manifest.name ?? '摸鱼'; }
+    get name() { return uiName(this.slots[this.active]?.module.manifest.name ?? '摸鱼'); }
     resize(_w, _h) { }
     feed(bytes, now = Date.now()) {
         const command = this.input.feed(bytes, now, this.slots[this.active]?.module.manifest.id === 'stick-slash');
@@ -1167,6 +1278,21 @@ export class Arcade {
     }
     panel() {
         const slot = this.slots[this.active];
+        if (isEnglish()) {
+            if (slot === undefined)
+                return ['No games available', 'Check installed Cartridges · Esc back'];
+            const m = slot.module.manifest, name = uiName(m.name);
+            if (!this.playable())
+                return [name, this.displayRows <= 2
+                        ? `E expand · Needs ${this.minimumRows()} rows · Esc back`
+                        : `Needs ${this.minimumRows()} rows; enlarge the terminal or use moyu play · Esc back`];
+            const controls = m.controls.map(c => `${uiName(c.keys[0] ?? '')} ${uiName(c.label)}`).join(' · ');
+            if (!this.instructions) {
+                const lines = slot.instance.combatHud?.(this.displayRows) ?? [slot.instance.hud?.() ?? name, '? help E size Esc back'];
+                return [lines[0] ?? name, lines[1] ?? '', ...lines.slice(2)];
+            }
+            return [`${name} · ${controls}`, 'E size · Tab switch · Esc back', ...(slot.instance.details?.() ?? [])];
+        }
         if (slot === undefined)
             return ['没有可用游戏', '请检查已安装 Cartridge · Esc 返回'];
         const m = slot.module.manifest;
@@ -1197,7 +1323,8 @@ export class Arcade {
             page.push('');
         if (rows > 1)
             page.push(this.showingInstructions
-                ? `Esc 返回 · [ ]翻页 ${this.panelPage + 1}/${pages} · ?收起`
+                ? isEnglish() ? `Esc back · [ ] page ${this.panelPage + 1}/${pages} · ? close`
+                    : `Esc 返回 · [ ]翻页 ${this.panelPage + 1}/${pages} · ?收起`
                 : width < 26 ? `? Esc退 []${this.panelPage + 1}/${pages}`
                     : `?帮助 Esc退 [ ]翻页 ${this.panelPage + 1}/${pages}`);
         return page;
@@ -1269,6 +1396,14 @@ export class Arcade {
         canvas.blit(target);
     }
     hud() {
+        if (isEnglish()) {
+            const notice = this.statusValue === 'task-done' ? 'Task complete'
+                : this.statusValue === 'needs-input' ? 'Needs your input' : null;
+            const slot = this.slots[this.active], name = uiName(slot?.module.manifest.name ?? 'Moyu');
+            const line = slot?.instance.hud?.() ?? `${name} · Tab switch game`;
+            const short = notice === null ? slot === undefined ? 'No games available' : line : `${notice} · ${name}`;
+            return { left: short, right: 'Ctrl+] / Esc back', short, urgent: notice !== null };
+        }
         const notice = this.statusValue === 'task-done' ? '任务完成'
             : this.statusValue === 'needs-input' ? '需要你确认' : null;
         const slot = this.slots[this.active];

@@ -400,6 +400,20 @@ test('WezTerm Win32 Ctrl+] opens and closes the game without leaking key release
   } finally { s.kill(); }
 });
 
+test('an English system language reaches the live wrapped game', async () => {
+  const s = await launch('node', { MOYU_LANG: 'en' });
+  try {
+    await s.waitFor(w => standbyPaint(w) && w.includes('INNER-READY'), '待机和内层启动');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    await s.waitFor(w => /HP \d+\/\d+/.test(w.slice(enter)), '英文战斗 HUD');
+    const help = s.wire().length;
+    s.send('?');
+    await s.waitFor(w => w.slice(help).includes('Stick Slash · A/D Move'), '英文帮助页');
+    assert.doesNotMatch(s.wire().slice(help), /[\u3400-\u9fff]/);
+  } finally { s.kill(); }
+});
+
 test('stable standby has no frame loop output until an external transition invalidates it', async () => {
   const s = await launch();
   try {

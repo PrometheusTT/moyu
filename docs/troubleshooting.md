@@ -13,7 +13,7 @@ moyu doctor --caps
 
 ## Windows 原生安装
 
-WSL 下载遇到 403 时，可按 [README 的 Windows 原生安装](../README.md#windows原生安装无需-wsl)
+WSL 下载遇到 403 时，可按 [README 的 Windows 原生安装](../README.md#安装)
 改用 PowerShell + WezTerm，不需要 Ubuntu。`moyu play` 独立运行；`moyu -- codex` 和
 `moyu -- claude` 需要先在 Windows 本机安装对应 CLI。若安装后当前 PowerShell 找不到
 `moyu`，新开 WezTerm PowerShell 标签页，让更新后的 `PATH` 生效。

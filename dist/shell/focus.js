@@ -1,3 +1,4 @@
+import { isEnglish } from "../i18n.js";
 export const PREFIX = 0x07; // Kept public as the explicit statement that Ctrl+G is passthrough.
 const EMPTY = new Uint8Array(0);
 const MAX_HOLD = 24;
@@ -413,5 +414,6 @@ export class InputRouter {
     }
 }
 export function hotkeyHint(focus) {
-    return focus === 'game' ? 'J 动作 · WASD 移动 · Esc 返回' : 'Ctrl+] 摸鱼';
+    return isEnglish() ? focus === 'game' ? 'J slash · WASD move · Esc back' : 'Ctrl+] Play Moyu'
+        : focus === 'game' ? 'J 动作 · WASD 移动 · Esc 返回' : 'Ctrl+] 摸鱼';
 }
