@@ -19,6 +19,7 @@ function run(args, marker, afterMarker) {
     env.MOYU_HOME = home;
     env.MOYU_EVENTS = path.join(home, 'events.log');
     env.MOYU_TIER = 'braille';
+    env.MOYU_TEE = path.join(home, 'inner-output.log');
     const child = spawn(process.execPath, [entry, ...args], {
       cols: 90, rows: 24, cwd: root, encoding: null, handleFlowControl: false,
       env,
@@ -39,7 +40,8 @@ function run(args, marker, afterMarker) {
     child.onExit(({ exitCode }) => {
       clearTimeout(timer);
       try {
-        const diagnostic = `${output.slice(0, 1000)}\n[tail]\n${output.slice(-1000)}`;
+        const inner = fs.existsSync(env.MOYU_TEE) ? fs.readFileSync(env.MOYU_TEE, 'utf8') : '';
+        const diagnostic = `${output.slice(0, 1000)}\n[tail]\n${output.slice(-1000)}\n[raw inner]\n${inner.slice(-1000)}`;
         assert.equal(exitCode, 0, diagnostic);
         assert.ok(output.includes(marker), diagnostic);
         resolve(output);
@@ -49,7 +51,8 @@ function run(args, marker, afterMarker) {
 }
 
 try {
-  fs.writeFileSync(path.join(home, 'moyu-native-test.ps1'), "Write-Host 'MOYU_PS_OK'\nStart-Sleep -Seconds 1\n");
+  fs.writeFileSync(path.join(home, 'moyu-native-test.ps1'),
+    `Set-Content -Path '${path.join(home, 'inner-ran.txt')}' -Value 'yes'\nWrite-Host 'MOYU_PS_OK'\nStart-Sleep -Seconds 1\n`);
   const play = await run(['play', 'stick-slash'], '\x1b[?1049h', child => {
     setTimeout(() => child.write('\x1d'), 500);
   });
