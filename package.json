@@ -50,6 +50,8 @@
     "check": "npm run typecheck && npm run docs:check && npm test",
     "verify": "npm run check && npm run compile",
     "smoke": "node scripts/startup-smoke.mjs source dist",
+    "showcase:en": "node --experimental-strip-types scripts/showcase.mjs --lang en",
+    "showcase:zh": "node --experimental-strip-types scripts/showcase.mjs --lang zh",
     "prepublishOnly": "npm run check && npm run compile",
     "dev": "node --experimental-strip-types src/app/main.ts",
     "bench": "node --experimental-strip-types src/app/main.ts bench",

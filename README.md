@@ -74,6 +74,8 @@ Press each key in sequence. The unlock number is **insight**, not the number of 
 
 Qi below 60 uses the first set of forms; 60–99 uses the second; 100 or more uses the third. Later tiers cost 3 or 6 extra qi. Forms rotate within each tier, and the last form in the highest tier has a finishing move. Press `?` in-game for individual forms and your progress. `S` → `K` is a separate defensive move: Iron Guard initially lasts 0.8 seconds with a 6-second cooldown. It clears control and prevents knockback or stagger during the guard, but it is not invulnerability.
 
+To record every art without manual inputs, run `npm run showcase:en` or `npm run showcase:zh` from a source checkout. See the [recording guide](./docs/showcase.md).
+
 ## Terminals and graphics
 
 Moyu probes your terminal and chooses Kitty Graphics, color Braille, or half-block text. These terminals are currently known to support high-resolution play:
