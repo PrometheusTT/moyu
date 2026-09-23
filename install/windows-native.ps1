@@ -1,6 +1,6 @@
 # Native Windows setup: Node.js + WezTerm + Moyu, no WSL required.
 param(
-    [string]$PackageSpec = 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/feat/live-on-enter'
+    [string]$PackageSpec = 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main'
 )
 
 $ErrorActionPreference = 'Stop'

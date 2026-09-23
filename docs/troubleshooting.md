@@ -45,7 +45,7 @@ npm list --global --depth=0
 
 ```sh
 npm uninstall --global moyu-game
-npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/feat/live-on-enter'
+npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main'
 ```
 
 当前 `moyu-game` 尚未发布到 npm registry。安装时不需要本机 TypeScript。如果错误提到 `tsc`、`prepare` 或临时目录死软链，

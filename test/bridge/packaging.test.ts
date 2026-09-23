@@ -322,7 +322,7 @@ test('typescript 必须在 devDependencies 里（构建和上面那条漂移检�
 test('README 给的 GitHub 安装命令必须真能装成这个包', () => {
   const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
   const slug = repoSlug();
-  const archive = `https://codeload.github.com/${slug}/tar.gz/refs/heads/feat/live-on-enter`;
+  const archive = `https://codeload.github.com/${slug}/tar.gz/refs/heads/main`;
   assert.ok(readme.includes(archive), `README 里没有可直接下载的 ${archive}`);
   for (const script of ['macos.sh', 'wsl.sh', 'windows.ps1']) {
     assert.ok(fs.readFileSync(path.join(root, 'install', script), 'utf8').includes(archive),

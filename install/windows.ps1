@@ -1,7 +1,7 @@
 # Run from PowerShell on Windows. Re-running after a WSL-required reboot is safe.
 param(
     [string]$Distribution = 'Ubuntu',
-    [string]$PackageSpec = 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/feat/live-on-enter'
+    [string]$PackageSpec = 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,7 +62,7 @@ if (-not (Test-WslReady)) {
 
 $bootstrap = Join-Path $env:TEMP 'moyu-wsl-install.sh'
 try {
-    Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/PrometheusTT/moyu/feat/live-on-enter/install/wsl.sh' -OutFile $bootstrap
+    Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/PrometheusTT/moyu/main/install/wsl.sh' -OutFile $bootstrap
     $linuxPath = (& wsl.exe -d $Distribution -- wslpath -u $bootstrap).Trim()
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($linuxPath)) { throw 'Cannot access the installer from WSL.' }
     & wsl.exe -d $Distribution -- bash $linuxPath $PackageSpec

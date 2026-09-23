@@ -13,7 +13,7 @@
 macOS / Linux：
 
 ```sh
-npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/feat/live-on-enter'
+npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main'
 moyu play stick-slash
 ```
 
@@ -22,7 +22,7 @@ macOS 尚未安装 Node 时，可使用 [安装脚本](./install/macos.sh)。
 Windows 无需 WSL。在 PowerShell 中运行：
 
 ```powershell
-$file = Join-Path $env:TEMP 'moyu-native-install.ps1'; Invoke-WebRequest https://raw.githubusercontent.com/PrometheusTT/moyu/feat/live-on-enter/install/windows-native.ps1 -OutFile $file; powershell -NoProfile -ExecutionPolicy Bypass -File $file
+$file = Join-Path $env:TEMP 'moyu-native-install.ps1'; Invoke-WebRequest https://raw.githubusercontent.com/PrometheusTT/moyu/main/install/windows-native.ps1 -OutFile $file; powershell -NoProfile -ExecutionPolicy Bypass -File $file
 ```
 
 安装器会补齐 Node.js 和 WezTerm。完成后新开 WezTerm 的 PowerShell 标签页，运行 `moyu play stick-slash`。
@@ -34,7 +34,7 @@ moyu -- codex
 moyu -- claude
 ```
 
-当前从 GitHub 分支安装，`moyu-game` 尚未发布到 npm registry。升级时重跑安装命令；卸载用 `npm uninstall --global moyu-game`。
+当前从 GitHub `main` 分支安装，`moyu-game` 尚未发布到 npm registry。升级时重跑安装命令；卸载用 `npm uninstall --global moyu-game`。
 
 ## 操作
 

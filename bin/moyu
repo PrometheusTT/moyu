@@ -46,6 +46,6 @@ elif [ -f "$root/dist/app/main.js" ] && [ -f "$root/dist/app/supervisor.js" ]; t
   exec node "$supervisor" "$worker" "$@"
 else
   printf 'moyu: 找不到 %s\n' "$root/dist/app/supervisor.js / $root/dist/app/main.js" >&2
-  printf 'moyu: dist/ 本该跟包一起发的。重装：npm i -g https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/feat/live-on-enter（在仓库里的话：npm run compile）\n' >&2
+  printf 'moyu: dist/ 本该跟包一起发的。重装：npm i -g https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main（在仓库里的话：npm run compile）\n' >&2
   exit 1
 fi
