@@ -97,5 +97,5 @@ export function englishBattleNotice(notice: string): string {
   if (encounter) return `${encounter[1] === '剑宗临阵' ? 'Sword master appears' : 'Duelist challenges you'} · ${uiName(encounter[2]!)}`;
   const cast = /^(悟得秘技！)?(.+?) · (.+)$/.exec(notice);
   if (cast) return `${cast[1] ? 'Secret art learned! ' : ''}${NAMED_EN.get(cast[2]!) ?? 'Sword Art'} · ${NAMED_EN.get(cast[3]!) ?? 'Sword Form'}`;
-  return notice;
+  return /[\u3400-\u9fff]/.test(notice) ? 'Battle update' : notice;
 }

@@ -42,6 +42,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { eventsPath, type Signal } from './signal.ts';
+import { isEnglish } from '../i18n.ts';
+
+const tr = (zh: string, en: string): string => isEnglish() ? en : zh;
 
 export type Target = 'claude' | 'codex';
 
@@ -196,7 +199,8 @@ export function plan(target: Target, opts: PlanOptions = {}): Plan {
   let before: string | null = null;
   try { before = fs.readFileSync(p, 'utf8'); } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-      return { ...base, action: 'error', error: `读不出 ${p}：${e instanceof Error ? e.message : String(e)}—— 没有改动` };
+      return { ...base, action: 'error', error: tr(`读不出 ${p}：${e instanceof Error ? e.message : String(e)}—— 没有改动`,
+        `Could not read ${p}: ${e instanceof Error ? e.message : String(e)}; nothing changed`) };
     }
     before = null;
   }
@@ -209,15 +213,16 @@ export function plan(target: Target, opts: PlanOptions = {}): Plan {
     let parsed: unknown;
     try { parsed = JSON.parse(before) as unknown; } catch (e) {
       return { ...base, existed, before, action: 'error',
-        error: `${p} 不是合法 JSON（${e instanceof Error ? e.message : String(e)}）—— 可能带了注释。用 moyu install --print 手动并进去` };
+        error: tr(`${p} 不是合法 JSON（${e instanceof Error ? e.message : String(e)}）—— 可能带了注释。用 moyu install --print 手动并进去`,
+          `${p} contains invalid JSON (${e instanceof Error ? e.message : String(e)}). It may contain comments; use moyu install --print to merge manually`) };
     }
-    if (!isObj(parsed)) return { ...base, existed, before, action: 'error', error: `${p} 的顶层不是一个对象` };
+    if (!isObj(parsed)) return { ...base, existed, before, action: 'error', error: tr(`${p} 的顶层不是一个对象`, `${p} must contain a top-level object`) };
     root = parsed;
   }
 
   const rawHooks = root.hooks;
   if (rawHooks !== undefined && !isObj(rawHooks)) {
-    return { ...base, existed, before, action: 'error', error: `${p} 里的 hooks 不是一个对象，不敢动它` };
+    return { ...base, existed, before, action: 'error', error: tr(`${p} 里的 hooks 不是一个对象，不敢动它`, `The hooks field in ${p} is not an object; refusing to change it`) };
   }
   const hooks: Record<string, unknown> = isObj(rawHooks) ? rawHooks : {};
 
@@ -259,7 +264,8 @@ export function apply(p: Plan, now = new Date()): string | null {
   try { current = fs.readFileSync(p.path, 'utf8'); } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
   }
-  if (current !== p.before) throw new Error(`${p.path} 在干跑之后被别的程序改过了，请重新运行 moyu install`);
+  if (current !== p.before) throw new Error(tr(`${p.path} 在干跑之后被别的程序改过了，请重新运行 moyu install`,
+    `${p.path} changed after the preview; rerun moyu install`));
 
   let backup: string | null = null;
   if (p.existed && p.before !== null) {

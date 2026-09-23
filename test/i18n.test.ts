@@ -79,10 +79,42 @@ test('English built-in game HUD, help, chapter and sword names contain no Chines
     }
     noChinese(chapterName(3, '山门妖踪'));
     for (const notice of ['护体罡气 · 霸体', '剑气不足 8/10', '九剑未悟 · 阅历3/12',
-      '悟得秘技！独孤九剑 · 总诀式', '剑宗临阵 · 青锋']) noChinese(englishBattleNotice(notice));
+      '悟得秘技！独孤九剑 · 总诀式', '剑宗临阵 · 青锋', '未知战斗消息']) noChinese(englishBattleNotice(notice));
   } finally {
     if (oldLang === undefined) delete process.env.MOYU_LANG; else process.env.MOYU_LANG = oldLang;
     if (oldHome === undefined) delete process.env.MOYU_HOME; else process.env.MOYU_HOME = oldHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('English CLI diagnostics and setup output contain no Chinese', () => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const entry = path.join(root, 'src', 'app', 'main.ts');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'moyu-cli-en-'));
+  try {
+    fs.mkdirSync(path.join(home, '.claude'));
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), '{invalid');
+    const invalidGame = path.join(home, 'invalid-game');
+    fs.mkdirSync(invalidGame);
+    fs.writeFileSync(path.join(invalidGame, 'moyu.game.json'), JSON.stringify({ id: 'invalid-game' }));
+    const env = { ...process.env, HOME: home, USERPROFILE: home, MOYU_HOME: home,
+      MOYU_LANG: 'zh', LANG: 'zh_CN.UTF-8', TERM_PROGRAM: '' };
+    const commands = [
+      ['doctor'], ['doctor', '--caps'], ['doctor', '--gfx'], ['doctor', '--visual'],
+      ['bench', '1'], ['demo'], ['games', 'list'], ['games', 'add', invalidGame],
+      ['install', '--claude'], ['install', '--bad-option'], ['--', 'moyu-command-that-does-not-exist'],
+    ];
+    for (const command of commands) {
+      const result = spawnSync(process.execPath, ['--experimental-strip-types', entry, '--lang', 'en', ...command],
+        { cwd: root, env, encoding: 'utf8' });
+      assert.notEqual(result.status, null, `${command.join(' ')}: ${result.error?.message}`);
+      assert.doesNotMatch(result.stdout + result.stderr, /[\u3400-\u9fff]/,
+        `${command.join(' ')}: ${result.stdout}\n${result.stderr}`);
+    }
+    const chinese = spawnSync(process.execPath, ['--experimental-strip-types', entry, '--lang', 'zh', 'doctor', '--caps'],
+      { cwd: root, env, encoding: 'utf8' });
+    assert.match(chinese.stdout, /终端/);
+  } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
 });

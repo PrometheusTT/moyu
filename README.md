@@ -124,7 +124,7 @@ Restart Moyu after updating; running processes do not reload automatically.
 
 ## Language
 
-Built-in game HUDs, help, chapters, and combat messages follow the system locale: Chinese for Chinese locales, English otherwise. Override it for one run with `moyu --lang en play stick-slash` or `moyu --lang zh -- codex`; `MOYU_LANG=en` and `MOYU_LANG=zh` also work. Put Moyu's `--lang` before `--` when wrapping a CLI; arguments after `--` belong to that CLI. Third-party Cartridges provide their own text.
+Moyu's built-in games and CLI messages (including `doctor` and `install`) follow the system locale: Chinese for Chinese locales, English otherwise. Override it for one run with `moyu --lang en play stick-slash` or `moyu --lang zh -- codex`; `MOYU_LANG=en` and `MOYU_LANG=zh` also work. Put Moyu's `--lang` before `--` when wrapping a CLI; arguments after `--` belong to that CLI. Third-party Cartridges provide their own text.
 
 ## Create with us
 

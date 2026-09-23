@@ -40,6 +40,7 @@ import { isEnglish } from "../i18n.js";
 const FPS = 30;
 const FRAME_MS = 1000 / FPS;
 const HOST_EVENT_MS = 100;
+const tr = (zh, en) => isEnglish() ? en : zh;
 /**
  * stdout 积压超过这个字节数就跳过这一帧。
  *
@@ -60,7 +61,7 @@ export function resolveExecutable(file, env = process.env) {
         try {
             const stat = fs.statSync(candidate);
             if (!stat.isFile()) {
-                unusable ??= { path: path.resolve(candidate), detail: '不是普通文件' };
+                unusable ??= { path: path.resolve(candidate), detail: tr('不是普通文件', 'not a regular file') };
                 continue;
             }
             try {
@@ -68,13 +69,13 @@ export function resolveExecutable(file, env = process.env) {
                 return { kind: 'executable', path: path.resolve(candidate) };
             }
             catch (error) {
-                unusable ??= { path: path.resolve(candidate), detail: diagnosticLine(error, '不可执行') };
+                unusable ??= { path: path.resolve(candidate), detail: diagnosticLine(error, tr('不可执行', 'not executable')) };
             }
         }
         catch (error) {
             const code = error.code;
             if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-                unusable ??= { path: path.resolve(candidate), detail: diagnosticLine(error, '无法访问') };
+                unusable ??= { path: path.resolve(candidate), detail: diagnosticLine(error, tr('无法访问', 'inaccessible')) };
             }
         }
     }
@@ -133,8 +134,12 @@ function usage() {
             '  moyu doctor              Check the installation and terminal',
             '  moyu doctor --caps       Show the selected rendering tier',
             '  moyu doctor --gfx        Test Kitty Graphics directly',
+            '  moyu doctor --visual     Compare native and older pixel rendering',
             '  moyu doctor --reset      Restore terminal state after a crash',
             '  moyu demo                Run the full-screen combat demo',
+            '  moyu hook [--codex]      Print a hook configuration snippet',
+            '  moyu signal start|done   Send a task signal manually',
+            '  moyu bench [frames] [--stress|--game|--strip] [--tier=graphics|braille|half]  Benchmark rendering',
             '',
             'In game: WASD/arrows move · J slash · Space jump · ? help · Esc/q back',
             `While wrapping a CLI: ${hotkeyHint('cli')} · F12 alternate · Ctrl+G/Ctrl+C stay with the CLI`,
@@ -222,7 +227,7 @@ async function main() {
     if (cmd === 'signal') {
         const k = argv[1];
         if (k !== 'start' && k !== 'done' && k !== 'notify') {
-            process.stderr.write('用法：moyu signal start|done|notify\n');
+            process.stderr.write(`${tr('用法', 'Usage')}: moyu signal start|done|notify\n`);
             return 2;
         }
         appendSignal(k);
@@ -232,7 +237,7 @@ async function main() {
     if (cmd === 'bench') {
         const tier = tierArg(argv);
         if (tier === 'bad') {
-            process.stderr.write('--tier= 只认 graphics、braille 或 half\n');
+            process.stderr.write(tr('--tier= 只认 graphics、braille 或 half\n', '--tier= accepts only graphics, braille, or half\n'));
             return 2;
         }
         return cmdBench(Number(argv[1] ?? 300), argv.includes('--stress'), argv.includes('--game'), argv.includes('--strip'), tier);
@@ -274,7 +279,7 @@ function pad(s, n) {
 function cmdInstall(args) {
     const bad = args.find((a) => a.startsWith('-') && !INSTALL_FLAGS.has(a.split('=')[0] ?? a));
     if (bad !== undefined) {
-        process.stderr.write(`moyu install: 不认识的选项 ${bad}\n用法：moyu install [--claude] [--codex] [--uninstall] [--print] [--write]\n`);
+        process.stderr.write(`moyu install: ${tr('不认识的选项', 'unknown option')} ${bad}\n${tr('用法', 'Usage')}: moyu install [--claude] [--codex] [--uninstall] [--print] [--write]\n`);
         return 2;
     }
     const write = args.includes('--write');
@@ -290,18 +295,18 @@ function cmdInstall(args) {
     // 没点名就装"这台机器上真的有的"那些。装到一个没有的 CLI 上只会留下一个没人读的文件。
     const targets = asked.length > 0 ? asked : BOTH.filter((t) => detected(t));
     if (targets.length === 0) {
-        process.stderr.write('没找到 Claude Code 或 Codex（~/.claude 和 ~/.codex 都不存在，PATH 上也没有）。\n' +
-            '要强制装：moyu install --claude --write（或 --codex）。\n');
+        process.stderr.write(tr('没找到 Claude Code 或 Codex（~/.claude 和 ~/.codex 都不存在，PATH 上也没有）。\n', 'Claude Code or Codex was not found (no config directory and no executable on PATH).\n') +
+            tr('要强制装：moyu install --claude --write（或 --codex）。\n', 'To install anyway: moyu install --claude --write (or --codex).\n'));
         return 1;
     }
     const plans = targets.map((t) => plan(t, { file, uninstall: un }));
-    const out = [un ? '摸鱼 hook 卸载' : '摸鱼 hook 安装', ''];
+    const out = [un ? tr('摸鱼 hook 卸载', 'Moyu hook removal') : tr('摸鱼 hook 安装', 'Moyu hook installation'), ''];
     let failed = false;
     for (const p of plans) {
         const name = pad(TARGET_NAME[p.target], 11);
         if (p.action === 'error') {
             failed = true;
-            out.push(`✗ ${name}  ${p.error ?? '未知错误'}`, `  手动版：moyu install --${p.target} --print`, '');
+            out.push(`✗ ${name}  ${p.error ?? tr('未知错误', 'Unknown error')}`, `  ${tr('手动版', 'Manual setup')}: moyu install --${p.target} --print`, '');
             continue;
         }
         if (write) {
@@ -311,14 +316,17 @@ function cmdInstall(args) {
             }
             catch (e) {
                 failed = true;
-                out.push(`✗ ${name}  写不进 ${homeVar(p.path)}：${e instanceof Error ? e.message : String(e)}`, '');
+                out.push(`✗ ${name}  ${tr('写不进', 'Could not write')} ${homeVar(p.path)}: ${e instanceof Error ? e.message : String(e)}`, '');
                 continue;
             }
-            const what = p.action === 'unchanged' ? '本来就是这样，没动' : p.action === 'remove' ? '已删掉' : p.action === 'create' ? '已新建' : '已更新';
-            out.push(`✓ ${name}  ${what} ${homeVar(p.path)}${backup === null ? '' : `（备份 ${homeVar(backup)}）`}`);
+            const what = p.action === 'unchanged' ? tr('本来就是这样，没动', 'Already up to date') : p.action === 'remove' ? tr('已删掉', 'Removed') : p.action === 'create' ? tr('已新建', 'Created') : tr('已更新', 'Updated');
+            out.push(`✓ ${name}  ${what} ${homeVar(p.path)}${backup === null ? '' : tr(`（备份 ${homeVar(backup)}）`, ` (backup ${homeVar(backup)})`)}`);
         }
         else {
-            const what = p.action === 'unchanged' ? '不用改（已经是想要的样子）' : p.action === 'remove' ? `会删掉整个文件（摘掉 ${p.removed} 条之后它就空了）` : p.action === 'create' ? '会新建' : `会更新${p.removed > 0 ? `（先摘掉 ${p.removed} 条旧的）` : ''}`;
+            const what = p.action === 'unchanged' ? tr('不用改（已经是想要的样子）', 'No change needed')
+                : p.action === 'remove' ? tr(`会删掉整个文件（摘掉 ${p.removed} 条之后它就空了）`, `Will remove the file (empty after removing ${p.removed} hooks)`)
+                    : p.action === 'create' ? tr('会新建', 'Will create')
+                        : tr(`会更新${p.removed > 0 ? `（先摘掉 ${p.removed} 条旧的）` : ''}`, `Will update${p.removed > 0 ? ` (removing ${p.removed} old hooks first)` : ''}`);
             out.push(`${name}  ${homeVar(p.path)}`, `  ${what}`);
             const mark = p.action === 'unchanged' ? '·' : '+';
             for (const [event, kind] of eventSignals(p.target)) {
@@ -327,15 +335,15 @@ function cmdInstall(args) {
             }
         }
         if (p.target === 'codex' && !un && p.action !== 'unchanged') {
-            out.push('  ! Codex 下次启动会问 "Hooks need review" —— 选 "Trust all and continue"，不然 hook 不会跑');
+            out.push(tr('  ! Codex 下次启动会问 "Hooks need review" —— 选 "Trust all and continue"，不然 hook 不会跑', '  ! On the next Codex launch, choose "Trust all and continue" when asked to review hooks.'));
         }
         out.push('');
     }
-    out.push(`事件文件：${homeVar(file)}`);
+    out.push(`${tr('事件文件', 'Event file')}: ${homeVar(file)}`);
     if (!write)
-        out.push('', '以上是干跑，什么都没改。真要写：' + (un ? 'moyu install --uninstall --write' : 'moyu install --write'));
+        out.push('', tr('以上是干跑，什么都没改。真要写：', 'Preview only; nothing was changed. To apply: ') + (un ? 'moyu install --uninstall --write' : 'moyu install --write'));
     else if (!un && !failed)
-        out.push('可以了：moyu -- claude（或 moyu -- codex）。不装 hook 也能玩：游戏里按 t / y 手动喂信号。');
+        out.push(tr('可以了：moyu -- claude（或 moyu -- codex）。不装 hook 也能玩：游戏里按 t / y 手动喂信号。', 'Ready: moyu -- claude (or moyu -- codex). You can also play without hooks and send signals with t / y.'));
     process.stdout.write(`${out.join('\n')}\n`);
     return failed ? 1 : 0;
 }
@@ -351,18 +359,20 @@ function lastSignal(file) {
         const lines = buf.toString('utf8').trim().split('\n');
         const last = lines[lines.length - 1]?.trim() ?? '';
         if (last === '')
-            return '空的（还没有任何事件）';
+            return tr('空的（还没有任何事件）', 'Empty (no events yet)');
         const parts = last.split(/\s+/);
         const kind = parts[parts.length - 1] ?? '?';
         const ts = Number(parts[0]);
         if (!Number.isFinite(ts) || parts.length < 2)
-            return `最后一条 ${kind}`;
+            return tr(`最后一条 ${kind}`, `Last event: ${kind}`);
         const age = Math.max(0, Math.round(Date.now() / 1000 - ts));
-        const when = age < 60 ? `${age} 秒前` : age < 3600 ? `${Math.round(age / 60)} 分钟前` : `${Math.round(age / 3600)} 小时前`;
-        return `最后一条 ${kind}（${when}）`;
+        const when = age < 60 ? tr(`${age} 秒前`, `${age}s ago`)
+            : age < 3600 ? tr(`${Math.round(age / 60)} 分钟前`, `${Math.round(age / 60)}m ago`)
+                : tr(`${Math.round(age / 3600)} 小时前`, `${Math.round(age / 3600)}h ago`);
+        return tr(`最后一条 ${kind}（${when}）`, `Last event: ${kind} (${when})`);
     }
     catch {
-        return '读不出来';
+        return tr('读不出来', 'Unreadable');
     }
     finally {
         if (fd >= 0) {
@@ -375,37 +385,38 @@ function lastSignal(file) {
 }
 /** `moyu doctor`：只读的体检。装出问题的时候第一件该跑的事。 */
 async function cmdDoctor() {
-    const out = ['摸鱼体检', ''];
+    const out = [tr('摸鱼体检', 'Moyu diagnostics'), ''];
     const major = Number(process.versions.node.split('.')[0] ?? 0);
-    out.push(`node        ${process.version}${major >= 20 ? '' : '  ← 太旧了，要 >= 20'}`);
+    out.push(`node        ${process.version}${major >= 20 ? '' : tr('  ← 太旧了，要 >= 20', '  ← too old; requires >= 20')}`);
     // PTY 是 `moyu -- <cmd>` 的硬依赖，但 `moyu demo` 不需要它 —— 所以坏了也不是致命的。
     let pty;
     try {
         await import('@lydell/node-pty');
-        pty = '可用';
+        pty = tr('可用', 'Available');
     }
     catch (e) {
-        pty = `加载失败（${e instanceof Error ? e.message.split('\n')[0] : String(e)}）—— moyu -- <cmd> 用不了，moyu demo 照样能玩`;
+        const reason = e instanceof Error ? e.message.split('\n')[0] : String(e);
+        pty = tr(`加载失败（${reason}）—— moyu -- <cmd> 用不了，moyu demo 照样能玩`, `Failed to load (${reason}); moyu -- <cmd> is unavailable, but moyu demo still works`);
     }
     out.push(`PTY         ${pty}`);
     const file = eventsPath();
-    out.push(`事件文件    ${homeVar(file)}：${fs.existsSync(file) ? lastSignal(file) : '还不存在（装了 hook 或按过 t/y 之后才有）'}`);
+    out.push(`${tr('事件文件', 'Event file').padEnd(12)}${homeVar(file)}: ${fs.existsSync(file) ? lastSignal(file) : tr('还不存在（装了 hook 或按过 t/y 之后才有）', 'Not created yet (install hooks or press t/y)')}`);
     for (const t of BOTH) {
         const st = status(t, { file });
         const name = pad(TARGET_NAME[t], 11);
         if (st.broken !== null) {
-            out.push(`${name} ${homeVar(st.path)} 不是合法 JSON：${st.broken}`);
+            out.push(`${name} ${homeVar(st.path)} ${tr('不是合法 JSON', 'contains invalid JSON')}: ${st.broken}`);
             continue;
         }
         if (st.events.length === 0) {
-            out.push(`${name} 没装${detected(t) ? `（moyu install --${t} --write）` : '（这台机器上也没装这个 CLI）'}`);
+            out.push(`${name} ${tr('没装', 'Not installed')}${detected(t) ? tr(`（moyu install --${t} --write）`, ` (moyu install --${t} --write)`) : tr('（这台机器上也没装这个 CLI）', ' (CLI not found on this machine)')}`);
             continue;
         }
-        out.push(`${name} 已装 ${st.events.join(' / ')}${st.stale ? '  ← 命令和现在的事件文件路径不一致，重跑 moyu install --write' : ''}`);
+        out.push(`${name} ${tr('已装', 'Installed')} ${st.events.join(' / ')}${st.stale ? tr('  ← 命令和现在的事件文件路径不一致，重跑 moyu install --write', '  ← event file path changed; rerun moyu install --write') : ''}`);
         if (t === 'codex')
-            out.push('            （Codex 那边还要在启动时点过一次 "Trust all and continue" 才真的会跑）');
+            out.push(tr('            （Codex 那边还要在启动时点过一次 "Trust all and continue" 才真的会跑）', '            (Choose "Trust all and continue" on Codex launch to enable hooks)'));
     }
-    out.push('', '渲染档位：moyu doctor --caps（要在真终端里跑）；只验证 Kitty 图片链路：moyu doctor --gfx', '终端被搞坏了：moyu doctor --reset');
+    out.push('', tr('渲染档位：moyu doctor --caps（要在真终端里跑）；只验证 Kitty 图片链路：moyu doctor --gfx', 'Rendering tier: moyu doctor --caps (run in a real terminal); Kitty Graphics test: moyu doctor --gfx'), tr('终端被搞坏了：moyu doctor --reset', 'Restore terminal state: moyu doctor --reset'));
     process.stdout.write(`${out.join('\n')}\n`);
     return 0;
 }
@@ -436,13 +447,17 @@ function cmdBench(frames, stress, game, strip, tier) {
             peak = t.lastBytes;
     }
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-    process.stdout.write([
+    process.stdout.write((isEnglish() ? [
+        `Canvas ${t.pixelW}×${t.pixelH} pixels (${t.cols}×${t.rows} cells, ${tier} tier${tier === 'graphics' ? `, ${BENCH_CELL.w}×${BENCH_CELL.h} pixels/cell` : ''}), ${n} frames, ${stress ? 'stress' : strip ? 'strip (production size and live combat)' : game ? 'game (live combat)' : 'scene0 (baseline)'}`,
+        `Average ${(bytes / n / 1024).toFixed(2)} KB/frame   Peak ${(peak / 1024).toFixed(2)} KB/frame`,
+        `CPU ${(ms / n).toFixed(3)} ms/frame   Bandwidth at ${FPS}fps: ${((bytes / n) * FPS / 1024).toFixed(0)} KB/s`,
+    ] : [
         `画布 ${t.pixelW}×${t.pixelH} 像素（${t.cols}×${t.rows} 字符格，${tier} 档`
             + `${tier === 'graphics' ? `，格像素 ${BENCH_CELL.w}×${BENCH_CELL.h}` : ''}），${n} 帧`
             + `，场景 ${stress ? 'stress（病态上界）' : strip ? 'strip（出货尺寸 + 真实战斗）' : game ? 'game（真实战斗）' : 'scene0（常规基线）'}`,
         `平均 ${(bytes / n / 1024).toFixed(2)} KB/帧   最差 ${(peak / 1024).toFixed(2)} KB/帧`,
         `CPU ${(ms / n).toFixed(3)} ms/帧   ${FPS}fps 下带宽 ${((bytes / n) * FPS / 1024).toFixed(0)} KB/s`,
-    ].join('\n') + '\n');
+    ]).join('\n') + '\n');
     return 0;
 }
 /**
@@ -459,6 +474,25 @@ function tierArg(argv) {
         return 'braille';
     const v = a.slice('--tier='.length);
     return v === 'graphics' || v === 'braille' || v === 'half' ? v : 'bad';
+}
+function englishCapsReason(caps, tty, mux, known) {
+    if (caps.why.startsWith('MOYU_TIER='))
+        return caps.why;
+    if (process.env.MOYU_FORCE_GRAPHICS === '1')
+        return `MOYU_FORCE_GRAPHICS=1, ${caps.cellW}×${caps.cellH} pixels/cell`;
+    if (!tty)
+        return 'Not a TTY';
+    if (mux !== null)
+        return `${mux} does not pass APC through; using Braille`;
+    if (caps.probe === 'no-graphics')
+        return 'Terminal answered DA but not Kitty Graphics; using Braille';
+    if (caps.probe === 'silent') {
+        const detail = 'No terminal response; graphics support could not be determined';
+        return caps.tier === 'graphics' && known !== null
+            ? `${known} supports Kitty Graphics (${detail}; detected from environment), ${caps.cellW}×${caps.cellH} pixels/cell`
+            : `${detail}; using Braille`;
+    }
+    return `Kitty Graphics supported, ${caps.cellW}×${caps.cellH} pixels/cell${caps.fps === 15 ? ', SSH → 15fps' : ''}`;
 }
 /**
  * `bench --game` 用的无头驱动：真实的战斗世界 + 一段脚本化的操作。
@@ -535,7 +569,7 @@ async function cmdCaps(gfx) {
         });
         const envOr = (k) => {
             const v = process.env[k];
-            return v === undefined || v === '' ? '（没设）' : v;
+            return v === undefined || v === '' ? tr('（没设）', '(unset)') : v;
         };
         const known = knownGraphicsTerm(process.env);
         const ssh = process.env.SSH_CONNECTION !== undefined && process.env.SSH_CONNECTION !== '';
@@ -555,7 +589,32 @@ async function cmdCaps(gfx) {
             restoreOptions = { deleteImage: true };
             await teardown.update(restoreOptions);
         }
-        process.stdout.write([
+        process.stdout.write((isEnglish() ? [
+            `Terminal    ${t.cols}×${t.rows} cells${tty ? '' : ' (not a TTY; probe results are not meaningful)'}`,
+            `Tier        ${caps.tier}`,
+            `Reason      ${englishCapsReason(caps, tty, mux, known)}`,
+            `Identity    TERM=${envOr('TERM')}, TERM_PROGRAM=${envOr('TERM_PROGRAM')}${known === null ? ' (terminal not identified from environment)' : ` → ${known}`}`,
+            `Connection  ${ssh ? 'SSH (15fps; local terminal variables may not be forwarded)' : 'Local'}${mux === null ? '' : `, inside ${mux}`}`,
+            caps.tier === 'graphics'
+                ? `Cell pixels ${caps.cellW}×${caps.cellH}${caps.cellW === DEFAULT_CELL.w && caps.cellH === DEFAULT_CELL.h ? ' (default)' : ''}`
+                : `Density     ${caps.tier === 'braille' ? '2×4' : '1×2'} logical pixels/cell (no pixel-size query needed)`,
+            `Frame rate  ${caps.fps}fps`,
+            `Standby     ${t.cols}×1 cells (static status line)`,
+            `Game strip  ${cols}×${rows} cells → ${target.pixelW}×${target.pixelH} logical pixels`,
+            'Micro scene 80×8 (composed for two rows, not shrunk from a full scene)',
+            'Character   Text tiers use native 8-pixel-high action frames; graphics tier draws more detail when expanded',
+            caps.leftover.length > 0 ? `Early input  ${caps.leftover.length} bytes discarded (this command does not forward input)` : '',
+            '',
+            caps.tier === 'braille'
+                ? 'Universal text tier: 2×4 logical pixels/cell. Clarity depends on the font; this tier is expected in Termius, SSH, and tmux/screen.'
+                : caps.tier === 'half'
+                    ? 'Basic compatibility tier. Try MOYU_TIER=braille to check whether your font supports Unicode Braille.'
+                    : 'Kitty Graphics is available; RGB graphics tier is active.',
+            '',
+            'Settings: MOYU_TIER=braille|half selects a text tier; MOYU_TIER=graphics safely tries graphics; MOYU_CELL=16x34 sets the cell size.',
+            'MOYU_FORCE_GRAPHICS=1 bypasses safeguards for protocol debugging; it may show blank output or garbage in Termius.',
+            gfx ? '' : 'Test the Kitty image path separately: moyu doctor --gfx (does not change automatic tier selection).',
+        ] : [
             `终端       ${t.cols}×${t.rows} 字符格${tty ? '' : '（不是 TTY —— 下面的探测结果没有意义）'}`,
             `档位       ${caps.tier}`,
             `理由       ${caps.why}`,
@@ -589,7 +648,7 @@ async function cmdCaps(gfx) {
             '环境变量：MOYU_TIER=braille|half 明确选文本档；MOYU_TIER=graphics 安全尝试图形档；MOYU_CELL=16x34 指定格像素。',
             'MOYU_FORCE_GRAPHICS=1 会跳过保护严格强制，只应用于协议调试；在 Termius 上可能空白或乱码。',
             gfx ? '' : '想单独验证 Kitty 图片链路：moyu doctor --gfx（不会改变日常自动选择）。',
-        ].filter((x) => x !== '').join('\n') + '\n');
+        ]).filter((x) => x !== '').join('\n') + '\n');
         // 协议自检刻意保持一条小图，避免 doctor 一次向 SSH 灌入整屏 RGB 数据。
         if (gfx) {
             drawGfxSelfTest(fieldColsFor(t.cols), 2, caps.cellW, caps.cellH);
@@ -642,7 +701,17 @@ function drawGfxSelfTest(cols, rows, cellW, cellH) {
         w.step(1 / 60, { move: 1, jump: false, slash: f === 24 });
     paintWorld(p, w);
     const img = t.encode(0); // 0 = 画在光标处，不发绝对定位
-    process.stdout.write([
+    process.stdout.write((isEnglish() ? [
+        '',
+        `The following image bypasses capability detection and uses ${cols}×${rows} cells (${t.pixelW}×${t.pixelH} device pixels).`,
+        'What you see tells you what to try next:',
+        '',
+        '  A stick figure  → Kitty Graphics works. You can use:',
+        '                    MOYU_TIER=graphics moyu -- codex    # or claude',
+        '  Nothing         → The terminal accepts APC but does not support Kitty Graphics.',
+        `  Base64 text     → The terminal does not accept APC (${Math.ceil(img.length / 1024)} KB; run clear to remove it).`,
+        '',
+    ] : [
         '',
         `下面这一段**不看探测结果**，直接送一张 ${cols}×${rows} 字符格（${t.pixelW}×${t.pixelH} 设备像素）的图。`,
         '三种结果，三个不一样的下一步：',
@@ -652,21 +721,21 @@ function drawGfxSelfTest(cols, rows, cellW, cellH) {
         '  什么都没有       → 终端认 APC 但不支持 kitty graphics —— 正常的"不支持"就长这样',
         `  一堆 base64 乱码 → 连 APC 都不认，也是不支持（约 ${Math.ceil(img.length / 1024)} KB，clear 一下就干净）`,
         '',
-    ].join('\n') + '\n');
+    ]).join('\n') + '\n');
     // 一次 write 写完：中间被别的输出（比如内层的字节）切开的话，图和定位就错位了。
     process.stdout.write('\n'.repeat(rows) + `\x1b[${rows}A` + img + `\x1b[${rows}B`);
-    process.stdout.write(`\n↑ 这就是游戏条的真实尺寸。图还留在屏幕上，clear 或 moyu doctor --reset 清掉。\n`);
+    process.stdout.write(tr(`\n↑ 这就是游戏条的真实尺寸。图还留在屏幕上，clear 或 moyu doctor --reset 清掉。\n`, `\n↑ This is the game's actual strip size. The image remains on screen; run clear or moyu doctor --reset to remove it.\n`));
 }
 async function cmdWrap(inner) {
     // 没有 TTY 就没有"分屏"可言（管道、CI、被别的程序调用）。这时候唯一正确的行为是
     // 完全退化成一层透明的转发 —— 装作外壳不存在，别把转义序列灌进人家的管道里。
     const resolved = resolveExecutable(inner[0]);
     if (resolved.kind === 'missing') {
-        process.stderr.write(`moyu: 找不到可执行命令 ${diagnosticLine(inner[0], '（空命令）')}\n`);
+        process.stderr.write(`moyu: ${tr('找不到可执行命令', 'executable not found')} ${diagnosticLine(inner[0], tr('（空命令）', '(empty command)'))}\n`);
         return 127;
     }
     if (resolved.kind === 'unusable') {
-        process.stderr.write(`moyu: 不能执行 ${diagnosticLine(inner[0], '（空命令）')}：${diagnosticLine(resolved.detail, '不可执行')}\n`);
+        process.stderr.write(`moyu: ${tr('不能执行', 'cannot execute')} ${diagnosticLine(inner[0], tr('（空命令）', '(empty command)'))}: ${diagnosticLine(resolved.detail, tr('不可执行', 'not executable'))}\n`);
         return 126;
     }
     const argv = launchCommand([resolved.path, ...inner.slice(1)]);
@@ -702,12 +771,12 @@ async function runBare(inner) {
             });
         }
         catch (error) {
-            process.stderr.write(`moyu: 起不来 ${diagnosticLine(inner[0], '（空命令）')}：${diagnosticLine(error, '启动失败')}\n`);
+            process.stderr.write(`moyu: ${tr('起不来', 'could not start')} ${diagnosticLine(inner[0], tr('（空命令）', '(empty command)'))}: ${diagnosticLine(error, tr('启动失败', 'startup failed'))}\n`);
             settle(invocationStatus(error));
             return;
         }
         child.on('error', (error) => {
-            process.stderr.write(`moyu: 起不来 ${diagnosticLine(inner[0], '（空命令）')}：${diagnosticLine(error, '启动失败')}\n`);
+            process.stderr.write(`moyu: ${tr('起不来', 'could not start')} ${diagnosticLine(inner[0], tr('（空命令）', '(empty command)'))}: ${diagnosticLine(error, tr('启动失败', 'startup failed'))}\n`);
             settle(invocationStatus(error));
         });
         child.on('exit', (code, signal) => {
@@ -912,7 +981,7 @@ class Shell {
                 return this.waitForOutcome();
             this.teardown.run();
             await this.teardown.released();
-            process.stderr.write(`moyu: ${diagnosticLine(e, '内层命令启动失败')}\n`);
+            process.stderr.write(`moyu: ${diagnosticLine(e, tr('内层命令启动失败', 'wrapped command failed to start'))}\n`);
             return invocationStatus(e);
         }
         if (this.stopping) {
@@ -1900,7 +1969,7 @@ if (entry !== undefined && isEntry(entry)) {
         await completeSupervision();
         process.exitCode = code;
     }, async (e) => {
-        process.stderr.write(`moyu: ${diagnosticLine(e, '未处理异常')}\n`);
+        process.stderr.write(`moyu: ${diagnosticLine(e, tr('未处理异常', 'unhandled error'))}\n`);
         releaseActiveTeardowns();
         await Promise.allSettled([...activeTeardowns].map((teardown) => teardown.released()));
         activeTeardowns.clear();

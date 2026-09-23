@@ -3,14 +3,16 @@ import { GraphicsTarget } from "../render/graphics.js";
 import { fitRow } from "../render/text.js";
 import { Teardown } from "../shell/teardown.js";
 import { PixelSample } from "./pixel-sample.js";
+import { isEnglish } from "../i18n.js";
 /** Diagnostic only: same simulation, switch between old and native pixel rendering with Tab. */
 export async function cmdPixelDemo() {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
-        process.stderr.write('moyu doctor --visual 需要真终端\n');
+        process.stderr.write(isEnglish() ? 'moyu doctor --visual needs an interactive terminal\n' : 'moyu doctor --visual 需要真终端\n');
         return 2;
     }
     if ((process.stdout.columns ?? 0) < 42 || (process.stdout.rows ?? 0) < 12) {
-        process.stderr.write('像素对比需要至少 42 列、12 行，画面默认仍为 40×2 字符格。\n');
+        process.stderr.write(isEnglish() ? 'The pixel comparison needs at least 42 columns and 12 rows; the default image remains 40×2 cells.\n'
+            : '像素对比需要至少 42 列、12 行，画面默认仍为 40×2 字符格。\n');
         return 2;
     }
     const wasRaw = process.stdin.isRaw;
@@ -37,8 +39,10 @@ export async function cmdPixelDemo() {
         process.stdin.pause();
     }
     if (caps.tier !== 'graphics') {
-        process.stderr.write(`本轮样片需要 Kitty Graphics，未启用：${caps.why}\n`
-            + '请在支持 Kitty Graphics 的终端运行，或查看导出的浏览器像素预览。此命令不会强制发送不支持的图片。\n');
+        process.stderr.write(isEnglish()
+            ? `This comparison needs Kitty Graphics, but the selected tier is ${caps.tier} (${caps.probe}).\nRun it in a Kitty Graphics terminal. This command will not force an unsupported image.\n`
+            : `本轮样片需要 Kitty Graphics，未启用：${caps.why}\n`
+                + '请在支持 Kitty Graphics 的终端运行，或查看导出的浏览器像素预览。此命令不会强制发送不支持的图片。\n');
         teardown.run();
         try {
             await teardown.released();
@@ -135,12 +139,16 @@ export async function cmdPixelDemo() {
                 return;
             let out = '';
             if (dirty) {
+                const english = isEnglish();
+                const renderLabel = legacy ? english ? 'old low-resolution pass' : '旧版低分辨率中转'
+                    : english ? 'native pixels' : '新版原生像素';
+                const playbackLabel = paused ? english ? 'paused' : '暂停' : english ? 'playing' : '播放';
                 out += target.disposeSeq() + '\x1b[2J';
                 target.invalidate();
-                out += '\x1b[1;1H' + fitRow(`Moyu · ${legacy ? '旧版低分辨率中转' : '新版原生像素'} · ${paused ? '暂停' : '播放'}`, '', process.stdout.columns - 1);
-                out += '\x1b[2;1H' + fitRow(`${target.pixelW}×${target.pixelH} px · ${target.rows} 行 · ${theme} · ${caps.fps}fps`, '', process.stdout.columns - 1);
-                out += `\x1b[${target.rows + 4};1H` + fitRow('Tab 新旧 · 空格 暂停 · r 重播', '', process.stdout.columns - 1);
-                out += `\x1b[${target.rows + 5};1H` + fitRow('e 两/六行 · l 深浅 · Esc 退出', '', process.stdout.columns - 1);
+                out += '\x1b[1;1H' + fitRow(`Moyu · ${renderLabel} · ${playbackLabel}`, '', process.stdout.columns - 1);
+                out += '\x1b[2;1H' + fitRow(`${target.pixelW}×${target.pixelH} px · ${target.rows} ${english ? 'rows' : '行'} · ${theme} · ${caps.fps}fps`, '', process.stdout.columns - 1);
+                out += `\x1b[${target.rows + 4};1H` + fitRow(english ? 'Tab old/new · Space pause · r replay' : 'Tab 新旧 · 空格 暂停 · r 重播', '', process.stdout.columns - 1);
+                out += `\x1b[${target.rows + 5};1H` + fitRow(english ? 'e two/six rows · l dark/light · Esc exit' : 'e 两/六行 · l 深浅 · Esc 退出', '', process.stdout.columns - 1);
             }
             sample.render(target, legacy, theme, paused ? 1 : accumulator * 60);
             out += target.encode(3);

@@ -13,49 +13,50 @@ import { pathToFileURL } from 'node:url';
 import { BUILTIN_GAMES } from "./arcade.js";
 import { isEnglish, uiName } from "../i18n.js";
 const MANIFEST = 'moyu.game.json';
+const tr = (zh, en) => isEnglish() ? en : zh;
 function root() { return path.join(process.env.MOYU_HOME ?? path.join(homedir(), '.moyu'), 'games'); }
 export function validateManifest(value) {
     if (typeof value !== 'object' || value === null)
-        throw new Error('manifest 必须是 JSON 对象');
+        throw new Error(tr('manifest 必须是 JSON 对象', 'manifest must be a JSON object'));
     const m = value;
     if (typeof m.id !== 'string' || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(m.id))
-        throw new Error('id 只能使用小写字母、数字和连字符');
+        throw new Error(tr('id 只能使用小写字母、数字和连字符', 'id may use only lowercase letters, digits, and hyphens'));
     for (const key of ['name', 'version', 'author', 'description', 'entry'])
         if (typeof m[key] !== 'string' || m[key] === '')
-            throw new Error(`${key} 不能为空`);
+            throw new Error(tr(`${key} 不能为空`, `${key} is required`));
     if (m.apiVersion !== 1)
-        throw new Error(`只支持 apiVersion 1，得到 ${String(m.apiVersion)}`);
+        throw new Error(tr(`只支持 apiVersion 1，得到 ${String(m.apiVersion)}`, `only apiVersion 1 is supported; got ${String(m.apiVersion)}`));
     const viewport = m.viewport;
     if (typeof viewport?.width !== 'number' || typeof viewport.height !== 'number'
         || viewport.width < 8 || viewport.width > 320 || viewport.height < 8 || viewport.height > 200)
-        throw new Error('viewport 必须在 8×8 到 320×200 之间');
+        throw new Error(tr('viewport 必须在 8×8 到 320×200 之间', 'viewport must be between 8×8 and 320×200'));
     const micro = m.microViewport;
     if (micro !== undefined && (typeof micro.width !== 'number' || typeof micro.height !== 'number'
         || micro.width < 8 || micro.width > 160 || micro.height < 8 || micro.height > 32))
-        throw new Error('microViewport 必须在 8×8 到 160×32 之间');
+        throw new Error(tr('microViewport 必须在 8×8 到 160×32 之间', 'microViewport must be between 8×8 and 160×32'));
     if (!Array.isArray(m.palette) || m.palette.length < 2 || m.palette.length > 16
         || !m.palette.every((c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c)))
-        throw new Error('palette 必须包含 2–16 个 #RRGGBB 颜色');
+        throw new Error(tr('palette 必须包含 2–16 个 #RRGGBB 颜色', 'palette must contain 2–16 #RRGGBB colors'));
     if (!Array.isArray(m.controls))
-        throw new Error('controls 必须是数组');
+        throw new Error(tr('controls 必须是数组', 'controls must be an array'));
     const display = m.display;
     if (display !== undefined && (display === null || typeof display !== 'object'
         || typeof display.micro !== 'boolean' || !Number.isInteger(display.minRows)
         || Number(display.minRows) < 4 || Number(display.minRows) > 24))
-        throw new Error('display 需要 micro 布尔值和 4–24 的整数 minRows');
+        throw new Error(tr('display 需要 micro 布尔值和 4–24 的整数 minRows', 'display needs a boolean micro value and an integer minRows between 4 and 24'));
     if (display?.glyphs !== undefined && display.glyphs !== 'dots' && display.glyphs !== 'blocks')
-        throw new Error('display.glyphs 只能是 dots 或 blocks');
+        throw new Error(tr('display.glyphs 只能是 dots 或 blocks', 'display.glyphs must be dots or blocks'));
     if (display?.responsive !== undefined && typeof display.responsive !== 'boolean')
-        throw new Error('display.responsive 必须是布尔值');
+        throw new Error(tr('display.responsive 必须是布尔值', 'display.responsive must be a boolean'));
     for (const control of m.controls) {
         if (typeof control !== 'object' || control === null || typeof control.action !== 'string'
             || typeof control.label !== 'string' || !Array.isArray(control.keys)
             || !control.keys.every((key) => typeof key === 'string'))
-            throw new Error('controls 每项需要 action、label 和 keys 字符串数组');
+            throw new Error(tr('controls 每项需要 action、label 和 keys 字符串数组', 'each control needs action, label, and an array of string keys'));
     }
     const entry = m.entry;
     if (path.isAbsolute(entry) || entry.split(/[\\/]/).includes('..'))
-        throw new Error('entry 必须是游戏目录内的相对路径');
+        throw new Error(tr('entry 必须是游戏目录内的相对路径', 'entry must be a relative path inside the game directory'));
     return value;
 }
 function readManifest(dir) {

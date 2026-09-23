@@ -126,7 +126,7 @@ npm.cmd install --global "https://codeload.github.com/PrometheusTT/moyu/tar.gz/r
 
 ## 语言
 
-内置游戏的 HUD、帮助、章节和战斗提示跟随系统语言：中文系统显示中文，其他语言回退英文。单次运行可直接指定：`moyu --lang zh play stick-slash`、`moyu --lang en -- codex`；也支持 `--lang=en` 写法和 `MOYU_LANG` 环境变量。包裹 coding CLI 时，把 Moyu 的 `--lang` 放在 `--` 前，后面的参数会原样传给 CLI。第三方 Cartridge 使用自己的文案。
+内置游戏和命令行提示（包括 `doctor`、`install`）跟随系统语言：中文系统显示中文，其他语言回退英文。单次运行可直接指定：`moyu --lang zh play stick-slash`、`moyu --lang en -- codex`；也支持 `--lang=en` 写法和 `MOYU_LANG` 环境变量。包裹 coding CLI 时，把 Moyu 的 `--lang` 放在 `--` 前，后面的参数会原样传给 CLI。第三方 Cartridge 使用自己的文案。
 
 ## 共创与开发
 

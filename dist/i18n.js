@@ -94,5 +94,5 @@ export function englishBattleNotice(notice) {
     const cast = /^(悟得秘技！)?(.+?) · (.+)$/.exec(notice);
     if (cast)
         return `${cast[1] ? 'Secret art learned! ' : ''}${NAMED_EN.get(cast[2]) ?? 'Sword Art'} · ${NAMED_EN.get(cast[3]) ?? 'Sword Form'}`;
-    return notice;
+    return /[\u3400-\u9fff]/.test(notice) ? 'Battle update' : notice;
 }

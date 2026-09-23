@@ -41,6 +41,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { eventsPath } from "./signal.js";
+import { isEnglish } from "../i18n.js";
+const tr = (zh, en) => isEnglish() ? en : zh;
 /**
  * 命令末尾的归属标记。
  *
@@ -153,7 +155,7 @@ export function plan(target, opts = {}) {
     }
     catch (e) {
         if (e.code !== 'ENOENT') {
-            return { ...base, action: 'error', error: `读不出 ${p}：${e instanceof Error ? e.message : String(e)}—— 没有改动` };
+            return { ...base, action: 'error', error: tr(`读不出 ${p}：${e instanceof Error ? e.message : String(e)}—— 没有改动`, `Could not read ${p}: ${e instanceof Error ? e.message : String(e)}; nothing changed`) };
         }
         before = null;
     }
@@ -168,15 +170,15 @@ export function plan(target, opts = {}) {
         }
         catch (e) {
             return { ...base, existed, before, action: 'error',
-                error: `${p} 不是合法 JSON（${e instanceof Error ? e.message : String(e)}）—— 可能带了注释。用 moyu install --print 手动并进去` };
+                error: tr(`${p} 不是合法 JSON（${e instanceof Error ? e.message : String(e)}）—— 可能带了注释。用 moyu install --print 手动并进去`, `${p} contains invalid JSON (${e instanceof Error ? e.message : String(e)}). It may contain comments; use moyu install --print to merge manually`) };
         }
         if (!isObj(parsed))
-            return { ...base, existed, before, action: 'error', error: `${p} 的顶层不是一个对象` };
+            return { ...base, existed, before, action: 'error', error: tr(`${p} 的顶层不是一个对象`, `${p} must contain a top-level object`) };
         root = parsed;
     }
     const rawHooks = root.hooks;
     if (rawHooks !== undefined && !isObj(rawHooks)) {
-        return { ...base, existed, before, action: 'error', error: `${p} 里的 hooks 不是一个对象，不敢动它` };
+        return { ...base, existed, before, action: 'error', error: tr(`${p} 里的 hooks 不是一个对象，不敢动它`, `The hooks field in ${p} is not an object; refusing to change it`) };
     }
     const hooks = isObj(rawHooks) ? rawHooks : {};
     // 先摘再装：这一条同时买到幂等（重复安装不留两份）和"改了事件路径能就地更新"。
@@ -222,7 +224,7 @@ export function apply(p, now = new Date()) {
             throw e;
     }
     if (current !== p.before)
-        throw new Error(`${p.path} 在干跑之后被别的程序改过了，请重新运行 moyu install`);
+        throw new Error(tr(`${p.path} 在干跑之后被别的程序改过了，请重新运行 moyu install`, `${p.path} changed after the preview; rerun moyu install`));
     let backup = null;
     if (p.existed && p.before !== null) {
         const t = now.toISOString().replace(/\D/g, '');
