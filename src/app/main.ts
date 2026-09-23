@@ -39,7 +39,7 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { constants as osConstants } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { isEnglish } from '../i18n.ts';
+import { isEnglish, type GameLanguage } from '../i18n.ts';
 
 const FPS = 30;
 const FRAME_MS = 1000 / FPS;
@@ -133,6 +133,7 @@ function usage(): string {
     'Moyu — a stick-figure action game for your terminal',
     '',
     'Usage:',
+    '  moyu --lang en|zh <command>  Choose the game language for this run',
     '  moyu play [game-id]       Play in a standalone terminal; Tab switches games',
     '  moyu -- <command...>      Play while a coding CLI runs (for example, moyu -- codex)',
     '  moyu games list          List built-in and local Cartridges',
@@ -147,12 +148,13 @@ function usage(): string {
     '',
     'In game: WASD/arrows move · J slash · Space jump · ? help · Esc/q back',
     `While wrapping a CLI: ${hotkeyHint('cli')} · F12 alternate · Ctrl+G/Ctrl+C stay with the CLI`,
-    'Language: follows your system locale; set MOYU_LANG=en or MOYU_LANG=zh to override.',
+    'Language: follows your system locale; --lang en|zh or MOYU_LANG overrides it.',
   ].join('\n');
   return [
     '摸鱼 —— Agent 在干活，你在掌机里',
     '',
     '用法：',
+    '  moyu --lang en|zh <命令>  指定本次游戏语言',
     '  moyu play [游戏id]       独立打开终端掌机，Tab 切换游戏',
     '  moyu games list          查看内置和本地 Cartridge',
     '  moyu setup               安装可选任务联动 hook',
@@ -168,14 +170,35 @@ function usage(): string {
     '  moyu doctor --gfx        严格发送 Kitty 图片，只用于诊断协议链路',
     '  moyu doctor --visual     原生像素动作对比，Tab 新旧、空格暂停、Esc 退出',
     '  moyu doctor --reset      终端被搞坏之后无条件还原',
+    '语言默认跟随系统；可用 --lang en|zh 或 MOYU_LANG 覆盖。',
     '',
     '游戏内：方向键/WASD 移动 · J 动作 · 空格 跳/直落 · Tab 换游戏 · Esc/q 返回',
     `外壳：${hotkeyHint('cli')} · F12 备用 · Ctrl+G/Ctrl+C 始终属于 coding CLI`,
   ].join('\n');
 }
 
+export function parseLanguageArgs(input: string[]): { argv: string[]; language?: GameLanguage; error?: string } {
+  const separator = input.indexOf('--');
+  const limit = separator < 0 ? input.length : separator;
+  const argv: string[] = [];
+  let language: GameLanguage | undefined;
+  for (let i = 0; i < limit; i++) {
+    const arg = input[i]!;
+    if (arg === '--lang' || arg.startsWith('--lang=')) {
+      const value = arg === '--lang' ? input[++i] : arg.slice('--lang='.length);
+      if (value !== 'en' && value !== 'zh') return { argv: input, error: '--lang accepts only en or zh' };
+      language = value;
+    } else argv.push(arg);
+  }
+  argv.push(...input.slice(limit));
+  return language === undefined ? { argv } : { argv, language };
+}
+
 async function main(): Promise<number> {
-  const argv = process.argv.slice(2);
+  const parsed = parseLanguageArgs(process.argv.slice(2));
+  if (parsed.error !== undefined) { process.stderr.write(`moyu: ${parsed.error}\n`); return 2; }
+  if (parsed.language !== undefined) process.env.MOYU_LANG = parsed.language;
+  const argv = parsed.argv;
   const cmd = argv[0];
 
   if (cmd === 'doctor') {

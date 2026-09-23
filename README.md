@@ -64,15 +64,17 @@ Press each key in sequence. The unlock number is **insight**, not the number of 
 
 | Keys | Art | Unlock insight | Base qi |
 | --- | --- | ---: | ---: |
-| `S` → `U` | Nine Swords (独孤九剑) | Starting art | 10 |
-| `S` → `I` | Six Meridian Swords (六脉神剑) | 12 | 15 |
+| `S` → `U` | Dugu Nine Swords (独孤九剑) | Starting art | 10 |
+| `S` → `I` | Six Meridian Divine Sword (六脉神剑) | 12 | 15 |
 | `W` → `I` | Taiji Sword (太极剑) | 36 | 15 |
-| `W` → `D` → `J` | Moon Fang (月牙天冲), secret art | 48 | 20 |
-| `S` → `D` → `U` | Heavenly Flying Sword (天外飞仙) | 60 | 20 |
+| `W` → `D` → `J` | Getsuga Tenshō (月牙天冲), secret art | 48 | 20 |
+| `S` → `D` → `U` | Heavenly Flying Fairy (天外飞仙) | 60 | 20 |
 | `W` → `A` → `J` | Sun Breathing (日之呼吸), secret art | 80 | 20 |
-| `S` → `A` → `I` | Myriad Swords (万剑归宗) | 100 | 20 |
+| `S` → `A` → `I` | Myriad Swords Return to the Source (万剑归宗) | 100 | 20 |
 
 Qi below 60 uses the first set of forms; 60–99 uses the second; 100 or more uses the third. Later tiers cost 3 or 6 extra qi. Forms rotate within each tier, and the last form in the highest tier has a finishing move. Press `?` in-game for individual forms and your progress. `S` → `K` is a separate defensive move: Iron Guard initially lasts 0.8 seconds with a 6-second cooldown. It clears control and prevents knockback or stagger during the guard, but it is not invulnerability.
+
+“Myriad Swords Return to the Source” is this project's English rendering, not a verified official translation.
 
 To record every art without manual inputs, run `npm run showcase:en` or `npm run showcase:zh` from a source checkout. See the [recording guide](./docs/showcase.md).
 
@@ -122,7 +124,7 @@ Restart Moyu after updating; running processes do not reload automatically.
 
 ## Language
 
-Built-in game HUDs, help, chapters, and combat messages follow the system locale: Chinese for Chinese locales, English otherwise. Set `MOYU_LANG=zh` or `MOYU_LANG=en` to override. PowerShell example: `$env:MOYU_LANG='en'; moyu play stick-slash`. Third-party Cartridges provide their own text.
+Built-in game HUDs, help, chapters, and combat messages follow the system locale: Chinese for Chinese locales, English otherwise. Override it for one run with `moyu --lang en play stick-slash` or `moyu --lang zh -- codex`; `MOYU_LANG=en` and `MOYU_LANG=zh` also work. Put Moyu's `--lang` before `--` when wrapping a CLI; arguments after `--` belong to that CLI. Third-party Cartridges provide their own text.
 
 ## Create with us
 

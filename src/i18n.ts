@@ -13,12 +13,12 @@ export function resolveGameLanguage(env: NodeJS.ProcessEnv = process.env,
 export const isEnglish = (): boolean => resolveGameLanguage() === 'en';
 
 const ART_EN: Record<SwordArt, [string, string, string]> = {
-  dugu: ['Nine Swords', 'Nine', 'Nine Swords United'],
-  liumai: ['Six Meridian Swords', 'Six', 'Six Meridians Unleashed'],
+  dugu: ['Dugu Nine Swords', 'Dugu Nine', 'Nine Swords United'],
+  liumai: ['Six Meridian Divine Sword', 'Six Meridian', 'Six Meridians Unleashed'],
   taiji: ['Taiji Sword', 'Taiji', 'Infinite Taiji'],
-  feixian: ['Heavenly Flying Sword', 'Flying', 'Sunder the Heavens'],
-  wanjian: ['Myriad Swords', 'Myriad', 'Ten Thousand Swords'],
-  getsuga: ['Moon Fang', 'Moon', 'Final Moon Fang'],
+  feixian: ['Heavenly Flying Fairy', 'Flying Fairy', 'Sunder the Heavens'],
+  wanjian: ['Myriad Swords Return to the Source', 'Myriad Swords', 'Myriad Swords Return'],
+  getsuga: ['Getsuga Tenshō', 'Getsuga', 'Final Getsuga'],
   hinokami: ['Sun Breathing', 'Sun', 'Sunfire Dance'],
 };
 
@@ -33,7 +33,7 @@ const FORM_EN: Record<SwordArt, readonly string[]> = {
   wanjian: ['Sword Array', 'Guarding Swords', 'Three Paths', 'Hundred Swords', 'Return to Sheath',
     'Swords from Heaven', 'Star Array', 'Cloud Piercer', 'Ten Thousand Swords'],
   getsuga: ['First Crescent', 'Cross Moon', 'Returning Moon', 'Full Moon', 'Sky Cleaver',
-    'Twin Crescents', 'Moon Fang', 'Falling Moon', 'Final Moon Fang'],
+    'Twin Crescents', 'Getsuga Tenshō', 'Falling Moon', 'Final Getsuga'],
   hinokami: ['Round Dance', 'Clear Blue Sky', 'Burning Mirror', 'Fire Wheel', 'Solar Rainbow',
     'Sunflower Thrust', 'Blazing Wheel', 'Setting Sun', 'Flame Dance'],
 };

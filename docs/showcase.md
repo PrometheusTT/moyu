@@ -14,3 +14,5 @@ npm run showcase:zh
 英文版运行 `npm run showcase:en`。放大终端窗口后用你习惯的录屏工具录制该窗口。脚本会自动切换七套剑法与中英文标题；播完停在片尾，按 `R` 可重播，空格暂停或继续，按 `Q`、`Esc` 或 `Ctrl+C` 退出。建议先录一遍，再裁掉开头调整窗口和片尾退出的操作。
 
 For X, record `npm run showcase:en`; for Bilibili, record `npm run showcase:zh`. The script starts with maximum qi and unlocked arts so every move is visible in one short take; this is a staged showcase, not a normal progression run. Run `npm run showcase:en -- --dry-run` to check all seven casts without opening a terminal UI. If graphics do not start, run `npm run dev -- doctor --caps` in the same terminal and check its selected tier.
+
+For regular gameplay, the CLI also accepts `moyu --lang en play stick-slash` or `moyu --lang zh -- codex`. The showcase commands already select their caption language.
