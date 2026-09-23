@@ -81,7 +81,7 @@
     "也不挂 postinstall —— postinstall 会在**别人**的机器上跑，那里既没有 vendor/ 也不需要它。"
   ],
   "devDependencies": {
-    "@types/node": "24.7.0",
+    "@types/node": "26.6.2",
     "typescript": "5.9.3"
   }
 }
