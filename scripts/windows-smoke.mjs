@@ -69,3 +69,6 @@ try {
 } finally {
   fs.rmSync(home, { recursive: true, force: true });
 }
+// node-pty's Windows ConPTY test harness can retain pipe handles after all
+// onExit callbacks have fired. The assertions and cleanup are complete here.
+process.exit(0);
