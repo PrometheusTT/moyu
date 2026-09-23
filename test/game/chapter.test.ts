@@ -198,7 +198,8 @@ test('十章后继续第十一章，压力渐增但同屏负荷有上限', () =>
   assert.equal(director.chapter, 11);
   assert.equal(director.chapterTitle(), CHAPTER_TITLES[0]);
   assert.ok(chapterPressure(4) < chapterPressure(10));
-  assert.equal(chapterPressure(10), chapterPressure(100000));
+  assert.ok(chapterPressure(10) < chapterPressure(22));
+  assert.equal(chapterPressure(22), chapterPressure(100000));
 });
 
 test('同种子与输入在完整五分钟内产生相同结果和检查点', () => {

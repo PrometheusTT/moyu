@@ -18,10 +18,11 @@ export function fighterSegments(f: Fighter): Seg[] {
   const out: Seg[] = [];
   const h = f.h, x = f.x, y = f.y;
   const line = (a: number, b: number, c: number, d: number, part: Seg['part'] = 'torso'): void => {
-    out.push({ x0: x + a * h * 0.75, y0: y + b * h, x1: x + c * h * 0.75, y1: y + d * h, part, r: 0 });
+    const facing = f.bossKind === 'scarab' ? f.face : 1;
+    out.push({ x0: x + a * h * 0.75 * facing, y0: y + b * h, x1: x + c * h * 0.75 * facing, y1: y + d * h, part, r: 0 });
   };
   const boss = f.tag === 'boss', box = f.tag === 'brute', triangle = f.tag === 'runner';
-  if (!boss && f.species) {
+  if (f.species && (!boss || (f.bossKind && f.bossKind !== 'spider'))) {
     const poly = (points: number[][]): void => {
       for (let i = 0; i < points.length - 1; i++) {
         const a = points[i]!, b = points[i + 1]!;
@@ -38,7 +39,11 @@ export function fighterSegments(f: Fighter): Seg[] {
     switch (f.species) {
       case 'mantis':
         poly([[-0.3, -0.25], [0, -0.85], [0.32, -0.3], [-0.3, -0.25]]); legs(2, 0.3);
-        for (const s of [-1, 1]) poly([[s * 0.15, -0.55], [s * 0.65, -0.9], [s * 0.5, -0.35]]);
+        for (const s of [-1, 1]) {
+          const raised = boss && f.windup >= 0 ? 0.25 : 0;
+          const strike = boss && (f.followupT ?? 0) > 0 ? f.face * 0.35 : 0;
+          poly([[s * 0.15, -0.55], [s * 0.65 + strike, -0.9 - raised], [s * 0.5 + strike, -0.35 - raised]]);
+        }
         break;
       case 'crab':
         poly([[-0.4, -0.5], [0.4, -0.5], [0.35, -0.2], [-0.35, -0.2], [-0.4, -0.5]]); legs(3, 0.18);

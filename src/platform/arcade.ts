@@ -4,12 +4,12 @@ import * as path from 'node:path';
 import { homedir } from 'node:os';
 import { SignalTail } from '../bridge/signal.ts';
 import { Rng } from '../core/rng.ts';
-import { World, bossPhase, type Intent, type Piece, type EnemyTag } from '../core/world.ts';
+import { World, bossPhase, BOSS_NAMES, bossAbilities, type Intent, type Piece, type EnemyTag } from '../core/world.ts';
 import { ChapterDirector, parseChapterCheckpoint } from '../core/chapter.ts';
 import { fighterSegments } from '../core/creature.ts';
 import { heroHat } from '../core/stick.ts';
 import { MAX_QI, BOSS_HIT_QI, SWORD_ARTS, SWORD_FORMS, FULL_ART_NAMES, parseFormProgress, selectSwordForm, currentSwordForm,
-  ART_IDS, isSecretArt, artLevel, freshCultivation, parseCultivation, type SwordArt } from '../core/martial.ts';
+  ART_IDS, isSecretArt, artLevel, freshCultivation, parseCultivation, playerGrowth, type SwordArt } from '../core/martial.ts';
 import { paintLandmark, paintSwordArt, paintBossPressure, type ArtPen } from '../render/wuxia.ts';
 import { wrapWidth, clipWidth } from '../render/text.ts';
 import { paintWorld } from '../render/scene.ts';
@@ -114,6 +114,7 @@ class InputLatch {
   private sequence: Array<{ key: string; at: number; face: -1 | 1 }> = [];
   private pendingArt: SwordArt | undefined;
   private pendingArtFace: -1 | 1 | undefined;
+  private armor = false;
   private readonly directionHold = new DirectionHold();
   private record(key: string, now: number): void {
     if (!'ASD'.includes(key)) this.directionHold.interrupt();
@@ -148,7 +149,7 @@ class InputLatch {
     if (key === 'right') this.leftUntil = 0;
     return this.directionHold.press(key, until, now);
   }
-  feed(bytes: Uint8Array, now: number): 'leave' | 'next' | 'help' | 'view' | 'play' | 'page-prev' | 'page-next' | null {
+  feed(bytes: Uint8Array, now: number, armorEnabled = false): 'leave' | 'next' | 'help' | 'view' | 'play' | 'page-prev' | 'page-next' | null {
     let played = false;
     for (let i = 0; i < bytes.length; i++) {
       const b = bytes[i]!;
@@ -180,6 +181,14 @@ class InputLatch {
       if (b === 0x5b) return 'page-prev';
       if (b === 0x5d) return 'page-next';
       if (b === 0x65 || b === 0x45) return 'view';
+      const last = this.sequence.at(-1);
+      if (armorEnabled && b === 0x6b && last?.key === 'S' && now >= last.at && now - last.at <= 340) {
+        this.armor = true;
+        this.sequence = []; this.downUntil = this.upUntil = 0;
+        this.up = this.jump = false;
+        this.directionHold.interrupt(); played = true;
+        continue;
+      }
       if (b === 0x61 || b === 0x68) { this.leftUntil = this.hold('left', this.leftUntil, now); this.lastHorizontal = -1; }
       else if (b === 0x64 || b === 0x6c) { this.rightUntil = this.hold('right', this.rightUntil, now); this.lastHorizontal = 1; }
       else if (b === 0x73) this.downUntil = this.hold('down', this.downUntil, now);
@@ -206,13 +215,15 @@ class InputLatch {
         : this.special && now < this.upUntil ? 'taiji' : undefined);
     const artFace = this.pendingArtFace;
     this.pendingArt = undefined; this.pendingArtFace = undefined;
-    const out = { left, right, up: this.up,
+    const armor = this.armor; this.armor = false;
+    const out = { left, right, up: this.up, ...(armor ? { armor: true } : {}),
       down: now < this.downUntil, jump: this.jump, primary: this.primary, secondary: this.secondary, special: this.special };
     this.up = this.jump = this.primary = this.secondary = this.special = false;
     return art ? { ...out, art, ...(artFace === undefined ? {} : { artFace }) } : out;
   }
   clear(): void {
     this.sequence = []; this.pendingArt = undefined; this.pendingArtFace = undefined;
+    this.armor = false;
     this.directionHold.interrupt();
     this.leftUntil = this.rightUntil = this.downUntil = 0;
     this.upUntil = 0;
@@ -261,7 +272,8 @@ class StickGame implements GameInstance {
       jump: !art && (input.jump || input.up), slash: !art && input.primary,
       dash: !art && input.secondary === true, spin: !art && input.special === true, art, artFace: input.artFace,
       crouch: input.down === true };
-    this.world.enemyLimit = Math.min(6, 3 + Math.floor((this.director.chapter - 1) / 5));
+    if (input.armor) intent.armor = true;
+    this.world.enemyLimit = Math.min(6, 3 + Math.floor((this.director.chapter - 1) / 9));
     // 结算短暂停留后继续无尽关卡；J 可跳过停留，任务暂停仍由宿主控制。
     if (this.director.result !== null && this.world.phase === 'fight') this.intermission += dt;
     if (this.director.result !== null && (input.primary || this.intermission >= 1.4)
@@ -321,7 +333,7 @@ class StickGame implements GameInstance {
       drawMicroFighter(c, f, x, f.duelist ? f.duelist === 'qingfeng' ? 0x7dcac8 : 0xb29aca : foeColor(f.tag), AMBER);
     }
     const playerX = px(this.world.player.x);
-    if (this.world.respawn <= 0) drawMicroFighter(c, this.world.player, playerX, INK, AMBER,
+    if (this.world.respawn <= 0) drawMicroFighter(c, this.world.player, playerX, (this.world.player.armorT ?? 0) > 0 ? 0xffd66b : INK, AMBER,
       Math.min(1, (this.world.ground - this.world.player.y) / 10));
     else { c.line(playerX - 3, 7, playerX + 3, 7, ACCENT); }
 
@@ -332,7 +344,7 @@ class StickGame implements GameInstance {
       c.pixel(x, 1, ACCENT); c.pixel(x + this.world.player.face, 2, ACCENT); c.pixel(x, 3, ACCENT);
     }
     paintSwordArt(pen, this.world.swordCast, this.world.fh);
-    paintBossPressure(pen, this.world);
+    paintBossPressure(pen, this.world, false);
     paintClearBurst(c, this.clearPulse);
   }
   onHostEvent(event: HostEvent): void {
@@ -446,6 +458,7 @@ class StickGame implements GameInstance {
     if (s.version !== 2) cultivation.insight = kills ?? 0;
     const restoreArts = (): void => {
       this.world.cultivation = cultivation;
+      this.world.refreshPlayerGrowth(true);
       this.world.qi = qi;
       this.world.formProgress = parseFormProgress(s.formProgress);
       this.world.selectedArt = ART_IDS.includes(s.selectedArt as SwordArt) ? s.selectedArt as SwordArt : 'dugu';
@@ -497,23 +510,26 @@ class StickGame implements GameInstance {
     // 护住 e2e 的 `血` 在场标记与 arcade.test 的 `火柴快斩`。就绪=▮，冷却中=▯。
     const p = this.world.player;
     const ready = (t: number): string => (t > 0 ? '▯' : '▮');
-    const skills = `冲${ready(p.dashCool)} 旋${ready(p.spinCool)}`;
+    const skills = `冲${ready(p.dashCool)} 旋${ready(p.spinCool)} 护${ready(p.armorCool ?? 0)}`;
     // 连击数插在血与冲之间（连打 ≥2 才显示，别抢常态注意力）；就绪脉冲只追加在**行尾**，
     // 绝不写进 `冲▮ 旋▮` 之间——那个连续子串被 arcade.test 的 /冲▮ 旋▮/ 正则钉着。
     const combo = this.world.combo >= 2 ? ` · 连击${this.world.combo}` : '';
     const pulse = this.readyPulse > 0 ? ' 就绪✦' : '';
-    const life = this.world.respawn > 0 ? '重生中' : `血${this.world.player.hp}/4`;
+    const life = this.world.respawn > 0 ? '重生中' : `血${p.hp}/${p.maxHp ?? 4}`;
     const w = this.world;
     const next = ART_IDS.find(art => !isSecretArt(art) && w.cultivation.insight < SWORD_ARTS[art].unlock);
-    const growth = next ? `悟${SWORD_ARTS[next].short} ${w.cultivation.insight}/${SWORD_ARTS[next].unlock}` : '剑谱齐备';
+    const training = playerGrowth(w.cultivation.insight);
+    const growth = `修${training.level}重${training.nextInsight === null ? ' 已圆满' : ` ${w.cultivation.insight}/${training.nextInsight}悟`} · `
+      + (next ? `悟${SWORD_ARTS[next].short} ${w.cultivation.insight}/${SWORD_ARTS[next].unlock}` : '剑谱齐备');
     const headline = w.artNoticeT > 0 ? w.artNotice : `第${this.director.chapter}关 ${this.director.chapterTitle()}`;
     const boss = w.enemies.find(e => e.tag === 'boss');
-    const battle = boss ? ` · BOSS ${boss.hp}/${boss.maxHp ?? 5}${boss.quakeX !== undefined ? ' 地裂！跳跃/离开红线' : boss.windup >= 0 ? ' 蓄势！' : ''}` : '';
+    const battle = boss ? ` · BOSS ${BOSS_NAMES[boss.bossKind ?? 'spider']} ${boss.hp}/${boss.maxHp ?? 5}${boss.quakeX !== undefined ? boss.bossKind === 'crystal' ? ' 冰阵！跳跃/离开蓝线' : ' 地裂！跳跃/离开红线' : boss.windup >= 0 ? ' 蓄势！' : ''}` : '';
     const cleanup = this.director.activeStep >= 1800 ? ` · 清场中 剩${w.enemies.length}敌` : '';
     return `${life} 气${w.qi}/${MAX_QI} · ${headline}${battle}${cleanup} · ${growth} · 火柴快斩·无尽江湖 · ${w.kills}击破${combo} · ${skills}${pulse}`;
   }
   details(): string[] {
     const w = this.world;
+    const growth = playerGrowth(w.cultivation.insight);
     const arts = ART_IDS.flatMap(art => {
       const spec = SWORD_ARTS[art];
       if (isSecretArt(art) && w.cultivation.mastery[art] === 0) return art === 'getsuga'
@@ -528,17 +544,29 @@ class StickGame implements GameInstance {
         }), `高档末式收势：${FULL_ART_NAMES[art]}`];
     });
     return ['剑谱：三档轮换 · 按键不变', '两键340ms / 三键650ms · 每档记忆进度', '三键招式按起始朝向释放，左右键位不变',
+      `修为${growth.level}重 · 生命上限${growth.maxHp} · ${growth.nextInsight === null ? '已圆满' : `下重${w.cultivation.insight}/${growth.nextInsight}悟`}`,
+      '20/60/120/220/360/540悟逐步成长，存档保留',
+      `冲刺/旋斩冷却缩短${Math.round((1 - growth.skillCooldown) * 100)}% · 普攻伤害不变`,
+      `S>K 护体罡气：解控+${growth.armorDuration.toFixed(2)}秒霸体，仍会掉血`,
+      `零耗气 · 冷却${growth.armorCooldown.toFixed(2)}秒 · 受控/收招时可用`,
+      '初期头目：单斩、短冲撞、单处冰阵',
+      '后续逐步增加双斩、强击退、多处冰阵', '冰阵减速逐步增强，跳跃/离开蓝线可躲',
+      '33关起螳螂可短控；39关起金色蓄势抗打断',
       `储气上限${MAX_QI} · 每式少量扣气，不清空`,
       '各剑法演出及衍生招式为游戏编排', ...arts, `击破+12气 · 普通命中剑客/Boss+${BOSS_HIT_QI}气`,
       '剑招不回气 · 高档轮完自动收势', '剑客：正面普攻可拼剑，剑招/绕背破守', '收招时追击；蓄势时跳跃或冲刺躲避', '战斗不限时，全部击败才结算'];
   }
   combatHud(rows: number): string[] {
     const w = this.world, p = w.player, result = this.director.result;
-    const life = w.respawn > 0 ? '重生中' : `血${p.hp}/4`;
-    const status = `${life} 气${w.qi}`;
+    const life = w.respawn > 0 ? '重生中' : `血${p.hp}/${p.maxHp ?? 4}`;
+    const defense = (p.armorT ?? 0) > 0 ? '霸体' : (p.stunT ?? 0) > 0 ? '受控 S>K' : (p.slowT ?? 0) > 0 ? '减速 S>K'
+      : (p.armorCool ?? 0) > 0 ? `护${Math.ceil(p.armorCool!)}秒` : '护S>K';
+    const status = `${life} 气${w.qi} ${defense}`;
+    const growth = playerGrowth(w.cultivation.insight);
     const boss = w.enemies.find(e => e.tag === 'boss') ?? w.enemies.find(e => e.duelist);
-    const threat = boss ? `${boss.duelist ? boss.duelist === 'qingfeng' ? '青锋' : '玄衣' : 'BOSS'} ${boss.hp}/${boss.maxHp ?? 5}` : '';
-    const warning = boss?.quakeX !== undefined ? '地裂！跳跃 / 离开红线'
+    const threat = boss ? `${boss.duelist ? boss.duelist === 'qingfeng' ? '青锋' : '玄衣' : BOSS_NAMES[boss.bossKind ?? 'spider']} ${boss.hp}/${boss.maxHp ?? 5}` : '';
+    const warning = boss?.quakeX !== undefined ? boss.bossKind === 'crystal' ? '冰阵！跳跃 / 离开蓝线' : '地裂！跳跃 / 离开红线'
+      : boss && (boss.followupT ?? 0) > 0 ? bossAbilities(boss).stun ? '双斩！第二镰带硬直' : '双斩！小心第二镰'
       : boss && boss.windup >= 0 ? '蓄势！准备闪避' : (boss?.guard ?? 0) > 0 ? '守势：剑招 / 绕背破守' : '';
     const selected = selectSwordForm(w.selectedArt, w.qi, w.formProgress[w.selectedArt]), cast = w.swordCast;
     const following = cast ? selected : selected ? selectSwordForm(w.selectedArt, w.qi - selected.cost,
@@ -550,7 +578,7 @@ class StickGame implements GameInstance {
       result ? '已清场 J继续 ?谱' : `${nextForm}${warning ? ' !' : ''} ?谱`];
     if (result) return [...[`第${result.chapter}章完成`, this.director.chapterTitle(), `${result.score}分 · ${result.kills}击破`,
       'J 下一章 / 自动继续', ''].slice(0, rows - 1), '?谱 E大小 Esc退'];
-    const lines = [status, `${SWORD_ARTS[cast?.art ?? w.selectedArt].name} · ${cast ? '施展中' : '当前'}`,
+    const lines = [status, `修${growth.level}重 · ${SWORD_ARTS[cast?.art ?? w.selectedArt].name} · ${cast ? '施展中' : '当前'}`,
       nextForm, warning || threat || `${this.director.chapter}关 ${this.director.chapterTitle()}`,
       following ? `接 ${SWORD_FORMS[w.selectedArt][following.index]!.name}` : '攒气续招 · 战斗不限时'];
     if (rows <= 4 && warning) lines[1] = warning;
@@ -728,7 +756,7 @@ function manifest(id: string, name: string, description: string, viewport: { wid
       glyphs: id === 'stick-slash' ? 'dots' : 'blocks', responsive: id === 'stick-slash' },
     palette: ['#090a0e', '#ecf0f8', '#e43834', '#a67c00'],
     controls: id === 'stick-slash'
-      ? [{ action: 'move', label: '移动', keys: ['A/D', '方向键'] }, { action: 'primary', label: '砍', keys: ['J'] }, { action: 'jump', label: '跳', keys: ['空格'] }, { action: 'secondary', label: '冲刺斩', keys: ['U'] }, { action: 'special', label: '旋斩', keys: ['I'] }]
+      ? [{ action: 'move', label: '移动', keys: ['A/D', '方向键'] }, { action: 'primary', label: '砍', keys: ['J'] }, { action: 'jump', label: '跳', keys: ['空格'] }, { action: 'secondary', label: '冲刺斩', keys: ['U'] }, { action: 'special', label: '旋斩', keys: ['I'] }, { action: 'armor', label: '解控霸体', keys: ['S>K'] }]
       : id === 'snake' ? [{ action: 'move', label: '方向', keys: ['WASD', '方向键'] }]
         : [{ action: 'move', label: '移动', keys: ['A/D'] }, { action: 'primary', label: '旋转', keys: ['J'] }, { action: 'down', label: '下落', keys: ['S'] }, { action: 'jump', label: '直落', keys: ['空格'] }] };
 }
@@ -826,7 +854,7 @@ export class Arcade {
   get name(): string { return this.slots[this.active]?.module.manifest.name ?? '摸鱼'; }
   resize(_w: number, _h: number): void { /* logical viewports are fixed */ }
   feed(bytes: Uint8Array, now = Date.now()): boolean {
-    const command = this.input.feed(bytes, now);
+    const command = this.input.feed(bytes, now, this.slots[this.active]?.module.manifest.id === 'stick-slash');
     if (command === 'leave') return true;
     if (command === 'next' && this.slots.length > 0) {
       try { this.slots[this.active]!.instance.onHostEvent?.('pause'); } catch { /* isolate cartridges */ }

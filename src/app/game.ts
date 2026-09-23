@@ -123,7 +123,7 @@ export class Game {
           urgent: true,
         };
       case 'fight': {
-        const hp = w.respawn > 0 ? '倒了' : `血 ${w.player.hp}/4`;
+        const hp = w.respawn > 0 ? '倒了' : `血 ${w.player.hp}/${w.player.maxHp ?? 4}`;
         const combo = w.combo >= 2 ? ` · 连击 ${w.combo}` : '';
         return {
           left: `砍了 ${w.taskKills} 个${combo} · ${hp}`,

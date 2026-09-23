@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { World, NO_INTENT, bossDifficulty, bossPhase, bossQuakeOffsets } from '../../src/core/world.ts';
+import { World, NO_INTENT, bossDifficulty, duelistHp, bossPhase, bossQuakeOffsets } from '../../src/core/world.ts';
 import { MAX_QI, BOSS_HIT_QI, SWORD_ARTS, SWORD_FORMS, selectSwordForm, currentSwordForm,
   artLevel, parseCultivation, type SwordArt } from '../../src/core/martial.ts';
 import { paintLandmark, paintSwordArt, type ArtPen } from '../../src/render/wuxia.ts';
@@ -254,7 +254,7 @@ test('所有分式有独立几何演出，奥义是同一剑法的加强构图�
   }
 });
 
-test('Boss按关卡渐强且封顶，血量比例驱动阶段，前摇最低500ms', () => {
+test('Boss按关卡渐强且封顶，血量比例驱动阶段，前摇最低650ms', () => {
   let priorHp = 0, priorSpeed = 0;
   for (const chapter of [3, 6, 9, 12, 15, 30, 33, 99, 999]) {
     const d = bossDifficulty(chapter), w = world();
@@ -262,21 +262,21 @@ test('Boss按关卡渐强且封顶，血量比例驱动阶段，前摇最低500m
     const boss = w.enemies[0]!;
     assert.equal(boss.hp, d.hp); assert.equal(boss.maxHp, d.hp);
     assert.ok(d.hp >= priorHp && d.speed >= priorSpeed);
-    assert.ok(d.hp <= 25 && d.speed <= 1.4 && d.cooldown >= 0.65 && d.windup >= 0.5);
+    assert.ok(d.hp <= 25 && d.speed <= 1.4 && d.cooldown >= 0.65 && d.windup >= 0.65);
     assert.equal(bossPhase(boss.hp, boss.maxHp), 1);
     assert.equal(bossPhase(Math.ceil(boss.maxHp! * 0.6), boss.maxHp), 2);
     assert.equal(bossPhase(1, boss.maxHp), 3);
-    assert.equal(bossQuakeOffsets(boss).length, chapter >= 15 ? 5 : 3);
+    assert.equal(bossQuakeOffsets(boss).length, chapter >= 39 ? 5 : 3);
     boss.cool = 0; boss.atkSeq = 1; w.hitstop = 0;
     w.step(dt, NO_INTENT);
     assert.ok(Math.abs(boss.windup - d.windup) < 1e-6);
     for (let i = 0; i < 60 && w.hazards.length === 0; i++) w.step(dt, NO_INTENT);
-    assert.equal(w.hazards.length, chapter >= 15 ? 5 : 3);
+    assert.equal(w.hazards.length, chapter >= 39 ? 5 : 3);
     assert.ok(boss.cool >= 0.9 * d.cooldown - dt && boss.cool <= 1.5 * d.cooldown);
     priorHp = d.hp; priorSpeed = d.speed;
   }
-  assert.equal(bossDifficulty(3).hp, 5); assert.equal(bossDifficulty(6).hp, 7);
-  assert.deepEqual(bossDifficulty(33), bossDifficulty(3003), '场景循环不能重置Boss难度');
+  assert.equal(bossDifficulty(3).hp, 5); assert.equal(bossDifficulty(6).hp, 6);
+  assert.deepEqual(bossDifficulty(63), bossDifficulty(3003), '场景循环不能重置Boss难度');
 });
 
 test('百关持续推进且检查点可恢复，敌人与碎片数量有界', () => {
@@ -287,7 +287,7 @@ test('百关持续推进且检查点可恢复，敌人与碎片数量有界', ()
       director.step(w, dt, { ...NO_INTENT, slash: frame % 15 === 0, spin: frame % 100 === 0 });
       assert.ok(w.enemies.length <= 6 && w.pieces.length <= 150);
       const boss = w.enemies.find(e => e.tag === 'boss');
-      if (boss) assert.equal(boss.maxHp, boss.duelist ? 16 + bossDifficulty(chapter).rank * 2 : bossDifficulty(chapter).hp);
+      if (boss) assert.equal(boss.maxHp, boss.duelist ? duelistHp(chapter, true) : bossDifficulty(chapter).hp);
     }
     for (let overtime = 0; overtime < 3600 && director.result === null; overtime++) {
       const target = w.enemies.reduce((a, b) => Math.abs(a.x - w.player.x) < Math.abs(b.x - w.player.x) ? a : b, w.enemies[0]!);
@@ -518,7 +518,7 @@ test('Boss地裂锁定落点，有预警延迟、范围伤害、跳跃可躲且�
     const boss = w.enemies[0]!; boss.atkSeq = 1; boss.cool = 0; boss.x = w.player.x + w.fh * 3;
     w.player.invuln = 0;
     w.step(dt, NO_INTENT); assert.equal(boss.quakeX, w.player.x);
-    for (let i = 0; i < 50 && w.hazards.length === 0; i++) w.step(dt, NO_INTENT);
+    for (let i = 0; i < 60 && w.hazards.length === 0; i++) w.step(dt, NO_INTENT);
     assert.equal(w.hazards.length, 3);
     assert.equal(w.player.hp, 4, '预警期间不能造成伤害');
     for (let i = 0; i < 65; i++) {

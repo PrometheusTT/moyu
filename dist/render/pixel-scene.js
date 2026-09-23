@@ -151,7 +151,8 @@ export function paintPixelWorld(c, world, context, previous, result = false, sce
         // Boss 头顶小尖冠：强化"这是头目"的剪影辨识。
         if (body.tag === 'boss' && !body.duelist) {
             const s = world.fh * 0.18;
-            const topY = body.y - body.h * 0.74;
+            const crownHeight = body.bossKind === 'scarab' ? 0.78 : body.bossKind && body.bossKind !== 'spider' ? 1.05 : 0.74;
+            const topY = body.y - body.h * crownHeight;
             const baseW = Math.max(2, Math.round(s * 2 * scale));
             const baseH = Math.max(1, Math.round(s * 0.6 * scale));
             c.rect(Math.round(x(body.x - s)), Math.round(y(topY)) - baseH, baseW, baseH, ink(base));

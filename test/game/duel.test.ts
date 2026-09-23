@@ -68,7 +68,7 @@ test('两类剑客是持剑人形，精英与剑宗血量有区别，满场不�
     const e = w.enemies[0]!;
     assert.equal(e.duelist, variant); assert.equal(e.armed, true);
     assert.ok(fighterSegments(e).some(s => s.part === 'blade'));
-    assert.equal(e.tag, boss ? 'boss' : 'swordsman'); assert.ok(e.hp >= (boss ? 16 : 6));
+    assert.equal(e.tag, boss ? 'boss' : 'swordsman'); assert.equal(e.hp, chapter === 5 || chapter === 10 ? 3 : chapter === 9 ? 8 : 11);
     w.enemyLimit = 1;
     assert.equal(w.spawnBoss('left'), false); assert.equal(w.spawnDuelist('left', chapter), false);
     assert.deepEqual(w.enemies, [e]);
@@ -98,7 +98,7 @@ test('剑客真实出招，红色剑气预览纯渲染；蓄势可打断，准�
     const w = world(); w.spawnDuelist('right', chapter, true); const e = w.enemies[0]!;
     e.x = w.player.x + w.fh * 1.5; e.cool = 0;
     w.step(dt, NO_INTENT); assert.ok(e.windup >= 0.5);
-    for (let i = 0; i < 45 && !e.enemyCast; i++) w.step(dt, NO_INTENT);
+    for (let i = 0; i < 60 && !e.enemyCast; i++) w.step(dt, NO_INTENT);
     assert.ok(e.enemyCast);
     const before = JSON.stringify(w), calls: number[][] = [];
     e.enemyCast.age = 0.2; const renderState = JSON.stringify(w);

@@ -4,7 +4,7 @@ export const CHAPTER_COUNT = 10;
 // CHAPTER_COUNT 是场景循环长度，不再是通关上限。老存档保持 v1 可读。
 /** 每章一句剧情标题，在该章的"完成屏"上亮出（按 J 进下一章前的剧情节拍）。第 3/6/9 章是 boss 章。 */
 export const CHAPTER_TITLES = [
-    '竹海听雨', '残月石桥', '山门蛛王', '大漠孤烟', '雪岭问剑',
+    '竹海听雨', '残月石桥', '山门妖踪', '大漠孤烟', '雪岭问剑',
     '古塔镇妖', '竹影迷踪', '长桥夜渡', '雪山魔窟', '天门破晓',
 ];
 /**
@@ -34,7 +34,7 @@ export function chapterBand(step) {
 }
 /** 无限增长的关数，有限的同屏压力，避免后期刷怪把终端拖垮。 */
 export function chapterPressure(chapter) {
-    return Math.min(7, Math.max(0, Math.trunc(chapter) - 1));
+    return Math.min(7, Math.max(0, Math.floor((Math.trunc(chapter) - 1) / 3)));
 }
 export class ChapterDirector {
     seedValue;

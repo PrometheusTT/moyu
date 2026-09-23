@@ -67,6 +67,16 @@ export const isSecretArt = (art) => SECRET_ARTS.includes(art);
 export const artDuration = (_art, full = false) => full ? 1.2 : 0.65;
 /** 尾光仍可消散，但最后一次伤害后就允许接招。敌方蓄势/出招时序不加速。 */
 export const artRecovery = (full = false) => full ? 0.9 : 0.42;
+export const GROWTH_INSIGHT = [0, 20, 60, 120, 220, 360, 540];
+/** 永久成长从已有阅历派生，旧存档不用迁移，也不保存可漂移的属性副本。 */
+export function playerGrowth(insight) {
+    const earned = Number.isFinite(insight) ? Math.max(0, insight) : 0;
+    let tier = 0;
+    while (tier + 1 < GROWTH_INSIGHT.length && earned >= GROWTH_INSIGHT[tier + 1])
+        tier++;
+    return { level: tier + 1, maxHp: 4 + Math.floor(tier / 2), skillCooldown: 1 - tier * 0.03,
+        armorDuration: 0.8 + tier * 0.04, armorCooldown: 6 - tier * 0.25, nextInsight: GROWTH_INSIGHT[tier + 1] ?? null };
+}
 export const freshCultivation = () => ({ insight: 0,
     mastery: { dugu: 0, liumai: 0, taiji: 0, feixian: 0, wanjian: 0, getsuga: 0, hinokami: 0 } });
 export function artLevel(progress, art) {

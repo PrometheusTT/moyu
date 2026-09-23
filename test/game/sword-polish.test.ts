@@ -52,7 +52,9 @@ test('所有分式镜像、消散、坐标和笔画上限正确，渲染不改�
 
 test('移动加速只增强玩家步行，敌人和冲刺不联动加速；普通刀260ms内结束', () => {
   const w = world(); assert.equal(w.player.speed, w.fh * 3 * PLAYER_MOVE_MULTIPLIER);
-  w.spawnDuelist('right', 9, true); assert.equal(w.enemies[0]!.speed, w.fh * 3 * 0.78);
+  w.spawnDuelist('right', 9, true);
+  const lowGrowth = world(); lowGrowth.cultivation.insight = 0; lowGrowth.spawnDuelist('right', 9, true);
+  assert.equal(w.enemies[0]!.speed, lowGrowth.enemies[0]!.speed, '主角成长不能反向提高敌人移速');
   const start = w.player.x;
   for (let i = 0; i < 30; i++) w.step(dt, { ...NO_INTENT, move: 1 });
   assert.ok(w.player.x - start > w.fh * 1.65);

@@ -20,6 +20,8 @@ export type GameInput = {
   jump: boolean; primary: boolean; secondary: boolean;
   /** 第三动作键（旋斩等）。可选：老的输入构造省略它即视为未按。 */
   special?: boolean;
+  /** 护体罡气动作；顺序输入 S→K，独立于跳跃。 */
+  armor?: boolean;
   /** 终端按顺序输入方向+动作，短窗口识别剑谱招式。 */
   art?: import('../core/martial.ts').SwordArt;
   /** 组合指令开始时的朝向，独立于指令内的移动键。 */

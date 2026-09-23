@@ -1,3 +1,4 @@
+import { bossArmored } from "../core/world.js";
 import { fighterSegments } from "../core/creature.js";
 function frame(head, limbs, sword) {
     const grid = Array.from({ length: 8 }, () => Array(20).fill('.'));
@@ -44,13 +45,17 @@ export function microPoseFor(f) {
 }
 export function drawMicroFighter(c, f, centerX, body, blade, lift = 0) {
     if (f.kind !== 'player' && f.tag !== undefined) {
-        const color = f.hurt > 0.16 ? 0xfff0c7 : f.windup >= 0 ? 0xe43834 : body;
+        const color = bossArmored(f) ? 0xffd66b : f.hurt > 0.16 ? 0xfff0c7 : f.windup >= 0 ? 0xe43834 : body;
+        const h = f.bossKind === 'mantis' ? 6 : f.bossKind === 'crystal' ? 7 : f.bossKind === 'scarab' ? 8
+            : f.duelist ? 6 : f.tag === 'boss' ? 9 : 6;
+        const pivot = Math.round(centerX / 2) * 2;
+        const x = (value) => f.bossKind === 'mantis' ? pivot + (value - pivot) * 1.35 : value;
         for (const s of fighterSegments({ ...f, x: Math.round(centerX / 2) * 2, y: 7,
-            walk: Math.floor(f.walk * 2) / 2, h: f.duelist ? 6 : f.tag === 'boss' ? 9 : 6 })) {
+            walk: Math.floor(f.walk * 2) / 2, h })) {
             if (s.part === 'head')
-                c.pixel(Math.round(s.x0), Math.round(s.y0), blade);
+                c.pixel(Math.round(x(s.x0)), Math.round(s.y0), blade);
             else
-                c.line(s.x0, s.y0, s.x1, s.y1, color);
+                c.line(x(s.x0), s.y0, x(s.x1), s.y1, color);
         }
         return;
     }

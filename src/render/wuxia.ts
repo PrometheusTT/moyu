@@ -1,7 +1,8 @@
 import type { SwordCast } from '../core/martial.ts';
 import { SWORD_ARTS, SWORD_FORMS, currentSwordForm, artDuration } from '../core/martial.ts';
 import type { SceneTheme } from './theme.ts';
-import { bossPhase, bossQuakeOffsets, duelistFormFor, type World } from '../core/world.ts';
+import { bossPhase, bossQuakeOffsets, bossArmored, bossAbilities, variantBossReach, duelistFormFor, type World } from '../core/world.ts';
+import { fighterSegments } from '../core/creature.ts';
 
 /** 世界坐标画笔，让 braille、半块和原生像素共用地标与剑招构图。 */
 export type ArtPen = {
@@ -397,8 +398,16 @@ export function paintSwordArt(p: ArtPen, cast: SwordCast | null, h: number): voi
 }
 
 /** 红线预告落点，白红地刺爆发；生命刻度与受击裂光三档共用。 */
-export function paintBossPressure(p: ArtPen, w: World): void {
+export function paintBossPressure(p: ArtPen, w: World, armorOutline = true): void {
   const h = w.fh;
+  // 各终端渲染档共用金色轮廓，不依赖文字能否放进两行 HUD。
+  for (const f of armorOutline ? [w.player, ...w.enemies] : []) {
+    if (f === w.player ? w.respawn > 0 || (f.armorT ?? 0) <= 0 : !bossArmored(f)) continue;
+    for (const s of fighterSegments(f)) {
+      if (s.part === 'head') p.circle(s.x0, s.y0, s.r, 0xffd66b);
+      else p.line(s.x0, s.y0, s.x1, s.y1, 0xffd66b);
+    }
+  }
   for (const e of w.enemies) if (e.tag === 'boss' || e.duelist) {
     if (e.enemyCast) paintSwordArt({ ...p, line: (x0, y0, x1, y1, ink) => {
       const light = Math.max((ink >> 16) & 255, (ink >> 8) & 255, ink & 255) / 255;
@@ -417,7 +426,7 @@ export function paintBossPressure(p: ArtPen, w: World): void {
       p.line(e.x + Math.cos(a) * r, e.y - h * 0.5 + Math.sin(a) * r * 0.6,
         e.x + Math.cos(a) * (r + h * 0.3), e.y - h * 0.5 + Math.sin(a) * (r + h * 0.3) * 0.6, 0xfff0c7);
     }
-    if (e.windup >= 0) {
+    if (e.windup >= 0 || (e.followupT ?? 0) > 0) {
       if (e.duelist) {
         const next = duelistFormFor(e), form = SWORD_FORMS[next.art][next.formIndex]!, reach = form.reach * h;
         const start = e.x - (form.radial ? reach : 0), end = e.x + (form.radial ? reach : e.face * reach);
@@ -429,7 +438,19 @@ export function paintBossPressure(p: ArtPen, w: World): void {
         else p.line(e.x, e.y - h * 0.55, e.x + e.face * h * 0.8, e.y - h * 0.55, 0xffc38b);
       } else if (e.quakeX !== undefined) for (const offset of bossQuakeOffsets(e)) {
         const cx = Math.max(0, Math.min(w.w, e.quakeX + offset * h * 1.5));
-        p.line(cx - h * 0.48, w.ground - 0.6, cx + h * 0.48, w.ground - 0.6, 0xff674b);
+        p.line(cx - h * 0.48, w.ground - 0.6, cx + h * 0.48, w.ground - 0.6, e.bossKind === 'crystal' ? 0x8cddff : 0xff674b);
+      }
+      else if (e.bossKind === 'mantis' || e.bossKind === 'scarab') {
+        const reach = variantBossReach(e), color = bossArmored(e) ? 0xffd66b : 0xff674b;
+        const start = e.bossKind === 'scarab' ? e.x - e.face * reach : e.x - e.face * h * 0.12;
+        const end = e.x + e.face * (e.bossKind === 'scarab' ? e.speed * 6.5 * bossAbilities(e).chargeTime + reach : reach);
+        p.line(Math.max(0, Math.min(w.w, start)), w.ground - 0.6,
+          Math.max(0, Math.min(w.w, end)), w.ground - 0.6, color);
+        if (e.bossKind === 'mantis' && bossAbilities(e).doubleStrike) {
+          const x = e.x + e.face * reach * 0.55;
+          for (const side of [-1, 1]) p.line(x - h * 0.15, e.y - h * (0.5 + side * 0.15),
+            x + h * 0.15, e.y - h * (0.5 - side * 0.15), color);
+        }
       }
       else {
         const reach = bossPhase(e.hp, e.maxHp) > 1 ? 3 : 1.4;
@@ -439,11 +460,11 @@ export function paintBossPressure(p: ArtPen, w: World): void {
   }
   for (const hazard of w.hazards) {
     const { x, radius, timer } = hazard;
-    p.line(x - radius, w.ground - 0.6, x + radius, w.ground - 0.6, timer > 0 ? 0xff674b : 0xffd399);
+    p.line(x - radius, w.ground - 0.6, x + radius, w.ground - 0.6, hazard.frost ? 0x8cddff : timer > 0 ? 0xff674b : 0xffd399);
     if (timer <= 0) for (const s of [-1, 0, 1]) {
       const cx = x + s * radius * 0.6, top = w.ground - h * (s === 0 ? 1.3 : 0.8);
-      p.line(cx - radius * 0.28, w.ground, cx, top, 0xff785c);
-      p.line(cx, top, cx + radius * 0.28, w.ground, 0xffe3b0);
+      p.line(cx - radius * 0.28, w.ground, cx, top, hazard.frost ? 0x70bce8 : 0xff785c);
+      p.line(cx, top, cx + radius * 0.28, w.ground, hazard.frost ? 0xd5f5ff : 0xffe3b0);
     }
   }
 }
