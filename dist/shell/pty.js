@@ -90,6 +90,14 @@ export class PtyHost {
     }
     /** forkpty 的子进程是会话/进程组首进程；杀整组才能收掉它启动的工具和孙进程。 */
     signalGroup(signal) {
+        if (process.platform === 'win32') {
+            // ConPTY owns the process tree. Its kill() does not accept a signal on Windows.
+            try {
+                this.pty.kill();
+            }
+            catch { /* 已退 */ }
+            return;
+        }
         try {
             process.kill(-this.pty.pid, signal);
         }
@@ -125,6 +133,8 @@ export class PtyHost {
     refresh() {
         if (this.killed)
             return false;
+        if (process.platform === 'win32')
+            return false; // Windows has no PTY SIGWINCH; resize is the redraw trigger.
         try {
             this.signalGroup('SIGWINCH');
             return true;
@@ -138,6 +148,10 @@ export class PtyHost {
         if (this.killed)
             return;
         this.killed = true;
+        if (process.platform === 'win32') {
+            this.signalGroup('SIGKILL');
+            return;
+        }
         const pid = this.pty.pid;
         this.signalGroup('SIGHUP');
         if (graceMs <= 0)
@@ -157,6 +171,13 @@ export class PtyHost {
     }
     /** 同步收尾用（`process.on('exit')` 里没法等 timer）。 */
     killNow() {
+        if (process.platform === 'win32') {
+            if (!this.killed) {
+                this.killed = true;
+                this.signalGroup('SIGKILL');
+            }
+            return;
+        }
         if (this.killed) {
             this.signalGroup('SIGKILL');
             return;

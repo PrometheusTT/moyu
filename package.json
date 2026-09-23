@@ -19,7 +19,7 @@
   },
   "type": "module",
   "bin": {
-    "moyu": "bin/moyu"
+    "moyu": "bin/moyu.mjs"
   },
   "files": [
     "bin/",
@@ -35,7 +35,7 @@
     "docs/",
     "LICENSE"
   ],
-  "os": ["darwin", "linux"],
+  "os": ["darwin", "linux", "win32"],
   "engines": {
     "node": ">=20"
   },

@@ -2,7 +2,10 @@ export const SUPERVISION_VERSION = 1;
 export const SUPERVISION_TOKEN_ENV = 'MOYU_INTERNAL_SUPERVISION_TOKEN';
 const ACK_TIMEOUT_MS = 2_000;
 const LOCAL_RECOVERY_DELAY_MS = 100;
-export const SUPERVISED_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'];
+// Windows has no SIGQUIT delivery. Keep the signal listeners limited to names
+// that Node can receive there while retaining the POSIX cleanup behavior.
+export const SUPERVISED_SIGNALS = process.platform === 'win32'
+    ? ['SIGINT', 'SIGTERM', 'SIGHUP'] : ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'];
 function object(value) {
     return typeof value === 'object' && value !== null ? value : null;
 }

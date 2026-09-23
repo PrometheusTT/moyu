@@ -19,7 +19,7 @@ Moyu 的首要任务不是渲染游戏，而是保证 wrapped CLI 的工作会�
 user terminal
     │
     ▼
-bin/moyu ──exec──> supervisor
+bin/moyu.mjs (npm) / bin/moyu (checkout) ──> supervisor
                        │ authenticated IPC lease
                        ▼
                     worker/main
@@ -28,7 +28,8 @@ bin/moyu ──exec──> supervisor
                        └── PTY ──> Codex, Claude Code, or another CLI
 ```
 
-`bin/moyu` 只负责解析包位置、选择源码或 `dist` 入口并启动 supervisor。supervisor 不参与正常
+npm 安装包用跨平台的 `bin/moyu.mjs` 启动编译后的 `dist`；源码仓库的 `bin/moyu` 可选源码入口。
+两者都启动 supervisor。supervisor 不参与正常
 渲染；它保存 worker 最后确认的终端恢复状态。worker 在进入 raw mode、创建滚动区或上传 Kitty
 图片前取得 lease，并在终端所有权变化时更新快照。
 

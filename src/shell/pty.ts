@@ -129,6 +129,11 @@ export class PtyHost {
 
   /** forkpty 的子进程是会话/进程组首进程；杀整组才能收掉它启动的工具和孙进程。 */
   private signalGroup(signal: NodeJS.Signals): void {
+    if (process.platform === 'win32') {
+      // ConPTY owns the process tree. Its kill() does not accept a signal on Windows.
+      try { this.pty.kill(); } catch { /* 已退 */ }
+      return;
+    }
     try { process.kill(-this.pty.pid, signal); }
     catch { try { this.pty.kill(signal); } catch { /* 已退 */ } }
   }
@@ -156,6 +161,7 @@ export class PtyHost {
   /** 直接请求 inline TUI 重绘被临时覆盖的行；只在关闭浮层时调用。 */
   refresh(): boolean {
     if (this.killed) return false;
+    if (process.platform === 'win32') return false; // Windows has no PTY SIGWINCH; resize is the redraw trigger.
     try { this.signalGroup('SIGWINCH'); return true; } catch { return false; }
   }
 
@@ -163,6 +169,7 @@ export class PtyHost {
   kill(graceMs = 250): void {
     if (this.killed) return;
     this.killed = true;
+    if (process.platform === 'win32') { this.signalGroup('SIGKILL'); return; }
     const pid = this.pty.pid;
     this.signalGroup('SIGHUP');
     if (graceMs <= 0) return;
@@ -175,6 +182,10 @@ export class PtyHost {
 
   /** 同步收尾用（`process.on('exit')` 里没法等 timer）。 */
   killNow(): void {
+    if (process.platform === 'win32') {
+      if (!this.killed) { this.killed = true; this.signalGroup('SIGKILL'); }
+      return;
+    }
     if (this.killed) { this.signalGroup('SIGKILL'); return; }
     this.killed = true;
     // 退出钩子是同步的，不能留一个 unref timer 等宽限期；先给清理信号，再确保整组消失。

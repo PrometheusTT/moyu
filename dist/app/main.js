@@ -48,8 +48,12 @@ const HOST_EVENT_MS = 100;
 const BACKPRESSURE = 48 * 1024;
 export function resolveExecutable(file, env = process.env) {
     const search = env.PATH === undefined ? '/usr/bin:/bin' : env.PATH;
-    const candidates = file.includes('/') ? [path.resolve(file)]
+    const bases = file.includes('/') || file.includes('\\') ? [path.resolve(file)]
         : search.split(path.delimiter).map(dir => path.join(dir || '.', file));
+    // npm creates .ps1/.cmd shims on Windows, while its extensionless file is a POSIX shell script.
+    const suffixes = process.platform === 'win32' && path.extname(file) === ''
+        ? ['.exe', '.com', '.ps1', '.cmd', '.bat', ''] : [''];
+    const candidates = bases.flatMap(base => suffixes.map(suffix => base + suffix));
     let unusable = null;
     for (const candidate of candidates) {
         try {
@@ -75,6 +79,19 @@ export function resolveExecutable(file, env = process.env) {
     }
     return unusable === null ? { kind: 'missing' }
         : { kind: 'unusable', path: unusable.path, detail: unusable.detail };
+}
+function launchCommand(argv) {
+    if (process.platform !== 'win32')
+        return argv;
+    const file = argv[0];
+    if (/\.ps1$/i.test(file)) {
+        return ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', file, ...argv.slice(1)];
+    }
+    if (/\.(?:cmd|bat)$/i.test(file)) {
+        // Node and ConPTY cannot execute batch files directly. Use cmd only for that case.
+        return [process.env.ComSpec || 'cmd.exe', '/d', '/s', '/c', `"${file}"`, ...argv.slice(1)];
+    }
+    return argv;
 }
 function diagnosticLine(value, fallback) {
     try {
@@ -600,7 +617,7 @@ async function cmdWrap(inner) {
         process.stderr.write(`moyu: 不能执行 ${diagnosticLine(inner[0], '（空命令）')}：${diagnosticLine(resolved.detail, '不可执行')}\n`);
         return 126;
     }
-    const argv = [resolved.path, ...inner.slice(1)];
+    const argv = launchCommand([resolved.path, ...inner.slice(1)]);
     if (!process.stdout.isTTY || !process.stdin.isTTY)
         return runBare(argv);
     return new Shell(argv, shellEvents(), await loadGameModules()).run();

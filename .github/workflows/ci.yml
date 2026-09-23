@@ -49,3 +49,34 @@ jobs:
       - name: Audit npm package contents
         if: matrix.node == '24'
         run: npm pack --dry-run
+
+  windows-native:
+    name: Windows native Node.js 24
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run compile
+      - run: git diff --exit-code -- dist
+      - run: node scripts/windows-smoke.mjs
+      - name: Parse Windows installer scripts
+        shell: pwsh
+        run: |
+          foreach ($script in @('install/windows.ps1', 'install/windows-native.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { throw "$script has PowerShell syntax errors: $errors" }
+          }
+      - name: Verify Windows npm command shim
+        shell: pwsh
+        run: |
+          npm pack --pack-destination $env:RUNNER_TEMP
+          npm install --global --prefix "$env:RUNNER_TEMP\moyu-install" "$env:RUNNER_TEMP\moyu-game-0.2.0.tgz"
+          & "$env:RUNNER_TEMP\moyu-install\moyu.cmd" --help

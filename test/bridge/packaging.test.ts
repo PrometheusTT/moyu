@@ -77,11 +77,12 @@ test('仓库入口只在 Node 支持类型剥离时运行 src，否则退回 dis
   assert.ok(launcher.indexOf('src/app/main.ts') < launcher.indexOf('dist/app/main.js'));
 });
 
-test('bin 指的文件存在且可执行', () => {
+test('npm bin 指向跨平台 Node 入口且可执行', () => {
   const bin = path.join(root, pkg.bin.moyu as string);
   assert.ok(fs.existsSync(bin));
   assert.ok((fs.statSync(bin).mode & 0o111) !== 0, '+x 掉了，npm 装完会 EACCES');
-  assert.match(fs.readFileSync(bin, 'utf8'), /^#!\/bin\/sh\n/, 'shebang 必须是 /bin/sh');
+  assert.match(fs.readFileSync(bin, 'utf8'), /^#!\/usr\/bin\/env node\n/, 'npm Windows shim 需要 Node shebang');
+  assert.match(execFileSync(process.execPath, [bin, '--help'], { encoding: 'utf8' }), /^摸鱼/);
 });
 
 test('终端还原由 supervisor 管，不依赖 launcher 临时标记', () => {

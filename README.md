@@ -55,7 +55,7 @@ Moyu 是一个轻量、local-first 的终端游戏宿主。它把 Codex、Claude
 ### 环境要求
 
 - Node ≥ 20（Node.js 20 或更高版本）
-- macOS、Linux，或 Windows 10/11 + WSL（Windows 原生 PowerShell 暂不运行游戏）
+- macOS、Linux，或 Windows 10/11
 - 一个交互式终端；普通 UTF-8 + ANSI 终端即可使用字符渲染
 
 ### macOS：安装与开玩
@@ -70,20 +70,22 @@ moyu play
 自动安装 Node 和 Moyu。脚本见 [`install/macos.sh`](./install/macos.sh)。需要高清图形档，请在
 Kitty、Ghostty 或 WezTerm 中运行；系统自带 Terminal.app 会退回字符档。
 
-### Windows：一次设置，以后直接玩
+### Windows：原生安装，无需 WSL
 
-在**管理员 PowerShell** 中运行以下命令。安装器会安装 WezTerm 和 WSL Ubuntu，
-再在 WSL 内安装 Node 与 Moyu；已有的组件会跳过。若 Windows 要求重启，重启并完成
-Ubuntu 首次创建用户名后，**再运行同一条命令**即可继续。
-WSL 下载若出现 403，安装器会尝试另一下载来源；两者都失败时参见[故障排查](./docs/troubleshooting.md)。
+在 PowerShell 中运行以下命令。安装器会安装缺少的 Node.js 和 WezTerm，然后安装 Moyu；
+已有的组件会跳过。安装程序如需管理员权限，Windows 会自行弹出授权窗口。
 
 ```powershell
-$file = Join-Path $env:TEMP 'moyu-install.ps1'; Invoke-WebRequest https://raw.githubusercontent.com/PrometheusTT/moyu/feat/live-on-enter/install/windows.ps1 -OutFile $file; powershell -NoProfile -ExecutionPolicy Bypass -File $file
+$file = Join-Path $env:TEMP 'moyu-native-install.ps1'; Invoke-WebRequest https://raw.githubusercontent.com/PrometheusTT/moyu/feat/live-on-enter/install/windows-native.ps1 -OutFile $file; powershell -NoProfile -ExecutionPolicy Bypass -File $file
 ```
 
-完成后打开 WezTerm 的 `WSL:Ubuntu` 标签页，输入 `moyu play`。Windows 本机只负责显示，
-Moyu 和 Node 运行在 WSL 内；无需安装 Linux 图形桌面。安装器是可检查、可重复运行的
-[`install/windows.ps1`](./install/windows.ps1)，不会覆盖现有 WezTerm 配置。
+完成后新开 WezTerm 的 PowerShell 标签页，输入 `moyu play`。要包住 Codex 或 Claude Code，
+先在 Windows 安装对应 CLI，再输入 `moyu -- codex` 或 `moyu -- claude`。安装器见
+[`install/windows-native.ps1`](./install/windows-native.ps1)，不会覆盖现有 WezTerm 配置。
+
+已有可用 WSL、想让 Moyu 在 Ubuntu 中运行的用户，可使用
+[`install/windows.ps1`](./install/windows.ps1)。WSL 下载若出现 403，参见[故障排查](./docs/troubleshooting.md)；
+原生安装不依赖 WSL。
 
 两端都可运行 `moyu doctor --caps` 查看自动选档，或运行 `moyu doctor --gfx` 检查高清图片链路。
 `moyu play` 现在也会自动使用终端支持的最高清晰度，不能显示图片时自动退回字符档。
@@ -191,7 +193,7 @@ Boss 有生命刻度、受击闪白和击退；红色地线提示冲撞/地裂�
 
 Moyu 不模拟 shell。它启动一个真实 PTY，并在终端、宿主与内层 CLI 之间维护清晰的所有权：
 
-1. `bin/moyu` 选择源码或编译入口，并启动独立 supervisor。
+1. npm 安装后的 `bin/moyu.mjs` 启动编译入口与独立 supervisor；源码仓库的 `bin/moyu` 仍可用于开发。
 2. worker 在接管 raw mode、滚动区或 Kitty 图片前先提交 terminal lease。
 3. 内层 CLI 输出经过字节级透传，只重写必须限制在安全区域内的终端坐标。
 4. 游戏帧是可丢弃工作；stdout 拥塞时优先暂停游戏并保证 CLI 字节有序。

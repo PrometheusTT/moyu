@@ -11,6 +11,13 @@ moyu doctor --caps
 提交 Issue 时请说明操作系统、终端名称和版本、本地/SSH/tmux 路径、Moyu commit，以及问题发生
 在 `moyu play` 还是 `moyu -- <cli>`。分享输出前删除用户名、主机名、IP、token 和私有路径。
 
+## Windows 原生安装
+
+WSL 下载遇到 403 时，可按 [README 的 Windows 原生安装](../README.md#windows原生安装无需-wsl)
+改用 PowerShell + WezTerm，不需要 Ubuntu。`moyu play` 独立运行；`moyu -- codex` 和
+`moyu -- claude` 需要先在 Windows 本机安装对应 CLI。若安装后当前 PowerShell 找不到
+`moyu`，新开 WezTerm PowerShell 标签页，让更新后的 `PATH` 生效。
+
 ## Windows 安装停在 WSL 设置
 
 如果 `wsl --install` 显示“已禁止(403)”，这是下载失败，单纯重开管理员 PowerShell 不一定能解决。
