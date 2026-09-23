@@ -91,7 +91,7 @@ const AMBIENT_ENV = [
 ] as const;
 
 function launchEnv(
-  via: 'node' | 'sh',
+  via: 'node' | 'sh' | 'bin',
   inherited: NodeJS.ProcessEnv,
   extra: NodeJS.ProcessEnv = {},
 ): NodeJS.ProcessEnv {
@@ -103,7 +103,7 @@ function launchEnv(
     MOYU_TIER: 'braille',
     MOYU_REDUCE_MOTION: '1',
   }, extra);
-  if (via === 'node') env.MOYU_TAKEOVER_FLAG = '';
+  if (via !== 'sh') env.MOYU_TAKEOVER_FLAG = '';
   else delete env.MOYU_TAKEOVER_FLAG;
   return env;
 }
@@ -113,17 +113,20 @@ function launchEnv(
  * 走 sh 时必须让它自己管 MOYU_TAKEOVER_FLAG（清空会让兜底整个失效）。
  */
 async function launch(
-  via: 'node' | 'sh' = 'node',
+  via: 'node' | 'sh' | 'bin' = 'node',
   extraEnv: NodeJS.ProcessEnv = {},
   wrapped?: string[],
+  language?: 'en' | 'zh',
 ): Promise<Session> {
   const { spawn } = await loadPty();
   const root = new URL('../../', import.meta.url).pathname;
   const flags = ['--experimental-strip-types', '--disable-warning=ExperimentalWarning'];
   const inner = wrapped ?? [process.execPath, ...flags, `${root}test/fixtures/inner.ts`];
+  const languageArgs = language === undefined ? [] : ['--lang', language];
   const [file, args] = via === 'sh'
-    ? [process.execPath, [...flags, `${root}src/app/supervisor.ts`, `${root}src/app/main.ts`, '--', ...inner]]
-    : [process.execPath, [...flags, `${root}src/app/main.ts`, '--', ...inner]];
+    ? [process.execPath, [...flags, `${root}src/app/supervisor.ts`, `${root}src/app/main.ts`, ...languageArgs, '--', ...inner]]
+    : via === 'bin' ? [process.execPath, [`${root}bin/moyu.mjs`, ...languageArgs, '--', ...inner]]
+      : [process.execPath, [...flags, `${root}src/app/main.ts`, ...languageArgs, '--', ...inner]];
   const env = launchEnv(via, process.env, extraEnv);
   if (via === 'sh') delete env.MOYU_TAKEOVER_FLAG;
   // 隔离存档：不给 MOYU_HOME / HOME 的用例，派一个干净的临时 home。否则真人玩过后
@@ -411,6 +414,20 @@ test('an English system language reaches the live wrapped game', async () => {
     s.send('?');
     await s.waitFor(w => w.slice(help).includes('Stick Slash · A/D Move'), '英文帮助页');
     assert.doesNotMatch(s.wire().slice(help), /[\u3400-\u9fff]/);
+  } finally { s.kill(); }
+});
+
+test('the installed entry applies --lang en to the wrapped game HUD', async () => {
+  const s = await launch('bin', { LANG: 'zh_CN.UTF-8', MOYU_LANG: 'zh' }, undefined, 'en');
+  try {
+    await s.waitFor(w => standbyPaint(w) && w.includes('INNER-READY'), '待机和内层启动');
+    const enter = s.wire().length;
+    s.send('\x1d');
+    await s.waitFor(w => /HP \d+\/\d+/.test(w.slice(enter)), '英文战斗 HUD');
+    const help = s.wire().length;
+    s.send('?');
+    await s.waitFor(w => w.slice(help).includes('Stick Slash · A/D Move'), '英文帮助页');
+    assert.doesNotMatch(s.wire().slice(enter), /[\u3400-\u9fff]/);
   } finally { s.kill(); }
 });
 

@@ -51,6 +51,12 @@ npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/
 当前 `moyu-game` 尚未发布到 npm registry。安装时不需要本机 TypeScript。如果错误提到 `tsc`、`prepare` 或临时目录死软链，
 请附上 Node/npm 版本创建 Bug Report。
 
+## `--lang en` 后游戏 HUD 仍是中文
+
+先在同一个终端运行 `type -a moyu` 和 `moyu --lang en --help`。后者应以英文的 `Moyu — a stick-figure action game` 开头；如果报错或仍显示中文，说明当前命中的命令不是支持语言切换的安装包。按上一节卸载并重装，然后退出旧的 Moyu/Claude 会话，再运行 `moyu --lang en -- claude`。同一包版本号下只执行 `npm install --global` 可能不会替换旧安装。
+
+如果帮助页已是英文，而游戏 HUD 仍是中文，请记录 `type -a moyu` 的结果、HUD 中的原文，以及 `moyu --lang en doctor --caps` 的前几行；第三方 Cartridge 的文案由它自己提供。
+
 ## PTY 原生模块加载失败
 
 `moyu -- <cli>` 依赖 `@lydell/node-pty`；`moyu play` 和部分诊断命令仍可能可用。
