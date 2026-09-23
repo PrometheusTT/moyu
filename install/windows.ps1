@@ -44,9 +44,15 @@ if (-not (Test-WslReady)) {
     }
     $alreadyInstalled = @($distributions -split "`n" | Where-Object { $_.Trim() -eq $Distribution }).Count -gt 0
     if (-not $alreadyInstalled) {
-        Write-Host "Installing WSL distribution $Distribution. Windows may request a restart or Linux username setup."
-        & wsl.exe --install -d $Distribution
-        if ($LASTEXITCODE -ne 0) { throw 'WSL installation failed. Run PowerShell as Administrator and try again.' }
+        Write-Host "Installing WSL distribution $Distribution by direct download. Windows may request a restart or Linux username setup."
+        & wsl.exe --install --web-download -d $Distribution
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'Direct download failed; trying the default Windows distribution source.'
+            & wsl.exe --install -d $Distribution
+            if ($LASTEXITCODE -ne 0) {
+                throw 'Both WSL download methods failed. If you saw HTTP 403, the download service may be blocked by your network or policy. See https://learn.microsoft.com/windows/wsl/install-manual#downloading-distributions for manual Ubuntu installation, then rerun this installer.'
+            }
+        }
     }
     if (-not (Test-WslReady)) {
         Write-Host "Restart Windows if requested, open $Distribution to finish Linux username setup, then run this same installer again."

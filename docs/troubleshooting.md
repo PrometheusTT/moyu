@@ -13,6 +13,12 @@ moyu doctor --caps
 
 ## Windows 安装停在 WSL 设置
 
+如果 `wsl --install` 显示“已禁止(403)”，这是下载失败，单纯重开管理员 PowerShell 不一定能解决。
+新版安装器会先试 `wsl --install --web-download -d Ubuntu`，失败后再试默认来源。旧版脚本可先在
+管理员 PowerShell 手动运行这条命令。两种来源都失败时，按[微软的手动安装说明](https://learn.microsoft.com/en-us/windows/wsl/install-manual#downloading-distributions)
+下载 Ubuntu 的 `.appx` / `.AppxBundle`，用 `Add-AppxPackage` 安装，启动 Ubuntu 完成首次设置，
+再重跑 Moyu 安装命令。如果下载链接也返回 403，需要更换可访问的网络或联系网络管理员。
+
 首次启用 WSL 可能需要重启 Windows，并在 Ubuntu 窗口里创建 Linux 用户。完成后在管理员
 PowerShell **重跑同一条安装命令**，安装器会跳过已安装的 WezTerm 和 WSL，继续安装 Node 与 Moyu。
 请在 WezTerm 的 `WSL:Ubuntu` 标签页运行 `moyu play`；在 PowerShell 或 Windows Terminal

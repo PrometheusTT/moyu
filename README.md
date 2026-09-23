@@ -75,6 +75,7 @@ Kitty、Ghostty 或 WezTerm 中运行；系统自带 Terminal.app 会退回字�
 在**管理员 PowerShell** 中运行以下命令。安装器会安装 WezTerm 和 WSL Ubuntu，
 再在 WSL 内安装 Node 与 Moyu；已有的组件会跳过。若 Windows 要求重启，重启并完成
 Ubuntu 首次创建用户名后，**再运行同一条命令**即可继续。
+WSL 下载若出现 403，安装器会尝试另一下载来源；两者都失败时参见[故障排查](./docs/troubleshooting.md)。
 
 ```powershell
 $file = Join-Path $env:TEMP 'moyu-install.ps1'; Invoke-WebRequest https://raw.githubusercontent.com/PrometheusTT/moyu/feat/live-on-enter/install/windows.ps1 -OutFile $file; powershell -NoProfile -ExecutionPolicy Bypass -File $file
