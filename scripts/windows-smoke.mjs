@@ -13,10 +13,15 @@ const entry = path.join(root, 'bin', 'moyu.mjs');
 
 function run(args, marker, afterMarker) {
   return new Promise((resolve, reject) => {
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) if (key.toUpperCase() === 'PATH') delete env[key];
+    env.Path = `${home}${path.delimiter}${process.env.PATH ?? ''}`;
+    env.MOYU_HOME = home;
+    env.MOYU_EVENTS = path.join(home, 'events.log');
+    env.MOYU_TIER = 'braille';
     const child = spawn(process.execPath, [entry, ...args], {
       cols: 90, rows: 24, cwd: root, encoding: null, handleFlowControl: false,
-      env: { ...process.env, MOYU_HOME: home, MOYU_EVENTS: path.join(home, 'events.log'),
-        MOYU_TIER: 'braille', PATH: `${home}${path.delimiter}${process.env.PATH ?? ''}` },
+      env,
     });
     let output = '';
     let triggered = false;
