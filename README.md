@@ -76,18 +76,16 @@ Qi below 60 uses the first set of forms; 60–99 uses the second; 100 or more us
 
 ## Terminals and graphics
 
-Moyu probes your terminal and chooses Kitty Graphics, color Braille, or half-block text. Run `moyu doctor --caps` to see the selected tier and `moyu doctor --gfx` to check image output.
+Moyu probes your terminal and chooses Kitty Graphics, color Braille, or half-block text. These terminals are currently known to support high-resolution play:
 
-| Terminal | Platform | Expected output |
-| --- | --- | --- |
-| Kitty, Ghostty, WezTerm | macOS / Linux; WezTerm also on native Windows | High-resolution graphics when the capability probe succeeds; text fallback otherwise |
-| iTerm2 | macOS | High-resolution play reported by the project author; check your own tier with `moyu doctor --caps` |
-| macOS Terminal | macOS | Character rendering |
-| VS Code integrated terminal | Cross-platform | Character rendering |
-| Windows Terminal | Native Windows or WSL | Character rendering; use WezTerm for the high-resolution path on Windows |
-| SSH, tmux, screen | Cross-platform | Usually character rendering |
+| Terminal | Platform |
+| --- | --- |
+| Kitty | macOS / Linux |
+| Ghostty | macOS / Linux |
+| WezTerm | macOS / Linux / Windows |
+| iTerm2 | macOS |
 
-The iTerm2 report is a manual play test, not a guarantee for every version or setup. Moyu does not implement iTerm2's proprietary inline-image protocol. Terminal versions, fonts, and remote links still need [manual checks](./docs/terminal-qa.md).
+Run `moyu doctor --caps` to see your actual graphics tier or `moyu doctor --gfx` to check image output. Other terminal reports are welcome through [Issues](https://github.com/PrometheusTT/moyu/issues); see the [terminal QA guide](./docs/terminal-qa.md) for what to include.
 
 ## Task integration
 

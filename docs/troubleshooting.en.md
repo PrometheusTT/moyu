@@ -20,6 +20,6 @@ Update Moyu and restart `moyu -- <cli>`. Some terminals encode modified keys dif
 
 ## Graphics are missing or blurry
 
-Run `moyu doctor --caps` to see the chosen tier and `moyu doctor --gfx` to test Kitty Graphics directly. Kitty, Ghostty, and WezTerm are high-resolution candidates; iTerm2 high-resolution play has also been reported by the project author. The capability probe decides your actual tier. SSH, tmux, and screen commonly select text. For Braille, use a monospaced font and check line height. Force a text tier for diagnosis with `MOYU_TIER=braille` or `MOYU_TIER=half` (PowerShell: `$env:MOYU_TIER='braille'`).
+Run `moyu doctor --caps` to see the chosen tier and `moyu doctor --gfx` to test Kitty Graphics directly. Kitty, Ghostty, WezTerm, and iTerm2 are known high-resolution options; the capability probe decides your actual tier. SSH, tmux, and screen commonly select text. For Braille, use a monospaced font and check line height. Force a text tier for diagnosis with `MOYU_TIER=braille` or `MOYU_TIER=half` (PowerShell: `$env:MOYU_TIER='braille'`).
 
 If a crash leaves the cursor or terminal state wrong, run `moyu doctor --reset`.

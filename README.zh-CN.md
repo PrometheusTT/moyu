@@ -80,18 +80,16 @@ Windows 上使用 `moyu -- codex` 或 `moyu -- claude` 前，先安装相应 CLI
 
 ## 终端与画质
 
-Moyu 自动选择 Kitty Graphics 高清像素、彩色 Braille 或半块字符。运行 `moyu doctor --caps` 查看当前档位，`moyu doctor --gfx` 检查图片显示。
+Moyu 自动选择 Kitty Graphics 高清像素、彩色 Braille 或半块字符。目前已知支持高清游玩的终端：
 
-| 终端 | 系统 | 预期画质 |
-| --- | --- | --- |
-| Kitty、Ghostty、WezTerm | macOS / Linux；WezTerm 也支持 Windows 原生 | 探测成功时可用高清档，否则回退字符档 |
-| iTerm2 | macOS | 作者已实测可玩高清版；请用 `moyu doctor --caps` 查看自己的档位 |
-| macOS Terminal | macOS | 字符档 |
-| VS Code 内置终端 | 跨平台 | 字符档 |
-| Windows Terminal | Windows 原生或 WSL | 字符档；Windows 高清建议用 WezTerm |
-| SSH、tmux、screen | 跨平台 | 通常为字符档 |
+| 终端 | 系统 |
+| --- | --- |
+| Kitty | macOS / Linux |
+| Ghostty | macOS / Linux |
+| WezTerm | macOS / Linux / Windows |
+| iTerm2 | macOS |
 
-iTerm2 的实测结论不保证所有版本和配置；本项目未实现 iTerm2 专有的 inline-image 协议。不同终端版本、字体和远程链路仍需[人工验证](./docs/terminal-qa.md)。
+运行 `moyu doctor --caps` 查看当前画质档位，`moyu doctor --gfx` 检查图片显示。欢迎通过 [Issues](https://github.com/PrometheusTT/moyu/issues) 补充其他终端的使用情况；可参考[终端验证指南](./docs/terminal-qa.md)提供信息。
 
 ## 任务联动
 

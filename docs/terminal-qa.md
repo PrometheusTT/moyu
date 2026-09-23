@@ -131,7 +131,7 @@ image placement, theme contrast, or remote latency on a particular terminal.
 | Terminal / path | Automated coverage | Native visual status |
 | --- | --- | --- |
 | macOS Terminal | Character fallback selection and PTY ownership paths | Manual client check pending |
-| iTerm2 | Capability probe and safe text fallback; proprietary inline-image protocol is not implemented | Project author reports high-resolution play; terminal version and settings not recorded |
+| iTerm2 | Capability probe and safe text fallback; proprietary inline-image protocol is not implemented | High-resolution play confirmed manually; terminal version and settings not recorded |
 | Kitty | Graphics negotiation, chunking, replacement, and deletion | Manual image placement check pending |
 | Ghostty | Kitty-protocol path and full-frame replacement | Manual image placement check pending |
 | WezTerm | Capability and fallback paths | Manual client check pending |
