@@ -24,6 +24,18 @@ const BG = 0x090a0e, GRID = 0x151722, INK = 0xecf0f8, ACCENT = 0xe43834, AMBER =
 const STAIN = 0x68121a, DEAD = 0x5c5f6c, FOE = 0xb37b58;
 // 敌人变种本色：快刀手偏亮、重甲偏暗、boss 深红；其余走 FOE。
 const FOE_RUNNER = 0xd8b48a, FOE_BRUTE = 0x7a5236, FOE_BOSS = 0xc0473a;
+/** 格子从左到右恢复；数字补足临界时刻的信息，0 秒才显示就绪。 */
+function cooldownTrack(remaining, total, cells) {
+    const left = Math.max(0, Number.isFinite(remaining) ? remaining : 0);
+    const count = Math.max(1, Math.floor(cells));
+    const filled = left <= 0 ? count : Math.min(count - 1, Math.max(0, Math.floor((1 - left / Math.max(total, 0.01)) * count)));
+    return `[${'█'.repeat(filled)}${'░'.repeat(count - filled)}]`;
+}
+export function cooldownBar(remaining, total, cells = 4) {
+    const left = Math.max(0, Number.isFinite(remaining) ? remaining : 0);
+    const seconds = Math.ceil(left * 10 - 1e-9) / 10;
+    return `${cooldownTrack(left, total, cells)}${left <= 0 ? '就绪' : `${Math.max(0.1, seconds).toFixed(1)}秒`}`;
+}
 /** 字符档下按变种取本色（图形/braille 档在各自渲染器里用调色板混色）。导出供渲染回归测试锁定区分度。 */
 export function foeColor(tag) {
     return tag === 'boss' ? FOE_BOSS : tag === 'brute' ? FOE_BRUTE : tag === 'runner' ? FOE_RUNNER : FOE;
@@ -592,26 +604,23 @@ class StickGame {
                 ? `第${result.chapter}章完成 · ${result.score}分 · J 下一章 / 自动继续 · 累计${checkpoint.score}分 ${checkpoint.kills}击破 连击${checkpoint.bestCombo} · 『${title}』${story}`
                 : `第${result.chapter}章完成 · 『${title}』 · ${story} · ${result.score}分 · 等待下个任务`;
         }
-        // 冷却指示追加在**最后**：`血X/4` 与 `火柴快斩` 都在它前面，窄屏只会裁掉指示器本身，
-        // 护住 e2e 的 `血` 在场标记与 arcade.test 的 `火柴快斩`。就绪=▮，冷却中=▯。
         const p = this.world.player;
-        const ready = (t) => (t > 0 ? '▯' : '▮');
-        const skills = `冲${ready(p.dashCool)} 旋${ready(p.spinCool)} 护${ready(p.armorCool ?? 0)}`;
-        // 连击数插在血与冲之间（连打 ≥2 才显示，别抢常态注意力）；就绪脉冲只追加在**行尾**，
-        // 绝不写进 `冲▮ 旋▮` 之间——那个连续子串被 arcade.test 的 /冲▮ 旋▮/ 正则钉着。
+        const training = playerGrowth(this.world.cultivation.insight);
+        const skills = `护体S>K${cooldownBar(p.armorCool ?? 0, training.armorCooldown)} · 冲刺U${cooldownBar(p.dashCool, 0.7 * training.skillCooldown)} · 旋斩I${cooldownBar(p.spinCool, 1.6 * training.skillCooldown)}`;
         const combo = this.world.combo >= 2 ? ` · 连击${this.world.combo}` : '';
         const pulse = this.readyPulse > 0 ? ' 就绪✦' : '';
         const life = this.world.respawn > 0 ? '重生中' : `血${p.hp}/${p.maxHp ?? 4}`;
         const w = this.world;
         const next = ART_IDS.find(art => !isSecretArt(art) && w.cultivation.insight < SWORD_ARTS[art].unlock);
-        const training = playerGrowth(w.cultivation.insight);
         const growth = `修${training.level}重${training.nextInsight === null ? ' 已圆满' : ` ${w.cultivation.insight}/${training.nextInsight}悟`} · `
             + (next ? `悟${SWORD_ARTS[next].short} ${w.cultivation.insight}/${SWORD_ARTS[next].unlock}` : '剑谱齐备');
         const headline = w.artNoticeT > 0 ? w.artNotice : `第${this.director.chapter}关 ${this.director.chapterTitle()}`;
         const boss = w.enemies.find(e => e.tag === 'boss');
         const battle = boss ? ` · BOSS ${BOSS_NAMES[boss.bossKind ?? 'spider']} ${boss.hp}/${boss.maxHp ?? 5}${boss.quakeX !== undefined ? boss.bossKind === 'crystal' ? ' 冰阵！跳跃/离开蓝线' : ' 地裂！跳跃/离开红线' : boss.windup >= 0 ? ' 蓄势！' : ''}` : '';
         const cleanup = this.director.activeStep >= 1800 ? ` · 清场中 剩${w.enemies.length}敌` : '';
-        return `${life} 气${w.qi}/${MAX_QI} · ${headline}${battle}${cleanup} · ${growth} · 火柴快斩·无尽江湖 · ${w.kills}击破${combo} · ${skills}${pulse}`;
+        const state = (p.armorT ?? 0) > 0 ? `防御中 ${p.armorT.toFixed(1)}秒` : (p.stunT ?? 0) > 0 ? '受控，按S>K解控'
+            : (p.slowT ?? 0) > 0 ? '减速，按S>K解控' : '可行动';
+        return `${life} 气${w.qi}/${MAX_QI} · 火柴快斩 · ${state} · ${skills} · ${headline}${battle}${cleanup} · ${growth} · ${w.kills}击破${combo}${pulse}`;
     }
     details() {
         const w = this.world;
@@ -634,8 +643,9 @@ class StickGame {
             `修为${growth.level}重 · 生命上限${growth.maxHp} · ${growth.nextInsight === null ? '已圆满' : `下重${w.cultivation.insight}/${growth.nextInsight}悟`}`,
             '20/60/120/220/360/540悟逐步成长，存档保留',
             `冲刺/旋斩冷却缩短${Math.round((1 - growth.skillCooldown) * 100)}% · 普攻伤害不变`,
-            `S>K 护体罡气：解控+${growth.armorDuration.toFixed(2)}秒霸体，仍会掉血`,
-            `零耗气 · 冷却${growth.armorCooldown.toFixed(2)}秒 · 受控/收招时可用`,
+            `S>K 护体罡气：解控，举剑定身防御${growth.armorDuration.toFixed(2)}秒，仍会掉血`,
+            `防御期间不可移动/攻击/跳跃；零耗气，冷却${growth.armorCooldown.toFixed(2)}秒`,
+            '冷却条从左到右填满，数字显示剩余秒数',
             '初期头目：单斩、短冲撞、单处冰阵',
             '后续逐步增加双斩、强击退、多处冰阵', '冰阵减速逐步增强，跳跃/离开蓝线可躲',
             '33关起螳螂可短控；39关起金色蓄势抗打断',
@@ -646,10 +656,13 @@ class StickGame {
     combatHud(rows) {
         const w = this.world, p = w.player, result = this.director.result;
         const life = w.respawn > 0 ? '重生中' : `血${p.hp}/${p.maxHp ?? 4}`;
-        const defense = (p.armorT ?? 0) > 0 ? '霸体' : (p.stunT ?? 0) > 0 ? '受控 S>K' : (p.slowT ?? 0) > 0 ? '减速 S>K'
-            : (p.armorCool ?? 0) > 0 ? `护${Math.ceil(p.armorCool)}秒` : '护S>K';
+        const defense = (p.armorT ?? 0) > 0 ? `防御中 ${p.armorT.toFixed(1)}秒` : (p.stunT ?? 0) > 0 ? '受控：S>K 解控'
+            : (p.slowT ?? 0) > 0 ? '减速：S>K 解控' : '可行动';
         const status = `${life} 气${w.qi} ${defense}`;
         const growth = playerGrowth(w.cultivation.insight);
+        const armorCd = `护S>K${cooldownBar(p.armorCool ?? 0, growth.armorCooldown, 3)}`;
+        const attackCd = `冲U${cooldownBar(p.dashCool, 0.7 * growth.skillCooldown, 3)} 旋I${cooldownBar(p.spinCool, 1.6 * growth.skillCooldown, 3)}`;
+        const compactCd = `护${cooldownTrack(p.armorCool ?? 0, growth.armorCooldown, 3)} 冲${cooldownTrack(p.dashCool, 0.7 * growth.skillCooldown, 3)} 旋${cooldownTrack(p.spinCool, 1.6 * growth.skillCooldown, 3)}`;
         const boss = w.enemies.find(e => e.tag === 'boss') ?? w.enemies.find(e => e.duelist);
         const threat = boss ? `${boss.duelist ? boss.duelist === 'qingfeng' ? '青锋' : '玄衣' : BOSS_NAMES[boss.bossKind ?? 'spider']} ${boss.hp}/${boss.maxHp ?? 5}` : '';
         const warning = boss?.quakeX !== undefined ? boss.bossKind === 'crystal' ? '冰阵！跳跃 / 离开蓝线' : '地裂！跳跃 / 离开红线'
@@ -661,16 +674,19 @@ class StickGame {
             : selected ? `${SWORD_ARTS[w.selectedArt].keys} ${selected.full ? FULL_ART_NAMES[w.selectedArt] : SWORD_FORMS[w.selectedArt][selected.index].name}`
                 : `攒气 ${w.qi}/${SWORD_ARTS[w.selectedArt].cost}`;
         if (rows <= 2)
-            return [`${status} ${boss ? `王${boss.hp}` : `${this.director.chapter}关`}`,
-                result ? '已清场 J继续 ?谱' : `${nextForm}${warning ? ' !' : ''} ?谱`];
+            return [result ? `${life} · 第${this.director.chapter}关完成`
+                    : (p.armorT ?? 0) > 0 ? `${life} · 防御中 ${p.armorT.toFixed(1)}秒`
+                        : warning ? `${life} · ${warning}` : `${life} 气${w.qi} · ${nextForm}`,
+                result ? '已清场 J继续 ?谱' : `${compactCd}${warning ? ' !' : ''} ?谱`];
         if (result)
             return [...[`第${result.chapter}章完成`, this.director.chapterTitle(), `${result.score}分 · ${result.kills}击破`,
                     'J 下一章 / 自动继续', ''].slice(0, rows - 1), '?谱 E大小 Esc退'];
-        const lines = [status, `修${growth.level}重 · ${SWORD_ARTS[cast?.art ?? w.selectedArt].name} · ${cast ? '施展中' : '当前'}`,
-            nextForm, warning || threat || `${this.director.chapter}关 ${this.director.chapterTitle()}`,
-            following ? `接 ${SWORD_FORMS[w.selectedArt][following.index].name}` : '攒气续招 · 战斗不限时'];
-        if (rows <= 4 && warning)
-            lines[1] = warning;
+        const lines = rows <= 3 ? [status, compactCd]
+            : rows <= 4 ? [status, warning || threat || nextForm, compactCd]
+                : rows <= 5 ? [status, warning || threat || `${this.director.chapter}关`, nextForm, compactCd]
+                    : [status, warning || threat || `${this.director.chapter}关 ${this.director.chapterTitle()}`,
+                        `${nextForm} · 修${growth.level}重`, armorCd, attackCd,
+                        following ? `接 ${SWORD_FORMS[w.selectedArt][following.index].name}` : '攒气续招 · 战斗不限时'];
         return [...lines.slice(0, rows - 1), '?谱 E大小 Esc退'];
     }
 }

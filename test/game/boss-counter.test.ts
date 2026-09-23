@@ -44,17 +44,57 @@ test('怪物头目轮换跳过剑宗关，三种轮廓可大型化且顶端不�
   assert.equal(contours.size, 3);
 });
 
-test('S>K零气解控，霸体期间可攻击移动，冷却中不刷新，六秒后可重用', () => {
+test('S>K零气解控并固定防御姿态，冷却中不刷新，六秒后可重用', () => {
   const w = world(), p = w.player;
   p.stunT = 0.3; p.slowT = 0.8; p.atk = 0.05;
   w.step(dt, { ...NO_INTENT, armor: true, move: 1 });
   assert.equal(p.stunT, 0); assert.equal(p.slowT, 0);
   assert.equal(p.armorT, 0.8); assert.equal(p.armorCool, 6); assert.equal(w.qi, 0);
-  assert.ok(p.vx > 0); assert.ok(p.atk > 0.05);
+  assert.equal(p.vx, 0); assert.equal(p.atk, -1);
+  assert.equal(p.pose.blade, 3.05);
   w.step(dt, { ...NO_INTENT, armor: true });
   assert.ok(p.armorT! < 0.8); assert.match(w.artNotice, /未就绪/);
   advance(w, 6.1);
   w.step(dt, { ...NO_INTENT, armor: true }); assert.equal(p.armorT, 0.8);
+});
+
+test('防御期间锁住原地与招式，连续输入不会在结束后补发', () => {
+  const w = world(), p = w.player;
+  w.qi = 100;
+  w.step(dt, { ...NO_INTENT, art: 'dugu' });
+  assert.ok(w.swordCast);
+  w.step(dt, { ...NO_INTENT, jump: true });
+  const x = p.x, y = p.y;
+  w.step(dt, { ...NO_INTENT, armor: true, slash: true, dash: true, spin: true, art: 'dugu', move: 1 });
+  const qi = w.qi;
+  assert.equal(w.swordCast, null);
+  assert.equal(p.atk, -1); assert.equal(p.dashT, 0); assert.equal(p.spinT, 0);
+  for (let i = 0; i < 44; i++) {
+    w.step(dt, { ...NO_INTENT, slash: true, dash: true, spin: true, jump: true, art: 'dugu', move: -1 });
+    assert.equal(p.x, x); assert.equal(p.y, y);
+    assert.equal(p.atk, -1); assert.equal(p.dashT, 0); assert.equal(p.spinT, 0);
+    assert.equal(w.swordCast, null); assert.equal(w.qi, qi);
+  }
+  advance(w, 0.15);
+  assert.equal(p.atk, -1); assert.equal(p.dashT, 0); assert.equal(p.spinT, 0);
+  assert.equal(w.swordCast, null);
+  w.step(dt, { ...NO_INTENT, move: 1, slash: true });
+  assert.ok(p.x > x); assert.ok(p.atk >= 0);
+});
+
+test('防御姿态有独立剪影和金色护盾，左右方向都显示在身前', () => {
+  for (const face of [-1, 1] as const) {
+    const w = world(), p = w.player;
+    p.face = face;
+    const normal = JSON.stringify(fighterSegments(p));
+    w.step(dt, { ...NO_INTENT, armor: true });
+    assert.notEqual(JSON.stringify(fighterSegments(p)), normal);
+    const lines: number[][] = [];
+    paintBossPressure({ line: (...a) => lines.push(a), rect: () => {}, circle: () => {} }, w);
+    const shield = lines.filter(a => a[4] === 0xffd66b && a[0] !== a[2]);
+    assert.ok(shield.length >= 5);
+    assert.ok(shield.some(a => ((a[0]! + a[2]!) / 2 - p.x) * face > 0));
+  }
 });
 
 test('解控优先于顿帧缓存、冲刺和旋斩，且只触发一次', () => {
@@ -69,7 +109,7 @@ test('解控优先于顿帧缓存、冲刺和旋斩，且只触发一次', () =>
   }
 });
 
-test('螳螂第二斩短控：霸体照常扣血但不击退、不中断普攻、不受控', () => {
+test('螳螂第二斩短控：防御照常扣血但不击退、不受控', () => {
   for (const armored of [false, true]) {
     const w = world('mantis'), p = w.player, e = w.enemies[0]!;
     e.followupT = dt / 2;
@@ -77,7 +117,7 @@ test('螳螂第二斩短控：霸体照常扣血但不击退、不中断普攻�
     w.step(dt, { ...NO_INTENT, armor: armored });
     assert.equal(p.hp, 3); assert.equal(p.invuln, 0.85);
     if (armored) {
-      assert.ok(p.atk > 0); assert.equal(p.vx, 0); assert.equal(p.onGround, true);
+      assert.equal(p.atk, -1); assert.equal(p.vx, 0); assert.equal(p.onGround, true);
       assert.equal(p.stunT, 0);
     } else {
       assert.equal(p.atk, -1); assert.equal(p.stunT, 0.3); assert.ok(p.vx < 0);

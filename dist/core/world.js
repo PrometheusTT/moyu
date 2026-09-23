@@ -20,7 +20,7 @@
 import { Rng } from "./rng.js";
 import { fighterSegments } from "./creature.js";
 import { MAX_QI, BOSS_HIT_QI, SWORD_ARTS, SWORD_FORMS, FULL_ART_NAMES, selectSwordForm, currentSwordForm, artLevel, artDuration, artRecovery, isSecretArt, freshCultivation, freshFormProgress, playerGrowth } from "./martial.js";
-import { poseAir, poseBossCharge, poseBossSlam, poseBossSweep, poseBossWindup, poseHurt, poseIdle, poseLand, poseSlash, poseWalk, poseWindup, segments } from "./stick.js";
+import { poseAir, poseBossCharge, poseBossSlam, poseBossSweep, poseBossWindup, poseGuard, poseHurt, poseIdle, poseLand, poseSlash, poseWalk, poseWindup, segments } from "./stick.js";
 export const NO_INTENT = { move: 0, jump: false, slash: false, dash: false, spin: false, crouch: false };
 export const PLAYER_MOVE_MULTIPLIER = 1.2;
 export const SLASH_RECOVERY = 0.26;
@@ -453,6 +453,7 @@ export class World {
     stepPlayer(dt, input) {
         const p = this.player;
         p.anim += dt;
+        const wasGuarding = (p.armorT ?? 0) > 0;
         const wasStunned = (p.stunT ?? 0) > 0;
         for (const key of ['armorT', 'armorCool', 'stunT', 'slowT', 'controlImmuneT']) {
             if ((p[key] ?? 0) > 0)
@@ -467,8 +468,15 @@ export class World {
                 p.armorCool = growth.armorCooldown;
                 p.stunT = p.slowT = p.hurt = 0;
                 p.controlImmuneT = 1;
-                // 解除击退冲量；空中不瞬移、不强制落地。
-                p.vx = 0;
+                // 防御姿态覆盖正在进行的攻击/冲刺，原有输入不在结束后重放。
+                p.vx = p.vy = p.dashT = p.spinT = 0;
+                p.atk = -1;
+                p.atkHit = p.atkQueued = false;
+                this.swordCast = null;
+                this.queuedArt = null;
+                this.artBossHits.clear();
+                this.buffered = { ...NO_INTENT };
+                this.bufferT = 0;
                 this.artNotice = '护体罡气 · 霸体';
                 this.artNoticeT = growth.armorDuration;
             }
@@ -491,6 +499,13 @@ export class World {
             p.sweepCool = (p.sweepCool ?? 0) - dt;
         if ((p.lungeCool ?? 0) > 0)
             p.lungeCool = (p.lungeCool ?? 0) - dt;
+        if (wasGuarding || (p.armorT ?? 0) > 0) {
+            this.buffered = { ...NO_INTENT };
+            this.bufferT = 0;
+            p.vx = p.vy = 0;
+            p.pose = poseGuard();
+            return;
+        }
         if (this.phase !== 'fight')
             this.queuedArt = null;
         if (input.art && this.phase === 'fight')
@@ -1604,6 +1619,8 @@ export class World {
             f.walk = (f.walk + dt * (0.9 + Math.abs(f.vx) / (f.speed * 0.6))) % 1;
     }
     poseFor(f) {
+        if (f.kind === 'player' && (f.armorT ?? 0) > 0)
+            return poseGuard();
         if (f.kind === 'player' && this.swordCast !== null && f.atk < 0 && f.dashT <= 0 && f.spinT <= 0
             && f.hurt <= 0 && this.swordCast.age < artRecovery(this.swordCast.full)) {
             const cast = this.swordCast, form = currentSwordForm(cast), u = cast.age / artRecovery(cast.full);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Arcade, BUILTIN_GAMES, foeColor } from '../../src/platform/arcade.ts';
+import { Arcade, BUILTIN_GAMES, cooldownBar, foeColor } from '../../src/platform/arcade.ts';
 import { CHAPTER_TITLES, CHAPTER_STORY } from '../../src/core/chapter.ts';
 import { BrailleTarget } from '../../src/render/braille.ts';
 import { appendSignal } from '../../src/bridge/signal.ts';
@@ -209,25 +209,48 @@ test('Tab cycles cartridges through the shared host', () => withFreshHome(() => 
   a.feed(Uint8Array.of(9)); assert.match(a.hud().left, /落块/);
 }));
 
-test('live HUD 亮出技能冷却，且 火柴快斩/血 都在冷却指示之前', () => {
+test('live HUD 显示三个技能的进度条、剩余时间和清楚的状态文字', () => {
   const game = stickGame();
   const idle = game.hud?.() ?? '';
-  // 就绪态：两个技能都是 ▮。
+  // 就绪态三个进度条均填满。
   assert.match(idle, /火柴快斩/);
   assert.match(idle, /血\d\/4/);
-  assert.match(idle, /冲▮ 旋▮/, `就绪时应显示两个 ▮，实际：${idle}`);
-  // `火柴快斩` 和 `血` 必须排在冷却指示（冲…旋…）之前，窄屏裁切只裁掉尾部指示器。
-  assert.ok(idle.indexOf('火柴快斩') < idle.indexOf('冲'), '火柴快斩 应在冷却指示之前');
-  assert.ok(idle.indexOf('血') < idle.indexOf('冲'), '血量 应在冷却指示之前');
+  assert.match(idle, /护体S>K\[████\]就绪 · 冲刺U\[████\]就绪 · 旋斩I\[████\]就绪/);
+  assert.match(idle, /可行动/);
+  assert.ok(idle.indexOf('火柴快斩') < idle.indexOf('护体'));
+  assert.ok(idle.indexOf('血') < idle.indexOf('护体'));
 
-  // 放一次冲刺斩（U=secondary）后，冲的指示应转为冷却中 ▯。
+  // 冲刺后条格逐步恢复，数字显示实际剩余时间。
   const dash = { left: false, right: false, up: false, down: false,
     jump: false, primary: false, secondary: true };
   game.update(1 / 60, dash);
-  assert.match(game.hud?.() ?? '', /冲▯/, '放完冲刺斩后冲的冷却应显示 ▯');
+  assert.match(game.hud?.() ?? '', /冲刺U\[░░░░\]0\.7秒/);
 });
 
-test('live HUD：连击数插在血与冲之间、就绪脉冲只在行尾，`冲 旋` 子串始终完整', () => {
+test('冷却格随时间单调填满，战斗侧栏在窄行数也显示防御与冷却', () => {
+  assert.equal(cooldownBar(0.7, 0.7), '[░░░░]0.7秒');
+  assert.equal(cooldownBar(0.35, 0.7), '[██░░]0.4秒');
+  assert.equal(cooldownBar(0.01, 0.7), '[███░]0.1秒');
+  assert.equal(cooldownBar(0, 0.7), '[████]就绪');
+  const game = stickGame();
+  const w = (game as unknown as { world: World }).world;
+  w.player.armorCool = 3; w.player.dashCool = 0.35; w.player.spinCool = 0;
+  assert.match(game.hud?.() ?? '', /护体S>K\[██░░\]3\.0秒/);
+  for (const rows of [2, 3, 4, 5, 6]) {
+    const lines = game.combatHud?.(rows) ?? [];
+    assert.equal(lines.length, rows);
+    assert.ok(lines.some(line => line.includes('护[') || line.includes('护S>K[')));
+    assert.ok(lines.some(line => line.includes('冲[') || line.includes('冲U[')));
+    assert.ok(lines.some(line => line.includes('旋[') || line.includes('旋I[')));
+  }
+  w.player.armorCool = 0;
+  game.update(1 / 60, { left: false, right: false, up: false, down: false, jump: false,
+    primary: false, secondary: false, armor: true });
+  assert.match(game.hud?.() ?? '', /防御中/);
+  assert.match(game.combatHud?.(2)[0] ?? '', /防御中/);
+});
+
+test('live HUD：连击与完整冷却条持续可见，就绪脉冲留在行尾', () => {
   const game = stickGame(41);
   assert.doesNotMatch(game.hud?.() ?? '', /连击/, '开局连击 0，不该显示连击数');
   // 跑一段真实战斗（开局导演在右侧放一对杂兵，向右连劈能打出连击）。
@@ -237,16 +260,14 @@ test('live HUD：连击数插在血与冲之间、就绪脉冲只在行尾，`�
   for (let i = 0; i < 900; i++) {
     game.update(1 / 60, i % 5 < 2 ? { ...slash, right: true } : walk);
     const h = game.hud?.() ?? '';
-    // 不变式：无论何时，`冲X 旋X` 连续子串必须完整（arcade.test/e2e 的正则钉着它），
-    // 就绪脉冲 `就绪✦` 只能出现在它之后。
-    assert.match(h, /冲[▮▯] 旋[▮▯]/, `任何一帧 \`冲 旋\` 子串都应完整，实际：${h}`);
-    const pulse = h.indexOf('就绪');
-    if (pulse >= 0) assert.ok(pulse > h.indexOf('旋'), '就绪脉冲只能追加在冷却指示之后（行尾）');
+    assert.match(h, /护体S>K\[[█░]{4}\](?:就绪|\d+\.\d秒) · 冲刺U\[[█░]{4}\](?:就绪|\d+\.\d秒) · 旋斩I\[[█░]{4}\](?:就绪|\d+\.\d秒)/);
+    const pulse = h.indexOf('就绪✦');
+    if (pulse >= 0) assert.ok(pulse > h.indexOf('旋斩'), '就绪脉冲只能追加在冷却条之后');
     const combo = h.match(/连击(\d+)/);
     if (combo) {
       sawCombo = true;
       assert.ok(h.indexOf('血') < h.indexOf('连击'), '连击数应排在血量之后');
-      assert.ok(h.indexOf('连击') < h.indexOf('冲'), '连击数应排在冷却指示之前');
+      assert.ok(h.indexOf('连击') > h.indexOf('旋斩'), '连击数应跟在冷却条之后');
     }
   }
   assert.ok(sawCombo, '900 帧向右连劈没能打出任何连击（连击数 HUD 未被覆盖）');

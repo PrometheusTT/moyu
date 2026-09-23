@@ -28,10 +28,12 @@ export const MICRO_FIGHTER = {
   strike: frame([8,0], [[[8,2],[8,5]], [[5,4],[6,3],[11,3]], [[5,7],[8,5],[11,7]]], [[12,3],[19,3]]),
   recover: frame([8,0], [[[8,2],[8,5]], [[6,4],[6,3],[10,3],[11,4]], [[5,7],[8,5],[11,7]]], [[12,4],[15,7]]),
   hurt: frame([6,0], [[[7,2],[8,5]], [[4,2],[7,3],[10,2]], [[5,7],[8,5],[11,7]]], []),
+  guard: frame([8,0], [[[8,2],[8,5]], [[5,3],[7,3],[10,3],[12,2]], [[4,7],[8,5],[12,7]]], [[11,4],[11,0]]),
 } as const;
 
 export type MicroFighterPose = keyof typeof MICRO_FIGHTER;
-export function microPoseFor(f: Pick<Fighter, 'hurt' | 'atk' | 'onGround' | 'vx' | 'h' | 'walk'>): MicroFighterPose {
+export function microPoseFor(f: Pick<Fighter, 'armorT' | 'hurt' | 'atk' | 'onGround' | 'vx' | 'h' | 'walk'>): MicroFighterPose {
+  if ((f.armorT ?? 0) > 0) return 'guard';
   if (f.hurt > 0) return 'hurt';
   if (f.atk >= 0) return f.atk < 0.10 ? 'windup' : f.atk < 0.19 ? 'strike' : 'recover';
   if (!f.onGround) return 'jump';

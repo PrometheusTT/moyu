@@ -334,6 +334,19 @@ export function poseHurt(k: number): Pose {
   };
 }
 
+/** 护体：宽步站稳，空手护住胸口，剑竖在身前形成固定的防御剪影。 */
+export function poseGuard(): Pose {
+  return {
+    lean: -0.08,
+    armA: 1.22, elbowA: -0.48,
+    armB: 0.80, elbowB: -1.30,
+    hipA: 0.52, kneeA: 0.36,
+    hipB: -0.52, kneeB: 0.36,
+    blade: 3.05,
+    crouch: 0.16,
+  };
+}
+
 /** 杂兵的攻击前摇：双手抬起。`k` 从 0 涨到 1，涨满就打出去。 */
 export function poseWindup(k: number): Pose {
   return {
@@ -431,4 +444,3 @@ export function poseBossSlam(p: number): Pose {
     crouch: 0.06 + k * 0.06,
   };
 }
-

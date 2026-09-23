@@ -22,7 +22,7 @@ import { Rng } from './rng.ts';
 import { fighterSegments } from './creature.ts';
 import { MAX_QI, BOSS_HIT_QI, SWORD_ARTS, SWORD_FORMS, FULL_ART_NAMES, selectSwordForm, currentSwordForm,
   artLevel, artDuration, artRecovery, isSecretArt, freshCultivation, freshFormProgress, playerGrowth, type SwordArt, type SwordCast } from './martial.ts';
-import { poseAir, poseBossCharge, poseBossSlam, poseBossSweep, poseBossWindup, poseHurt, poseIdle, poseLand, poseSlash, poseWalk, poseWindup, segments, type Body, type Pose, type Seg } from './stick.ts';
+import { poseAir, poseBossCharge, poseBossSlam, poseBossSweep, poseBossWindup, poseGuard, poseHurt, poseIdle, poseLand, poseSlash, poseWalk, poseWindup, segments, type Body, type Pose, type Seg } from './stick.ts';
 
 /** 玩家每帧的意图。由输入层（latch）产出，模拟层不认识按键。 */
 export type Intent = {
@@ -36,7 +36,7 @@ export type Intent = {
   spin?: boolean;
   /** 蹲下（S/↓ 的缓冲窗）。挥刀时按住 → 低扫「蹲斩」。可选：省略视为未按。 */
   crouch?: boolean;
-  /** 护体罡气：受控时也能解控，短暂霸体但不免伤。 */
+  /** 护体罡气：受控时解控，持续期间定身防御、霸体但不免伤。 */
   armor?: boolean;
   art?: SwordArt | undefined;
   /** 组合指令开始时的朝向，独立于指令内的移动键。 */
@@ -591,6 +591,7 @@ export class World {
   private stepPlayer(dt: number, input: Intent): void {
     const p = this.player;
     p.anim += dt;
+    const wasGuarding = (p.armorT ?? 0) > 0;
     const wasStunned = (p.stunT ?? 0) > 0;
     for (const key of ['armorT', 'armorCool', 'stunT', 'slowT', 'controlImmuneT'] as const) {
       if ((p[key] ?? 0) > 0) p[key] = Math.max(0, p[key]! - dt);
@@ -602,8 +603,11 @@ export class World {
         p.armorT = growth.armorDuration; p.armorCool = growth.armorCooldown;
         p.stunT = p.slowT = p.hurt = 0;
         p.controlImmuneT = 1;
-        // 解除击退冲量；空中不瞬移、不强制落地。
-        p.vx = 0;
+        // 防御姿态覆盖正在进行的攻击/冲刺，原有输入不在结束后重放。
+        p.vx = p.vy = p.dashT = p.spinT = 0;
+        p.atk = -1; p.atkHit = p.atkQueued = false;
+        this.swordCast = null; this.queuedArt = null; this.artBossHits.clear();
+        this.buffered = { ...NO_INTENT }; this.bufferT = 0;
         this.artNotice = '护体罡气 · 霸体'; this.artNoticeT = growth.armorDuration;
       } else {
         this.artNotice = `护体未就绪 ${Math.ceil(p.armorCool!)}秒`; this.artNoticeT = 0.6;
@@ -616,6 +620,12 @@ export class World {
     if (p.spinCool > 0) p.spinCool -= dt;
     if ((p.sweepCool ?? 0) > 0) p.sweepCool = (p.sweepCool ?? 0) - dt;
     if ((p.lungeCool ?? 0) > 0) p.lungeCool = (p.lungeCool ?? 0) - dt;
+    if (wasGuarding || (p.armorT ?? 0) > 0) {
+      this.buffered = { ...NO_INTENT }; this.bufferT = 0;
+      p.vx = p.vy = 0;
+      p.pose = poseGuard();
+      return;
+    }
     if (this.phase !== 'fight') this.queuedArt = null;
     if (input.art && this.phase === 'fight') this.castSwordArt(input.art, input.artFace ?? (input.move || p.face));
     else if ((p.stunT ?? 0) <= 0 && this.queuedArt && this.phase === 'fight' && (!this.swordCast || this.swordCast.age >= artRecovery(this.swordCast.full))) {
@@ -1581,6 +1591,7 @@ export class World {
   }
 
   private poseFor(f: Fighter): Pose {
+    if (f.kind === 'player' && (f.armorT ?? 0) > 0) return poseGuard();
     if (f.kind === 'player' && this.swordCast !== null && f.atk < 0 && f.dashT <= 0 && f.spinT <= 0
       && f.hurt <= 0 && this.swordCast.age < artRecovery(this.swordCast.full)) {
       const cast = this.swordCast, form = currentSwordForm(cast), u = cast.age / artRecovery(cast.full);

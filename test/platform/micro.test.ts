@@ -24,7 +24,7 @@ function glyphSignature(pose: MicroFighterPose, face: 1 | -1 = 1): string {
   const state: Record<MicroFighterPose, Partial<Fighter>> = {
     idle: {}, runA: { vx: 4, walk: 0.1 }, runB: { vx: 4, walk: 0.7 },
     jump: { onGround: false }, windup: { atk: 0.05 }, strike: { atk: 0.16 },
-    recover: { atk: 0.28 }, hurt: { hurt: 1 },
+    recover: { atk: 0.28 }, hurt: { hurt: 1 }, guard: { armorT: 0.5 },
   };
   const canvas = new LogicalCanvas(32, 8);
   canvas.clear(BG);
@@ -66,6 +66,7 @@ test('left-facing frames are true mirrors and pose selection has stable action t
   assert.equal(microPoseFor(fighter({ atk: 0.28 })), 'recover');
   assert.equal(microPoseFor(fighter({ hurt: 0.1, atk: 0.30 })), 'hurt', 'hurt feedback wins over attack');
   assert.equal(microPoseFor(fighter({ onGround: false })), 'jump');
+  assert.equal(microPoseFor(fighter({ armorT: 0.5, atk: 0.16, hurt: 0.1 })), 'guard');
 });
 
 function microPixels(game: ReturnType<(typeof BUILTIN_GAMES)[number]['create']>): Uint32Array {

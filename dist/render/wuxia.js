@@ -441,6 +441,17 @@ export function paintBossPressure(p, w, armorOutline = true) {
             else
                 p.line(s.x0, s.y0, s.x1, s.y1, 0xffd66b);
         }
+        if (f === w.player) {
+            // 举剑外侧的一道护盾，低分辨率下仍能看出防御方向。
+            const cx = f.x + f.face * f.h * 0.48, cy = f.y - f.h * 0.52;
+            for (let i = 0; i < 5; i++) {
+                const y0 = cy + (i - 2) * f.h * 0.18;
+                const y1 = cy + (i - 1) * f.h * 0.18;
+                const bulge0 = 1 - Math.abs(i - 2) * 0.22;
+                const bulge1 = 1 - Math.abs(i - 1) * 0.22;
+                p.line(cx + f.face * f.h * 0.15 * bulge0, y0, cx + f.face * f.h * 0.15 * bulge1, y1, 0xffd66b);
+            }
+        }
     }
     for (const e of w.enemies)
         if (e.tag === 'boss' || e.duelist) {
