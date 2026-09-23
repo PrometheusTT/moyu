@@ -4,8 +4,8 @@
  * 这一层薄到几乎透明，只做四件事：
  *   1. **懒加载** `@lydell/node-pty`。它是原生模块，但 `moyu demo` / `moyu doctor`
  *      根本不需要它 —— 加载失败时不该让这些独立命令一起起不来。
- *   2. **改正 .d.ts 的谎**。`onData` 被声明成 `IEvent<string>`，但 `encoding: null` 下实际给的是
- *      `Buffer`（已实测确认）。字节透传层要的是字节，所以在这里把类型摆正，让谎言只存在于一处。
+ *   2. **统一输出类型**。POSIX 上 `encoding: null` 给 `Buffer`，Windows ConPTY 仍可能给
+ *      `string`。字节透传层只收字节，所以在这里把 Windows 的字符串编码回来。
  *   3. **尺寸控制**（TIOCSWINSZ）。整个同屏合成方案的支点：告诉内层"你只有 innerRows 行"，
  *      它就自己按小尺寸排版，我们一行坐标都不用换算。已实测：内层 `stty size` 返回我们给的值。
  *   4. **收尾**。SIGHUP 之后给个宽限期再 SIGKILL。
@@ -24,7 +24,7 @@ export type PtyHostOptions = {
 
 export type PtyExit = { exitCode: number; signal?: number | undefined };
 
-/** node-pty 的 `spawn` 签名里 `encoding` 是 `string | null`，但类型没体现 null 会改变 onData 的类型。 */
+/** node-pty 的 `spawn` 签名里 `encoding` 是 `string | null`，但 onData 的实际类型因平台而异。 */
 type PtyModule = {
   spawn: (file: string, args: string[], opts: Record<string, unknown>) => IPty;
 };
@@ -82,8 +82,8 @@ export class PtyHost {
       rows,
       cwd: opts.cwd ?? process.cwd(),
       env,
-      // 关键：null = 不解码，onData 给 Buffer。透传层必须拿到原始字节，
-      // 因为按 UTF-8 解码再编码会改写非法字节序列，而内层完全可以合法地输出它们。
+      // POSIX: null = 不解码，onData 给 Buffer，避免改写合法的原始字节。
+      // Windows ConPTY 仍可能给 string，由 onData 边界统一编码成字节。
       encoding: null,
       name: env.TERM ?? 'xterm-256color',
       // 流控关掉：我们自己不发 XON/XOFF，而开着它会让内层输出里偶然出现的
@@ -98,9 +98,11 @@ export class PtyHost {
     return this.pty.pid;
   }
 
-  /** 内层输出。给的是 `Buffer`（`Uint8Array` 的子类），不是 .d.ts 声明的 string。 */
+  /** 内层输出。Windows ConPTY 会忽略 `encoding: null` 而给字符串。 */
   onData(fn: (data: Uint8Array) => void): () => void {
-    const d = (this.pty.onData as unknown as (l: (e: Uint8Array) => void) => { dispose(): void })(fn);
+    const d = (this.pty.onData as unknown as (l: (e: string | Uint8Array) => void) => { dispose(): void })(
+      (data) => { fn(typeof data === 'string' ? Buffer.from(data, 'utf8') : data); },
+    );
     return () => { d.dispose(); };
   }
 

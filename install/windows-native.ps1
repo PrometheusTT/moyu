@@ -29,7 +29,6 @@ if ((Get-NodeMajor) -lt 20 -or $null -eq (Get-Command npm.cmd -ErrorAction Silen
 
 $wezTerm = Get-Command wezterm.exe -ErrorAction SilentlyContinue
 if ($null -eq $wezTerm) {
-    Require-Winget
     foreach ($location in @(
         (Join-Path $env:ProgramFiles 'WezTerm\wezterm.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\WezTerm\wezterm.exe')
@@ -38,6 +37,7 @@ if ($null -eq $wezTerm) {
     }
 }
 if ($null -eq $wezTerm) {
+    Require-Winget
     Write-Host 'Installing WezTerm for full-resolution graphics...'
     & winget.exe install --id wez.wezterm --exact --source winget --accept-package-agreements --accept-source-agreements
     if ($LASTEXITCODE -ne 0) { throw 'WezTerm installation failed. Check the winget output above.' }

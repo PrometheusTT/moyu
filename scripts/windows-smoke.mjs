@@ -59,7 +59,13 @@ try {
   assert.ok(play.includes('\x1b[?1049l'), 'standalone play must restore the terminal');
   const wrap = await run(['--', 'moyu-native-test'], 'MOYU_PS_OK');
   assert.ok(wrap.includes('MOYU_PS_OK'));
-  process.stdout.write('Windows native play and PowerShell CLI wrapper passed.\n');
+  const shimDir = path.join(home, 'shim with spaces');
+  fs.mkdirSync(shimDir);
+  const shim = path.join(shimDir, 'moyu native cmd.cmd');
+  fs.writeFileSync(shim, '@echo off\r\necho MOYU_CMD_OK %1\r\npowershell.exe -NoProfile -Command "Start-Sleep -Seconds 1"\r\n');
+  const cmd = await run(['--', shim, 'argument'], 'MOYU_CMD_OK argument');
+  assert.ok(cmd.includes('MOYU_CMD_OK argument'));
+  process.stdout.write('Windows native play, PowerShell, and cmd CLI wrappers passed.\n');
 } finally {
   fs.rmSync(home, { recursive: true, force: true });
 }

@@ -47,8 +47,8 @@ export class PtyHost {
             rows,
             cwd: opts.cwd ?? process.cwd(),
             env,
-            // 关键：null = 不解码，onData 给 Buffer。透传层必须拿到原始字节，
-            // 因为按 UTF-8 解码再编码会改写非法字节序列，而内层完全可以合法地输出它们。
+            // POSIX: null = 不解码，onData 给 Buffer，避免改写合法的原始字节。
+            // Windows ConPTY 仍可能给 string，由 onData 边界统一编码成字节。
             encoding: null,
             name: env.TERM ?? 'xterm-256color',
             // 流控关掉：我们自己不发 XON/XOFF，而开着它会让内层输出里偶然出现的
@@ -60,9 +60,9 @@ export class PtyHost {
     get pid() {
         return this.pty.pid;
     }
-    /** 内层输出。给的是 `Buffer`（`Uint8Array` 的子类），不是 .d.ts 声明的 string。 */
+    /** 内层输出。Windows ConPTY 会忽略 `encoding: null` 而给字符串。 */
     onData(fn) {
-        const d = this.pty.onData(fn);
+        const d = this.pty.onData((data) => { fn(typeof data === 'string' ? Buffer.from(data, 'utf8') : data); });
         return () => { d.dispose(); };
     }
     onExit(fn) {
