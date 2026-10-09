@@ -8,7 +8,7 @@ First run `node --version`, `moyu doctor`, and `moyu doctor --caps`. When report
 
 Use the [native PowerShell installer](../README.md#quick-start); WSL is not required. If an older WSL installer gets HTTP 403, switch to the native installer instead of retrying the blocked Ubuntu download. Open a new WezTerm PowerShell tab after installation so PATH updates take effect.
 
-To update an existing installation, follow the [remove-and-reinstall commands](../README.md#update). The package is installed from GitHub, not the npm registry, and running Moyu processes must be restarted.
+To update an existing installation, follow the [update commands](../README.md#update). The npm package is `moyu-game`; a GitHub `main` install remains available for development commits. Restart running Moyu processes after updating.
 
 ## No `moyu` command
 

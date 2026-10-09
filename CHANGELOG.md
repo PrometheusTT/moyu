@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+暂无。
+
+## [0.2.0] - 2026-10-09
+
+### Since the September candidate
+
 - 统一七套剑法的英文名称；新增 `moyu --lang en|zh`，单次运行即可覆盖游戏语言，包裹 CLI 时不吞掉 `--` 后的参数。
 - 新增可录屏的中英文自动演示脚本，固定节奏展示七套剑法和终章头目，无需手动操作。
 - 英文 README 作为仓库首页，中文版保留旧版详细结构；两版补全七套剑法谱，并列出目前已知支持高清的终端。
@@ -32,24 +38,25 @@
 - 修复分块方向键输入、未满模拟步丢失攻击、极矮画布抬刀越界；增加原子自动存档和旧存档迁移。
 - Boss 增加受击闪白、击退、生命刻度与有预警的地裂；九种地域妖物匹配章节场景。
 - 右侧文字使用完整终端宽度、中文折行与方括号翻页，不再截掉剑谱尾部。
+- 新增真实游玩录屏，首页提供先试玩再包裹 Codex / Claude Code 的简短上手路径；首次通过 npm registry 发布 `moyu-game`。
 
-## [0.2.0] - 2026-09-15
+### Earlier 0.2.0 work (2026-09-15)
 
-### Added
+#### Added
 
 - 十个确定性 30 秒章节、章节检查点和跨章节 RNG 恢复。
 - 独立 supervisor 与认证 terminal lease，用于 worker 崩溃后的终端恢复。
 - Source/dist 启动 smoke、完整章节视觉基线和更严格的发布物一致性检查。
 - Cartridge 微型/展开视图声明、原生设备像素渲染接口和宿主事件生命周期。
 
-### Changed
+#### Changed
 
 - 候场状态缩减为右下安全边缘的单个 `·` / `•`，稳定状态不再产生周期输出。
 - Codex 游戏视图优先覆盖在 composer 正上方两行，无法确认位置时安全回退到底部区域。
 - stdout 背压优先保证内层 CLI 字节，并暂停 PTY 直到 drain。
 - `MOYU_TIER=graphics` 改为安全尝试；仅 `MOYU_FORCE_GRAPHICS=1` 跳过保护。
 
-### Fixed
+#### Fixed
 
 - 修复退出竞态、PTY listener 泄漏、信号退出码和 supervisor 完成握手。
 - 修复 `doctor --gfx` 非 TTY lease 错误，并在正常完成后保留诊断图片。
