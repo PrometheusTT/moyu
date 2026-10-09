@@ -4,7 +4,7 @@ A stick-figure action game inside your terminal. Play on its own or wrap Codex, 
 
 ![A straw-hatted stick fighter slashing through a bamboo grove](./cover-stick-slash.png)
 
-[简体中文](./README.zh-CN.md) · [Quick start](#quick-start) · [Controls](#controls) · [Sword arts](#sword-arts) · [Troubleshooting](./docs/troubleshooting.en.md)
+[简体中文](./README.zh-CN.md) · [Quick start](#quick-start) · [See it in action](#see-it-in-action) · [Controls](#controls) · [Troubleshooting](./docs/troubleshooting.en.md)
 
 ## Quick start
 
@@ -14,8 +14,10 @@ On macOS or Linux with Node installed:
 
 ```sh
 npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main'
-moyu play stick-slash
+moyu demo
 ```
+
+`moyu demo` opens the game full-screen so you can try it without installing Codex or Claude Code. Press `q` to leave. To keep your coding session open with a quiet one-row game beside it, run `moyu -- codex` or `moyu -- claude`; press `Ctrl+]` to enter or leave the game. Your game progress is saved automatically.
 
 If your Mac does not have Node, use the [macOS installer](./install/macos.sh). Windows does **not** require WSL. Run this in PowerShell:
 
@@ -25,7 +27,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/PrometheusTT/moyu/main/insta
 powershell -NoProfile -ExecutionPolicy Bypass -File $file
 ```
 
-The installer sets up Node and WezTerm if needed. Open a new WezTerm PowerShell tab, then run `moyu play stick-slash`. If you already have a coding CLI installed, you can wrap it instead:
+The installer sets up Node and WezTerm if needed. Open a new WezTerm PowerShell tab, then run `moyu demo`. If you already have a coding CLI installed, you can wrap it instead:
 
 ```sh
 moyu -- codex
@@ -33,6 +35,18 @@ moyu -- claude
 ```
 
 On Windows, install the native Windows version of the CLI you want to wrap. Moyu currently installs from GitHub `main`, not the npm registry.
+
+## See it in action
+
+![A real Moyu play session captured from a text-only terminal](./docs/media/moyu-real-play.gif)
+
+The clip above is a real play session in the text fallback tier, recorded without a coding CLI. High-resolution terminals can render finer graphics; `moyu doctor --caps` shows which tier your terminal selects.
+
+- **Actual play:** run `moyu demo` after installation. This uses your terminal's available graphics tier and starts at normal progression.
+- **Sword-art showcase:** from a source checkout, run `npm run showcase:en` for a 26-second sequence of all seven arts. It starts with unlocked moves and full qi for recording, so it is a staged showcase rather than a normal run. See the [recording guide](./docs/showcase.md).
+- **Beside an agent:** run `moyu -- codex` or `moyu -- claude`, then press `Ctrl+]` while the agent is working. Press it again to return to the same coding session.
+
+Moyu needs Node 20+ and an interactive terminal. Graphics quality depends on your terminal; use `moyu doctor --caps` to see the selected tier. [Open a terminal report](https://github.com/PrometheusTT/moyu/issues/new) if the game does not render correctly, including your OS, terminal, and `doctor --caps` output.
 
 ## Controls
 
