@@ -45,10 +45,10 @@ npm list --global --depth=0
 
 ```sh
 npm uninstall --global moyu-game
-npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main'
+npm install --global moyu-game@latest
 ```
 
-当前 `moyu-game` 尚未发布到 npm registry。安装时不需要本机 TypeScript。如果错误提到 `tsc`、`prepare` 或临时目录死软链，
+正式版从 npm registry 安装；GitHub `main` 仍可用于试最新开发提交。安装时不需要本机 TypeScript。如果错误提到 `tsc`、`prepare` 或临时目录死软链，
 请附上 Node/npm 版本创建 Bug Report。
 
 ## `--lang en` 后游戏 HUD 仍是中文

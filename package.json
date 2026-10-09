@@ -45,7 +45,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "compile": "tsc -p tsconfig.build.json",
-    "test": "node --import ./test/setup.mjs --test --experimental-strip-types \"test/**/*.test.ts\"",
+    "test": "node --import ./test/setup.mjs --test --test-concurrency=4 --experimental-strip-types \"test/**/*.test.ts\"",
     "docs:check": "node scripts/check-docs.mjs",
     "check": "npm run typecheck && npm run docs:check && npm test",
     "verify": "npm run check && npm run compile",

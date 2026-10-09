@@ -13,7 +13,7 @@ Requires **Node >= 20** and an interactive terminal. macOS, Linux, and native Wi
 On macOS or Linux with Node installed:
 
 ```sh
-npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main'
+npm install --global moyu-game@0.2.0
 moyu demo
 ```
 
@@ -34,7 +34,7 @@ moyu -- codex
 moyu -- claude
 ```
 
-On Windows, install the native Windows version of the CLI you want to wrap. Moyu currently installs from GitHub `main`, not the npm registry.
+On Windows, install the native Windows version of the CLI you want to wrap. For the latest development commit instead of the npm release, install `https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main` with `npm install --global`.
 
 ## See it in action
 
@@ -120,7 +120,7 @@ Codex uses `~/.codex/hooks.json`; Claude Code uses `~/.claude/settings.json`. Th
 
 ## Update
 
-To get the latest GitHub commit even when the package version is unchanged, remove and reinstall the package. Saves are kept. On macOS / Linux:
+To update the npm release, run `npm install --global moyu-game@latest` (`npm.cmd` in Windows PowerShell). Saves are kept. If you installed directly from GitHub and want the latest `main` commit even when its package version is unchanged, remove and reinstall that source. On macOS / Linux:
 
 ```sh
 npm uninstall --global moyu-game

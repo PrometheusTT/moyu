@@ -13,8 +13,8 @@
 macOS / Linux：
 
 ```sh
-npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main'
-moyu play stick-slash
+npm install --global moyu-game@0.2.0
+moyu demo
 ```
 
 macOS 尚未安装 Node 时，可使用 [安装脚本](./install/macos.sh)。
@@ -36,7 +36,7 @@ moyu -- codex
 moyu -- claude
 ```
 
-Windows 上使用 `moyu -- codex` 或 `moyu -- claude` 前，先安装相应 CLI 的 Windows 原生版。目前从 GitHub `main` 安装，尚未发布到 npm registry。
+Windows 上使用 `moyu -- codex` 或 `moyu -- claude` 前，先安装相应 CLI 的 Windows 原生版。若想试最新开发提交，也可用 `npm install --global 'https://codeload.github.com/PrometheusTT/moyu/tar.gz/refs/heads/main'` 从 GitHub 安装。
 
 ## 操作
 
@@ -108,7 +108,7 @@ Codex 使用 `~/.codex/hooks.json`，Claude Code 使用 `~/.claude/settings.json
 
 ## 更新
 
-当前从 GitHub `main` 安装，同版本号也可能有新提交。先卸载 npm 包再重装，存档会保留。macOS / Linux：
+更新 npm 正式版时运行 `npm install --global moyu-game@latest`（Windows PowerShell 用 `npm.cmd`），存档会保留。如果此前从 GitHub 安装，想获取 `main` 的最新提交，即使版本号不变也要先卸载再重装。macOS / Linux：
 
 ```sh
 npm uninstall --global moyu-game
